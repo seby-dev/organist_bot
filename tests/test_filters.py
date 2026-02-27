@@ -1,26 +1,25 @@
-# -*- coding: utf-8 -*-
 import datetime
-import pytest
-from organist_bot.models import Gig
 from unittest.mock import MagicMock
+
 from organist_bot.filters import (
+    BlacklistFilter,
+    BookedDateFilter,
+    FeeFilter,
+    GigFilterChain,
+    PostcodeFilter,
+    SeenFilter,
+    SundayTimeFilter,
+    normalize_to_yyyymmdd,
     parse_min_fee,
     parse_start_time,
     parse_weekday,
-    normalize_to_yyyymmdd,
-    FeeFilter,
-    SundayTimeFilter,
-    BlacklistFilter,
-    BookedDateFilter,
-    PostcodeFilter,
-    SeenFilter,
-    GigFilterChain,
 )
-
+from organist_bot.models import Gig
 
 # ─────────────────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────────────────
+
 
 def make_gig(**kwargs) -> Gig:
     """Build a Gig with sensible defaults; override with kwargs."""
@@ -42,8 +41,8 @@ def make_gig(**kwargs) -> Gig:
 # parse_min_fee
 # ─────────────────────────────────────────────────────────
 
-class TestParseMinFee:
 
+class TestParseMinFee:
     def test_range_returns_lower_bound(self):
         assert parse_min_fee("£80 - £120") == 80.0
 
@@ -97,8 +96,8 @@ class TestParseMinFee:
 # parse_start_time
 # ─────────────────────────────────────────────────────────
 
-class TestParseStartTime:
 
+class TestParseStartTime:
     def test_am_with_colon(self):
         assert parse_start_time("9:30 AM") == datetime.time(9, 30)
 
@@ -145,6 +144,7 @@ class TestParseStartTime:
 # ─────────────────────────────────────────────────────────
 # parse_weekday
 # ─────────────────────────────────────────────────────────
+
 
 class TestParseWeekday:
     """Monday=0 ... Sunday=6"""
@@ -196,8 +196,8 @@ class TestParseWeekday:
 # normalize_to_yyyymmdd
 # ─────────────────────────────────────────────────────────
 
-class TestNormalizeToYYYYMMDD:
 
+class TestNormalizeToYYYYMMDD:
     def test_full_date_with_weekday(self):
         assert normalize_to_yyyymmdd("Sunday, 15 March 2026") == "20260315"
 
@@ -248,8 +248,8 @@ class TestNormalizeToYYYYMMDD:
 # FeeFilter
 # ─────────────────────────────────────────────────────────
 
-class TestFeeFilter:
 
+class TestFeeFilter:
     # --- weekend gigs ---
 
     def test_weekend_gig_above_threshold_passes(self):
@@ -347,8 +347,8 @@ class TestFeeFilter:
 # SundayTimeFilter
 # ─────────────────────────────────────────────────────────
 
-class TestSundayTimeFilter:
 
+class TestSundayTimeFilter:
     # --- non-Sunday gigs always pass ---
 
     def test_monday_gig_always_passes(self):
@@ -441,8 +441,8 @@ class TestSundayTimeFilter:
 # BlacklistFilter
 # ─────────────────────────────────────────────────────────
 
-class TestBlacklistFilter:
 
+class TestBlacklistFilter:
     def test_non_blacklisted_email_passes(self):
         f = BlacklistFilter(["bad@example.com"])
         gig = make_gig(email="good@example.com")
@@ -499,8 +499,8 @@ class TestBlacklistFilter:
 # BookedDateFilter
 # ─────────────────────────────────────────────────────────
 
-class TestBookedDateFilter:
 
+class TestBookedDateFilter:
     def test_non_booked_date_passes(self):
         f = BookedDateFilter(["20260315"])
         gig = make_gig(date="Sunday, 22 March 2026")
@@ -553,8 +553,8 @@ class TestBookedDateFilter:
 # SeenFilter
 # ─────────────────────────────────────────────────────────
 
-class TestSeenFilter:
 
+class TestSeenFilter:
     def test_unseen_gig_passes(self):
         """A gig whose link is not in the seen set is allowed through."""
         f = SeenFilter({"https://example.com/other"})
@@ -562,7 +562,7 @@ class TestSeenFilter:
 
     def test_seen_gig_fails(self):
         """A gig whose link is in the seen set is rejected."""
-        f = SeenFilter({"https://example.com/gig/1"})   # matches make_gig() default
+        f = SeenFilter({"https://example.com/gig/1"})  # matches make_gig() default
         assert f(make_gig()) is False
 
     def test_empty_seen_set_passes_all(self):
@@ -587,6 +587,7 @@ class TestSeenFilter:
 # PostcodeFilter
 # ─────────────────────────────────────────────────────────
 
+
 def _mock_client(times: dict[str, int | None]) -> MagicMock:
     """
     Build a mock googlemaps Client whose distance_matrix() returns travel
@@ -602,13 +603,17 @@ def _mock_client(times: dict[str, int | None]) -> MagicMock:
         if minutes is None:
             return {"rows": [{"elements": [{"status": "ZERO_RESULTS"}]}]}
         return {
-            "rows": [{
-                "elements": [{
-                    "status":   "OK",
-                    "duration": {"value": minutes * 60, "text": f"{minutes} mins"},
-                    "distance": {"value": 0, "text": ""},
-                }]
-            }]
+            "rows": [
+                {
+                    "elements": [
+                        {
+                            "status": "OK",
+                            "duration": {"value": minutes * 60, "text": f"{minutes} mins"},
+                            "distance": {"value": 0, "text": ""},
+                        }
+                    ]
+                }
+            ]
         }
 
     mock.distance_matrix.side_effect = distance_matrix
@@ -616,7 +621,6 @@ def _mock_client(times: dict[str, int | None]) -> MagicMock:
 
 
 class TestPostcodeFilter:
-
     HOME = "SW1A 1AA"
 
     def _filter(self, times: dict[str, int | None], max_minutes: int = 45) -> PostcodeFilter:
@@ -706,7 +710,7 @@ class TestPostcodeFilter:
         f = PostcodeFilter(home_postcode=self.HOME, api_key="key", _client=client)
 
         f(make_gig(postcode="EC1A 1BB"))
-        f(make_gig(postcode="EC1A 1BB"))   # second call — should hit cache
+        f(make_gig(postcode="EC1A 1BB"))  # second call — should hit cache
 
         assert client.distance_matrix.call_count == 3  # once per mode, not six
 
@@ -780,8 +784,8 @@ class TestPostcodeFilter:
 # GigFilterChain
 # ─────────────────────────────────────────────────────────
 
-class TestGigFilterChain:
 
+class TestGigFilterChain:
     # --- basic mechanics ---
 
     def test_empty_chain_passes_all(self):
@@ -802,9 +806,7 @@ class TestGigFilterChain:
 
     def test_all_filters_must_pass(self):
         chain = (
-            GigFilterChain()
-            .add(FeeFilter(min_fee=100))
-            .add(BlacklistFilter(["bad@example.com"]))
+            GigFilterChain().add(FeeFilter(min_fee=100)).add(BlacklistFilter(["bad@example.com"]))
         )
         gig = make_gig(date="Sunday, 15 March 2026", fee="£150", email="bad@example.com")
         assert chain.apply([gig]) == []
@@ -883,11 +885,7 @@ class TestGigFilterChain:
         assert result == [good]
 
     def test_repr_contains_filter_names(self):
-        chain = (
-            GigFilterChain()
-            .add(FeeFilter(min_fee=50))
-            .add(BlacklistFilter([]))
-        )
+        chain = GigFilterChain().add(FeeFilter(min_fee=50)).add(BlacklistFilter([]))
         r = repr(chain)
         assert "GigFilterChain" in r
         assert "FeeFilter" in r

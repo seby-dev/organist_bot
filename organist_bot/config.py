@@ -1,17 +1,16 @@
 # organist_bot/config.py
 
-from typing import List
-from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
     email_sender: str
     email_password: str
     cc_email: str
-    blacklist_emails: List[str] = []
+    blacklist_emails: list[str] = []
     min_fee: int = 100
-    booked_dates: List[str] = []
+    booked_dates: list[str] = []
     poll_minutes: int = 2
     log_file: str = "logs/gigs.log"
     csv_file: str = "data/seen_gigs.csv"
@@ -46,8 +45,5 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(env_file=".env")
 
-settings = Settings()
 
-
-
-
+settings = Settings()  # type: ignore[call-arg]

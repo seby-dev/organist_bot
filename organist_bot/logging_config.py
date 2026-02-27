@@ -22,11 +22,11 @@ messages appear on the console.
 """
 
 import contextvars
+import datetime
 import json
 import logging
 import logging.handlers
 import sys
-import datetime
 from pathlib import Path
 
 # ── Run ID context variable ────────────────────────────────────────────────────
@@ -43,41 +43,66 @@ def set_run_id(run_id: str) -> None:
 
 class RunIdFilter(logging.Filter):
     """Injects the current run_id into every LogRecord."""
+
     def filter(self, record: logging.LogRecord) -> bool:
         record.run_id = _run_id.get("")
         return True
 
+
 # ── ANSI colour palette ────────────────────────────────────────────────────────
 
-_RESET    = "\033[0m"
-_BOLD     = "\033[1m"
-_DIM      = "\033[2m"
-_CYAN     = "\033[36m"
-_GREEN    = "\033[32m"
-_YELLOW   = "\033[33m"
-_RED      = "\033[31m"
-_MAGENTA  = "\033[35m"
+_RESET = "\033[0m"
+_BOLD = "\033[1m"
+_DIM = "\033[2m"
+_CYAN = "\033[36m"
+_GREEN = "\033[32m"
+_YELLOW = "\033[33m"
+_RED = "\033[31m"
+_MAGENTA = "\033[35m"
 
 _LEVEL_COLORS: dict[str, str] = {
-    "DEBUG":    _CYAN,
-    "INFO":     _GREEN,
-    "WARNING":  _YELLOW,
-    "ERROR":    _RED,
-    "CRITICAL": f"\033[1;31m",   # bold red
+    "DEBUG": _CYAN,
+    "INFO": _GREEN,
+    "WARNING": _YELLOW,
+    "ERROR": _RED,
+    "CRITICAL": "\033[1;31m",  # bold red
 }
 
 # ── Fields that belong to LogRecord itself (never treated as "extra") ──────────
 
-_STDLIB_FIELDS = frozenset({
-    "args", "asctime", "created", "exc_info", "exc_text", "filename",
-    "funcName", "id", "levelname", "levelno", "lineno", "message",
-    "module", "msecs", "msg", "name", "pathname", "process",
-    "processName", "relativeCreated", "stack_info", "taskName",
-    "thread", "threadName", "run_id",
-})
+_STDLIB_FIELDS = frozenset(
+    {
+        "args",
+        "asctime",
+        "created",
+        "exc_info",
+        "exc_text",
+        "filename",
+        "funcName",
+        "id",
+        "levelname",
+        "levelno",
+        "lineno",
+        "message",
+        "module",
+        "msecs",
+        "msg",
+        "name",
+        "pathname",
+        "process",
+        "processName",
+        "relativeCreated",
+        "stack_info",
+        "taskName",
+        "thread",
+        "threadName",
+        "run_id",
+    }
+)
 
 
 # ── Formatters ─────────────────────────────────────────────────────────────────
+
 
 class ConsoleFormatter(logging.Formatter):
     """
@@ -97,11 +122,14 @@ class ConsoleFormatter(logging.Formatter):
     """
 
     def format(self, record: logging.LogRecord) -> str:
-        ts    = datetime.datetime.fromtimestamp(record.created).strftime("%Y-%m-%d %H:%M:%S") + f".{int(record.msecs):03d}"
+        ts = (
+            datetime.datetime.fromtimestamp(record.created).strftime("%Y-%m-%d %H:%M:%S")
+            + f".{int(record.msecs):03d}"
+        )
         color = _LEVEL_COLORS.get(record.levelname, "")
         level = f"{color}{record.levelname:<9}{_RESET}"
-        name  = f"{_DIM}{record.name:<27}{_RESET}"
-        msg   = f"{_BOLD}{record.getMessage()}{_RESET}"
+        name = f"{_DIM}{record.name:<27}{_RESET}"
+        msg = f"{_BOLD}{record.getMessage()}{_RESET}"
 
         # Collect caller-supplied extra fields
         ctx_parts = [
@@ -153,17 +181,16 @@ class JSONFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         doc: dict = {
             "timestamp": (
-                datetime.datetime.utcfromtimestamp(record.created)
-                .strftime("%Y-%m-%dT%H:%M:%S.")
+                datetime.datetime.utcfromtimestamp(record.created).strftime("%Y-%m-%dT%H:%M:%S.")
                 + f"{int(record.msecs):03d}Z"
             ),
-            "run_id":   getattr(record, "run_id", ""),
-            "level":    record.levelname,
-            "logger":   record.name,
-            "message":  record.getMessage(),
-            "module":   record.module,
+            "run_id": getattr(record, "run_id", ""),
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+            "module": record.module,
             "function": record.funcName,
-            "line":     record.lineno,
+            "line": record.lineno,
         }
 
         # Merge caller-supplied extra context
@@ -178,6 +205,7 @@ class JSONFormatter(logging.Formatter):
 
 
 # ── Public API ─────────────────────────────────────────────────────────────────
+
 
 def setup_logging(log_file: str, level: int = logging.DEBUG) -> None:
     """
@@ -221,8 +249,8 @@ def setup_logging(log_file: str, level: int = logging.DEBUG) -> None:
     Path(log_file).parent.mkdir(parents=True, exist_ok=True)
     file_handler = logging.handlers.RotatingFileHandler(
         log_file,
-        maxBytes=5 * 1024 * 1024,   # rotate at 5 MB
-        backupCount=3,               # keep gigs.log, gigs.log.1, .2, .3
+        maxBytes=5 * 1024 * 1024,  # rotate at 5 MB
+        backupCount=3,  # keep gigs.log, gigs.log.1, .2, .3
         encoding="utf-8",
     )
     file_handler.setLevel(logging.DEBUG)
@@ -232,5 +260,9 @@ def setup_logging(log_file: str, level: int = logging.DEBUG) -> None:
 
     logging.getLogger(__name__).info(
         "Logging initialised",
-        extra={"log_file": str(Path(log_file).resolve()), "file_level": "DEBUG", "console_level": "INFO"},
+        extra={
+            "log_file": str(Path(log_file).resolve()),
+            "file_level": "DEBUG",
+            "console_level": "INFO",
+        },
     )

@@ -1,9 +1,8 @@
-import datetime
 import logging
 import smtplib
 from email.mime.text import MIMEText
 from pathlib import Path
-from typing import Optional, Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
@@ -16,6 +15,7 @@ TEMPLATES_DIR = Path(__file__).parent / "templates"
 
 
 # ── Transport layer ───────────────────────────────────────────────────────────
+
 
 @runtime_checkable
 class Transport(Protocol):
@@ -50,15 +50,14 @@ class FakeTransport:
         self.sent: list[dict] = []
 
     def send(self, sender: str, recipients: list[str], raw_message: str) -> None:
-        self.sent.append(
-            {"sender": sender, "recipients": recipients, "message": raw_message}
-        )
+        self.sent.append({"sender": sender, "recipients": recipients, "message": raw_message})
 
     def reset(self) -> None:
         self.sent.clear()
 
 
 # ── Notifier ──────────────────────────────────────────────────────────────────
+
 
 class Notifier:
     """Renders Jinja2 templates and dispatches email via an injected Transport.
@@ -95,7 +94,7 @@ class Notifier:
         subject: str,
         body: str,
         recipient: str,
-        cc: Optional[list[str]] = None,
+        cc: list[str] | None = None,
     ) -> tuple[MIMEText, list[str]]:
         msg = MIMEText(body, "html")
         msg["Subject"] = subject
@@ -111,15 +110,15 @@ class Notifier:
         subject: str,
         body: str,
         recipient: str,
-        cc: Optional[list[str]] = None,
+        cc: list[str] | None = None,
     ) -> None:
         msg, recipients = self._build_message(subject, body, recipient, cc)
         logger.debug(
             "Dispatching email",
             extra={
-                "subject":    subject,
-                "recipient":  recipient,
-                "cc":         cc or [],
+                "subject": subject,
+                "recipient": recipient,
+                "cc": cc or [],
                 "body_bytes": len(body.encode()),
             },
         )
@@ -146,7 +145,7 @@ class Notifier:
             gigs=gigs,
             base_url=self._settings.base_url,
         )
-        cc = []
+        cc: list[str] = []
         self._dispatch(
             subject=f"New Organ Gigs ({len(gigs)} found)",
             body=body,

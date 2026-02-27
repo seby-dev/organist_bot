@@ -26,12 +26,14 @@ from telegram.ext import (
     Application,
     ContextTypes,
     MessageHandler,
+)
+from telegram.ext import (
     filters as tg_filters,
 )
 
-from organist_bot.integrations.calendar_client import GoogleCalendarClient
 from organist_bot.config import settings
 from organist_bot.filters import normalize_to_yyyymmdd
+from organist_bot.integrations.calendar_client import GoogleCalendarClient
 from organist_bot.models import Gig
 from organist_bot.scraper import Scraper
 
@@ -42,6 +44,8 @@ _GIG_URL_RE = re.compile(r"https?://organistsonline\.org/\S+")
 
 def _is_authorised(update: Update) -> bool:
     """Return True only if the message comes from the configured chat ID."""
+    if update.effective_chat is None:
+        return False
     return str(update.effective_chat.id) == str(settings.telegram_chat_id)
 
 
@@ -49,11 +53,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if not _is_authorised(update):
         logger.warning(
             "Telegram: rejected unauthorised message",
-            extra={"chat_id": update.effective_chat.id},
+            extra={"chat_id": update.effective_chat.id if update.effective_chat else None},
         )
         return
 
-    text  = update.message.text or ""
+    if update.message is None:
+        return
+
+    text = update.message.text or ""
     match = _GIG_URL_RE.search(text)
 
     if not match:
@@ -63,12 +70,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     url = match.group(0)
-    await update.message.reply_text(f"⏳ Fetching gig details…")
+    await update.message.reply_text("⏳ Fetching gig details…")
 
     try:
         # ── Scrape ────────────────────────────────────────────────────────────
         with Scraper() as scraper:
-            html  = scraper.fetch(url)
+            html = scraper.fetch(url)
             basic = scraper.extract_basic_from_detail(html, link=url)
             extra = scraper.extract_full_details(html)
 

@@ -30,7 +30,7 @@ A personal automation bot that scrapes organ gig listings from [organistsonline.
 ### 1. Clone and install
 
 ```bash
-git clone <repo-url>
+git clone https://github.com/sebby/organist_bot.git
 cd organist_bot
 
 # Runtime only

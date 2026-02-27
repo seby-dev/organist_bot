@@ -2,13 +2,14 @@
 """Tests for GoogleCalendarClient."""
 
 from unittest.mock import MagicMock, patch
+
 import pytest
 
 from organist_bot.integrations.calendar_client import GoogleCalendarClient
 from organist_bot.models import Gig
 
-
 # ── Fixtures ──────────────────────────────────────────────────────────────────
+
 
 @pytest.fixture
 def mock_service():
@@ -18,10 +19,11 @@ def mock_service():
 @pytest.fixture
 def client(mock_service):
     """GoogleCalendarClient with all Google API calls mocked out."""
-    with patch(
-        "organist_bot.integrations.calendar_client.service_account.Credentials.from_service_account_file"
-    ), patch(
-        "organist_bot.integrations.calendar_client.build", return_value=mock_service
+    with (
+        patch(
+            "organist_bot.integrations.calendar_client.service_account.Credentials.from_service_account_file"
+        ),
+        patch("organist_bot.integrations.calendar_client.build", return_value=mock_service),
     ):
         return GoogleCalendarClient(credentials_file="fake.json", calendar_id="cal@test.com")
 
@@ -41,6 +43,7 @@ def _make_gig(**overrides) -> Gig:
 
 
 # ── has_event_on_date ─────────────────────────────────────────────────────────
+
 
 class TestHasEventOnDate:
     def test_returns_true_when_event_exists(self, client, mock_service):
@@ -76,6 +79,7 @@ class TestHasEventOnDate:
 
 # ── add_gig ───────────────────────────────────────────────────────────────────
 
+
 class TestAddGig:
     def test_creates_event_and_returns_id(self, client, mock_service):
         mock_service.events().insert().execute.return_value = {"id": "new_event_123"}
@@ -102,10 +106,11 @@ class TestAddGig:
     def test_event_end_is_one_hour_after_start(self, client, mock_service):
         mock_service.events().insert().execute.return_value = {"id": "x"}
         from datetime import datetime
+
         client.add_gig(_make_gig(time="10:00 AM", date="Sunday, March 1, 2026"))
         body = mock_service.events().insert.call_args[1]["body"]
         start = datetime.fromisoformat(body["start"]["dateTime"])
-        end   = datetime.fromisoformat(body["end"]["dateTime"])
+        end = datetime.fromisoformat(body["end"]["dateTime"])
         assert (end - start).total_seconds() == 3600
 
     def test_raises_value_error_for_unparseable_date(self, client, mock_service):

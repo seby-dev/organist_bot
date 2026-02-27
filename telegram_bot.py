@@ -17,17 +17,18 @@ Prerequisites (set in .env):
 import sys
 
 from organist_bot.config import settings
-from organist_bot.logging_config import setup_logging
 from organist_bot.integrations.telegram_bot import run
+from organist_bot.logging_config import setup_logging
 
 if __name__ == "__main__":
     setup_logging(settings.log_file)
 
     missing = [
-        name for name, val in [
-            ("TELEGRAM_BOT_TOKEN",               settings.telegram_bot_token),
-            ("TELEGRAM_CHAT_ID",                 settings.telegram_chat_id),
-            ("GOOGLE_CALENDAR_ID",               settings.google_calendar_id),
+        name
+        for name, val in [
+            ("TELEGRAM_BOT_TOKEN", settings.telegram_bot_token),
+            ("TELEGRAM_CHAT_ID", settings.telegram_chat_id),
+            ("GOOGLE_CALENDAR_ID", settings.google_calendar_id),
             ("GOOGLE_CALENDAR_CREDENTIALS_FILE", settings.google_calendar_credentials_file),
         ]
         if not val

@@ -53,7 +53,7 @@ class GoogleCalendarClient:
         Fails open — returns False (don't block the gig) if the API call fails.
         """
         try:
-            dt       = datetime.datetime.strptime(date_str, "%Y%m%d").date()
+            dt = datetime.datetime.strptime(date_str, "%Y%m%d").date()
             time_min = datetime.datetime.combine(dt, datetime.time.min).isoformat() + "Z"
             time_max = datetime.datetime.combine(dt, datetime.time.max).isoformat() + "Z"
 
@@ -99,32 +99,34 @@ class GoogleCalendarClient:
         if not start_time:
             raise ValueError(f"Cannot parse gig time: {gig.time!r}")
 
-        date      = datetime.datetime.strptime(date_str, "%Y%m%d").date()
-        start_dt  = datetime.datetime.combine(date, start_time)
-        end_dt    = start_dt + datetime.timedelta(hours=1)
+        date = datetime.datetime.strptime(date_str, "%Y%m%d").date()
+        start_dt = datetime.datetime.combine(date, start_time)
+        end_dt = start_dt + datetime.timedelta(hours=1)
 
-        description = "\n".join([
-            f"Fee:                   {gig.fee or '—'}",
-            f"Contact:               {gig.contact or '—'}",
-            f"Email:                 {gig.email or '—'}",
-            f"Phone:                 {gig.phone or '—'}",
-            f"Address:               {gig.address or '—'}",
-            f"Musical requirements:  {gig.musical_requirements or '—'}",
-            f"Link:                  {gig.link or '—'}",
-        ])
+        description = "\n".join(
+            [
+                f"Fee:                   {gig.fee or '—'}",
+                f"Contact:               {gig.contact or '—'}",
+                f"Email:                 {gig.email or '—'}",
+                f"Phone:                 {gig.phone or '—'}",
+                f"Address:               {gig.address or '—'}",
+                f"Musical requirements:  {gig.musical_requirements or '—'}",
+                f"Link:                  {gig.link or '—'}",
+            ]
+        )
 
         event = {
-            "summary":     f"{gig.header} — {gig.organisation}",
-            "location":    gig.address or gig.locality or "",
+            "summary": f"{gig.header} — {gig.organisation}",
+            "location": gig.address or gig.locality or "",
             "description": description,
-            "start":       {"dateTime": start_dt.isoformat(), "timeZone": "Europe/London"},
-            "end":         {"dateTime": end_dt.isoformat(),   "timeZone": "Europe/London"},
+            "start": {"dateTime": start_dt.isoformat(), "timeZone": "Europe/London"},
+            "end": {"dateTime": end_dt.isoformat(), "timeZone": "Europe/London"},
         }
 
         try:
-            created = self._service.events().insert(
-                calendarId=self.calendar_id, body=event
-            ).execute()
+            created = (
+                self._service.events().insert(calendarId=self.calendar_id, body=event).execute()
+            )
         except Exception:
             logger.exception(
                 "Failed to insert calendar event",
@@ -136,10 +138,10 @@ class GoogleCalendarClient:
         logger.info(
             "Gig added to Google Calendar",
             extra={
-                "event_id":    event_id,
-                "summary":     event["summary"],
-                "start":       start_dt.isoformat(),
-                "end":         end_dt.isoformat(),
+                "event_id": event_id,
+                "summary": event["summary"],
+                "start": start_dt.isoformat(),
+                "end": end_dt.isoformat(),
                 "calendar_id": self.calendar_id,
             },
         )

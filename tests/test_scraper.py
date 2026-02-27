@@ -1,11 +1,11 @@
-# -*- coding: utf-8 -*-
-import pytest
-from unittest.mock import Mock, patch, MagicMock
-from bs4 import BeautifulSoup
-from requests.exceptions import RequestException, HTTPError, Timeout
-from tenacity import RetryError
-from organist_bot.scraper import Scraper
+from unittest.mock import Mock, patch
 
+import pytest
+from bs4 import BeautifulSoup
+from requests.exceptions import HTTPError, RequestException, Timeout
+from tenacity import RetryError
+
+from organist_bot.scraper import Scraper
 
 # Sample HTML content for testing
 SAMPLE_GIG_HTML = """
@@ -83,13 +83,13 @@ class TestScraperInitialization:
     def test_default_initialization(self):
         """Test Scraper initializes with default values."""
         scraper = Scraper()
-        assert scraper.session.headers['User-Agent'] == "OrganistBot/1.0"
+        assert scraper.session.headers["User-Agent"] == "OrganistBot/1.0"
         assert scraper.timeout == 10
 
     def test_custom_initialization(self):
         """Test Scraper initializes with custom values."""
         scraper = Scraper(user_agent="CustomBot/2.0", timeout=20)
-        assert scraper.session.headers['User-Agent'] == "CustomBot/2.0"
+        assert scraper.session.headers["User-Agent"] == "CustomBot/2.0"
         assert scraper.timeout == 20
 
     def test_session_exists(self):
@@ -101,7 +101,7 @@ class TestScraperInitialization:
 class TestScraperFetch:
     """Test the fetch method with various scenarios."""
 
-    @patch('organist_bot.scraper.requests.Session.get')
+    @patch("organist_bot.scraper.requests.Session.get")
     def test_fetch_success(self, mock_get):
         """Test successful fetch of HTML content."""
         mock_response = Mock()
@@ -115,7 +115,7 @@ class TestScraperFetch:
         assert result == "<html><body>Test</body></html>"
         mock_get.assert_called_once_with("https://example.com", timeout=10)
 
-    @patch('organist_bot.scraper.requests.Session.get')
+    @patch("organist_bot.scraper.requests.Session.get")
     def test_fetch_with_custom_timeout(self, mock_get):
         """Test fetch uses custom timeout."""
         mock_response = Mock()
@@ -128,7 +128,7 @@ class TestScraperFetch:
 
         mock_get.assert_called_once_with("https://example.com", timeout=30)
 
-    @patch('organist_bot.scraper.requests.Session.get')
+    @patch("organist_bot.scraper.requests.Session.get")
     def test_fetch_http_error(self, mock_get):
         """Test fetch handles HTTP errors with retry."""
         mock_get.side_effect = HTTPError("404 Not Found")
@@ -137,7 +137,7 @@ class TestScraperFetch:
         with pytest.raises(RetryError):
             scraper.fetch("https://example.com/notfound")
 
-    @patch('organist_bot.scraper.requests.Session.get')
+    @patch("organist_bot.scraper.requests.Session.get")
     def test_fetch_timeout_error(self, mock_get):
         """Test fetch handles timeout errors with retry."""
         mock_get.side_effect = Timeout("Connection timeout")
@@ -146,7 +146,7 @@ class TestScraperFetch:
         with pytest.raises(RetryError):
             scraper.fetch("https://example.com")
 
-    @patch('organist_bot.scraper.requests.Session.get')
+    @patch("organist_bot.scraper.requests.Session.get")
     def test_fetch_retry_then_success(self, mock_get):
         """Test fetch retries and eventually succeeds."""
         mock_response = Mock()
@@ -154,11 +154,7 @@ class TestScraperFetch:
         mock_response.raise_for_status = Mock()
 
         # Fail twice, then succeed
-        mock_get.side_effect = [
-            Timeout("timeout"),
-            RequestException("error"),
-            mock_response
-        ]
+        mock_get.side_effect = [Timeout("timeout"), RequestException("error"), mock_response]
 
         scraper = Scraper()
         result = scraper.fetch("https://example.com")
@@ -340,7 +336,7 @@ class TestScraperHelperMethods:
 
     def test_get_sibling_text_found(self):
         """Test _get_sibling_text when sibling exists."""
-        html = '<div><h3>Label:</h3><p>Value</p></div>'
+        html = "<div><h3>Label:</h3><p>Value</p></div>"
         soup = BeautifulSoup(html, "html.parser")
         element = soup.find("div")
 
@@ -349,7 +345,7 @@ class TestScraperHelperMethods:
 
     def test_get_sibling_text_not_found(self):
         """Test _get_sibling_text when label doesn't exist."""
-        html = '<div><h3>Other:</h3><p>Value</p></div>'
+        html = "<div><h3>Other:</h3><p>Value</p></div>"
         soup = BeautifulSoup(html, "html.parser")
         element = soup.find("div")
 
@@ -358,7 +354,7 @@ class TestScraperHelperMethods:
 
     def test_get_sibling_text_no_sibling(self):
         """Test _get_sibling_text when label exists but no sibling."""
-        html = '<div><h3>Label:</h3></div>'
+        html = "<div><h3>Label:</h3></div>"
         soup = BeautifulSoup(html, "html.parser")
         element = soup.find("div")
 
@@ -367,7 +363,7 @@ class TestScraperHelperMethods:
 
     def test_get_sibling_text_strips_whitespace(self):
         """Test _get_sibling_text strips whitespace."""
-        html = '<div><h3>Label:</h3><p>  Spaced  </p></div>'
+        html = "<div><h3>Label:</h3><p>  Spaced  </p></div>"
         soup = BeautifulSoup(html, "html.parser")
         element = soup.find("div")
 
@@ -430,7 +426,7 @@ class TestScraperIntegration:
         assert complete_gig["contact"] == "John Smith"
         assert complete_gig["email"] == "john@example.com"
 
-    @patch('organist_bot.scraper.requests.Session.get')
+    @patch("organist_bot.scraper.requests.Session.get")
     def test_workflow_with_mocked_fetch(self, mock_get):
         """Test workflow with mocked HTTP requests."""
         # Mock the fetch responses

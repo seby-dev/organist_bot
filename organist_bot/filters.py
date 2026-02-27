@@ -1,8 +1,11 @@
+import datetime
 import logging
 import re
-import datetime
-from typing import List, Optional, Callable, Any
+from collections.abc import Callable
+from typing import Any
+
 import googlemaps
+
 from organist_bot.models import Gig
 
 logger = logging.getLogger(__name__)
@@ -11,7 +14,8 @@ logger = logging.getLogger(__name__)
 # Parsing helpers (pure functions, no state)
 # ──────────────────────────────────────────────
 
-def parse_min_fee(fee_str: str) -> Optional[float]:
+
+def parse_min_fee(fee_str: str | None) -> float | None:
     """
     Extract the minimum numeric fee from a fee string.
     Examples:
@@ -39,7 +43,7 @@ def parse_min_fee(fee_str: str) -> Optional[float]:
         return None
 
 
-def parse_start_time(time_str: str) -> Optional[datetime.time]:
+def parse_start_time(time_str: str) -> datetime.time | None:
     """
     Extract the start time from a time string, returning a datetime.time.
     Accepts formats like "9:00 AM", "9am", "09:30 am".
@@ -75,7 +79,7 @@ def parse_start_time(time_str: str) -> Optional[datetime.time]:
     return None
 
 
-def parse_weekday(date_str: str) -> Optional[int]:
+def parse_weekday(date_str: str) -> int | None:
     """
     Try to determine the weekday from a date string.
     Returns an integer Monday=0 ... Sunday=6, or None if unknown.
@@ -87,9 +91,16 @@ def parse_weekday(date_str: str) -> Optional[int]:
     s = re.sub(r"\b(\d{1,2})(st|nd|rd|th)\b", r"\1", s, flags=re.IGNORECASE)
 
     fmts = [
-        "%A, %B %d, %Y", "%A %B %d, %Y", "%A, %d %B %Y", "%A %d %B %Y",
-        "%a, %b %d, %Y", "%a %b %d, %Y", "%a, %d %b %Y", "%a %d %b %Y",
-        "%A %d %B, %Y", "%A, %B %d %Y",
+        "%A, %B %d, %Y",
+        "%A %B %d, %Y",
+        "%A, %d %B %Y",
+        "%A %d %B %Y",
+        "%a, %b %d, %Y",
+        "%a %b %d, %Y",
+        "%a, %d %b %Y",
+        "%a %d %b %Y",
+        "%A %d %B, %Y",
+        "%A, %B %d %Y",
     ]
     for fmt in fmts:
         try:
@@ -105,7 +116,7 @@ def parse_weekday(date_str: str) -> Optional[int]:
     return None
 
 
-def normalize_to_yyyymmdd(date_str: str) -> Optional[str]:
+def normalize_to_yyyymmdd(date_str: str) -> str | None:
     """
     Attempt to parse a human-readable date string into YYYYMMDD format.
     Returns the formatted string or None if parsing fails.
@@ -117,9 +128,19 @@ def normalize_to_yyyymmdd(date_str: str) -> Optional[str]:
     s2 = re.sub(r"\b(\d{1,2})(st|nd|rd|th)\b", r"\1", s, flags=re.IGNORECASE)
 
     fmts = [
-        "%A, %B %d, %Y", "%A %B %d, %Y", "%A, %d %B %Y", "%A %d %B %Y",
-        "%a, %b %d, %Y", "%a %b %d, %Y", "%a, %d %b %Y", "%a %d %b %Y",
-        "%d %B %Y", "%d %b %Y", "%B %d, %Y", "%b %d, %Y", "%Y-%m-%d",
+        "%A, %B %d, %Y",
+        "%A %B %d, %Y",
+        "%A, %d %B %Y",
+        "%A %d %B %Y",
+        "%a, %b %d, %Y",
+        "%a %b %d, %Y",
+        "%a, %d %b %Y",
+        "%a %d %b %Y",
+        "%d %B %Y",
+        "%d %b %Y",
+        "%B %d, %Y",
+        "%b %d, %Y",
+        "%Y-%m-%d",
     ]
     for fmt in fmts:
         try:
@@ -147,6 +168,7 @@ def normalize_to_yyyymmdd(date_str: str) -> Optional[str]:
 # ──────────────────────────────────────────────
 # Individual filter callables
 # ──────────────────────────────────────────────
+
 
 class FeeFilter:
     """Reject gigs whose minimum fee is below the required threshold.
@@ -203,7 +225,7 @@ class SundayTimeFilter:
 class BlacklistFilter:
     """Reject gigs whose contact email is in a blacklist."""
 
-    def __init__(self, blacklist_emails: List[str]):
+    def __init__(self, blacklist_emails: list[str]):
         self.blacklist_emails = {e.lower().strip() for e in blacklist_emails}
 
     def __call__(self, gig: Gig) -> bool:
@@ -219,7 +241,7 @@ class BlacklistFilter:
 class BookedDateFilter:
     """Reject gigs that fall on already-booked dates (YYYYMMDD strings)."""
 
-    def __init__(self, booked_dates: List[str]):
+    def __init__(self, booked_dates: list[str]):
         self.booked_dates = set(booked_dates)
 
     def __call__(self, gig: Gig) -> bool:
@@ -263,11 +285,11 @@ class PostcodeFilter:
         home_postcode: str,
         api_key: str,
         max_minutes: int = 45,
-        _client=None,          # injectable for testing — pass a mock here
+        _client=None,  # injectable for testing — pass a mock here
     ):
         self.home_postcode = home_postcode
-        self.max_minutes   = max_minutes
-        self._client       = _client or googlemaps.Client(key=api_key)
+        self.max_minutes = max_minutes
+        self._client = _client or googlemaps.Client(key=api_key)
         self._cache: dict[str, dict[str, int | None]] = {}
 
     def __call__(self, gig: Gig) -> bool:
@@ -299,22 +321,22 @@ class PostcodeFilter:
             logger.info(
                 "PostcodeFilter: gig rejected — too far",
                 extra={
-                    "header":       gig.header,
+                    "header": gig.header,
                     "organisation": gig.organisation,
-                    "date":         gig.date,
-                    "fee":          gig.fee,
-                    "locality":     gig.locality,
-                    "postcode":     gig.postcode,
-                    "times_min":    times,
-                    "max_minutes":  self.max_minutes,
+                    "date": gig.date,
+                    "fee": gig.fee,
+                    "locality": gig.locality,
+                    "postcode": gig.postcode,
+                    "times_min": times,
+                    "max_minutes": self.max_minutes,
                 },
             )
         else:
             logger.debug(
                 "PostcodeFilter: gig passed",
                 extra={
-                    "header":    gig.header,
-                    "postcode":  gig.postcode,
+                    "header": gig.header,
+                    "postcode": gig.postcode,
                     "times_min": times,
                 },
             )
@@ -323,9 +345,7 @@ class PostcodeFilter:
     def _travel_times(self, postcode: str) -> dict[str, int | None]:
         """Return cached travel times (minutes) for each mode, querying if needed."""
         if postcode not in self._cache:
-            self._cache[postcode] = {
-                mode: self._query(postcode, mode) for mode in self.MODES
-            }
+            self._cache[postcode] = {mode: self._query(postcode, mode) for mode in self.MODES}
         return self._cache[postcode]
 
     def _query(self, postcode: str, mode: str) -> int | None:
@@ -335,7 +355,7 @@ class PostcodeFilter:
         unavailable or the request fails.
         """
         try:
-            result  = self._client.distance_matrix(
+            result = self._client.distance_matrix(
                 origins=[postcode],
                 destinations=[self.home_postcode],
                 mode=mode,
@@ -350,7 +370,7 @@ class PostcodeFilter:
                 )
                 return None
 
-            return element["duration"]["value"] // 60   # seconds → whole minutes
+            return element["duration"]["value"] // 60  # seconds → whole minutes
 
         except Exception as exc:
             logger.warning(
@@ -365,6 +385,7 @@ class PostcodeFilter:
 
 class SeenFilter:
     """Reject gigs that have already been seen by the bot."""
+
     def __init__(self, seen_gigs: set[str]):
         self.seen_gigs = seen_gigs
 
@@ -406,9 +427,11 @@ class CalendarFilter:
     def __repr__(self):
         return "CalendarFilter()"
 
+
 # ──────────────────────────────────────────────
 # Composable filter chain
 # ──────────────────────────────────────────────
+
 
 class GigFilterChain:
     """Composable chain of gig filters.
@@ -429,7 +452,7 @@ class GigFilterChain:
     """
 
     def __init__(self):
-        self._filters: List[Callable[[Any], bool]] = []
+        self._filters: list[Callable[[Any], bool]] = []
 
     def add(self, filter_fn: Callable[[Any], bool]) -> "GigFilterChain":
         """Add a filter to the chain. Returns self for fluent chaining."""
@@ -449,25 +472,25 @@ class GigFilterChain:
                     extra={
                         "filter": repr(f),
                         "header": gig.header,
-                        "date":   gig.date,
-                        "fee":    gig.fee,
-                        "org":    gig.organisation,
+                        "date": gig.date,
+                        "fee": gig.fee,
+                        "org": gig.organisation,
                     },
                 )
                 return False
         return True
 
-    def apply(self, gigs: List[Gig]) -> List[Gig]:
+    def apply(self, gigs: list[Gig]) -> list[Gig]:
         """Return only the gigs that pass all filters."""
-        valid    = [gig for gig in gigs if self.is_valid(gig)]
+        valid = [gig for gig in gigs if self.is_valid(gig)]
         rejected = len(gigs) - len(valid)
         logger.info(
             "Filter chain applied",
             extra={
                 "total_in": len(gigs),
-                "passed":   len(valid),
+                "passed": len(valid),
                 "rejected": rejected,
-                "filters":  [repr(f) for f in self._filters],
+                "filters": [repr(f) for f in self._filters],
             },
         )
         return valid

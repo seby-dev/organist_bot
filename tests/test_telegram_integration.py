@@ -2,13 +2,14 @@
 """Tests for the Telegram bot message handler."""
 
 from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
 
 from organist_bot.integrations.telegram_bot import _is_authorised, handle_message
 from organist_bot.models import Gig
 
-
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
 
 def _make_update(chat_id: int = 7973955362, text: str = "") -> MagicMock:
     update = MagicMock()
@@ -34,6 +35,7 @@ def _make_gig(**overrides) -> Gig:
 
 # ── _is_authorised ────────────────────────────────────────────────────────────
 
+
 class TestIsAuthorised:
     def test_authorised_chat_id(self):
         update = _make_update(chat_id=7973955362)
@@ -56,6 +58,7 @@ class TestIsAuthorised:
 
 
 # ── handle_message ────────────────────────────────────────────────────────────
+
 
 class TestHandleMessage:
     @pytest.fixture(autouse=True)
@@ -83,16 +86,24 @@ class TestHandleMessage:
         update = _make_update(text=f"Please add this: {url}")
         gig = _make_gig()
 
-        with patch("organist_bot.integrations.telegram_bot.Scraper") as MockScraper, \
-             patch("organist_bot.integrations.telegram_bot.GoogleCalendarClient") as MockCal, \
-             patch("organist_bot.integrations.telegram_bot.normalize_to_yyyymmdd", return_value="20260301"):
-
+        with (
+            patch("organist_bot.integrations.telegram_bot.Scraper") as MockScraper,
+            patch("organist_bot.integrations.telegram_bot.GoogleCalendarClient") as MockCal,
+            patch(
+                "organist_bot.integrations.telegram_bot.normalize_to_yyyymmdd",
+                return_value="20260301",
+            ),
+        ):
             scraper_inst = MockScraper.return_value.__enter__.return_value
             scraper_inst.fetch.return_value = "<html></html>"
             scraper_inst.extract_basic_from_detail.return_value = {
-                "header": gig.header, "organisation": gig.organisation,
-                "locality": gig.locality, "date": gig.date, "time": gig.time,
-                "fee": gig.fee, "link": gig.link,
+                "header": gig.header,
+                "organisation": gig.organisation,
+                "locality": gig.locality,
+                "date": gig.date,
+                "time": gig.time,
+                "fee": gig.fee,
+                "link": gig.link,
             }
             scraper_inst.extract_full_details.return_value = {}
 
@@ -111,16 +122,24 @@ class TestHandleMessage:
         update = _make_update(text=url)
         gig = _make_gig()
 
-        with patch("organist_bot.integrations.telegram_bot.Scraper") as MockScraper, \
-             patch("organist_bot.integrations.telegram_bot.GoogleCalendarClient") as MockCal, \
-             patch("organist_bot.integrations.telegram_bot.normalize_to_yyyymmdd", return_value="20260301"):
-
+        with (
+            patch("organist_bot.integrations.telegram_bot.Scraper") as MockScraper,
+            patch("organist_bot.integrations.telegram_bot.GoogleCalendarClient") as MockCal,
+            patch(
+                "organist_bot.integrations.telegram_bot.normalize_to_yyyymmdd",
+                return_value="20260301",
+            ),
+        ):
             scraper_inst = MockScraper.return_value.__enter__.return_value
             scraper_inst.fetch.return_value = "<html></html>"
             scraper_inst.extract_basic_from_detail.return_value = {
-                "header": gig.header, "organisation": gig.organisation,
-                "locality": gig.locality, "date": gig.date, "time": gig.time,
-                "fee": gig.fee, "link": gig.link,
+                "header": gig.header,
+                "organisation": gig.organisation,
+                "locality": gig.locality,
+                "date": gig.date,
+                "time": gig.time,
+                "fee": gig.fee,
+                "link": gig.link,
             }
             scraper_inst.extract_full_details.return_value = {}
 
@@ -138,16 +157,24 @@ class TestHandleMessage:
         update = _make_update(text=url)
         gig = _make_gig(date="unparseable date", time="??")
 
-        with patch("organist_bot.integrations.telegram_bot.Scraper") as MockScraper, \
-             patch("organist_bot.integrations.telegram_bot.GoogleCalendarClient") as MockCal, \
-             patch("organist_bot.integrations.telegram_bot.normalize_to_yyyymmdd", return_value="20260301"):
-
+        with (
+            patch("organist_bot.integrations.telegram_bot.Scraper") as MockScraper,
+            patch("organist_bot.integrations.telegram_bot.GoogleCalendarClient") as MockCal,
+            patch(
+                "organist_bot.integrations.telegram_bot.normalize_to_yyyymmdd",
+                return_value="20260301",
+            ),
+        ):
             scraper_inst = MockScraper.return_value.__enter__.return_value
             scraper_inst.fetch.return_value = "<html></html>"
             scraper_inst.extract_basic_from_detail.return_value = {
-                "header": gig.header, "organisation": gig.organisation,
-                "locality": gig.locality, "date": gig.date, "time": gig.time,
-                "fee": gig.fee, "link": gig.link,
+                "header": gig.header,
+                "organisation": gig.organisation,
+                "locality": gig.locality,
+                "date": gig.date,
+                "time": gig.time,
+                "fee": gig.fee,
+                "link": gig.link,
             }
             scraper_inst.extract_full_details.return_value = {}
 
@@ -165,7 +192,9 @@ class TestHandleMessage:
         update = _make_update(text=url)
 
         with patch("organist_bot.integrations.telegram_bot.Scraper") as MockScraper:
-            MockScraper.return_value.__enter__.return_value.fetch.side_effect = RuntimeError("network down")
+            MockScraper.return_value.__enter__.return_value.fetch.side_effect = RuntimeError(
+                "network down"
+            )
             await handle_message(update, MagicMock())
 
         reply = update.message.reply_text.call_args_list[-1][0][0]

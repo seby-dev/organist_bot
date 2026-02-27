@@ -1,16 +1,23 @@
 import logging
 import time
 import uuid
-import schedule
-import requests as _requests
 
-from organist_bot.integrations.calendar_client import GoogleCalendarClient
+import requests as _requests
+import schedule
+
 from organist_bot.config import settings
 from organist_bot.filters import (
-    BlacklistFilter, BookedDateFilter, CalendarFilter, FeeFilter,
-    GigFilterChain, PostcodeFilter, SeenFilter, SundayTimeFilter,
+    BlacklistFilter,
+    BookedDateFilter,
+    CalendarFilter,
+    FeeFilter,
+    GigFilterChain,
+    PostcodeFilter,
+    SeenFilter,
+    SundayTimeFilter,
 )
-from organist_bot.logging_config import setup_logging, set_run_id
+from organist_bot.integrations.calendar_client import GoogleCalendarClient
+from organist_bot.logging_config import set_run_id, setup_logging
 from organist_bot.models import Gig
 from organist_bot.notifier import Notifier, SMTPTransport
 from organist_bot.scraper import Scraper
@@ -44,9 +51,9 @@ def main(scraper: Scraper) -> None:
     logger.info(
         "OrganistBot run started",
         extra={
-            "run_id":       run_id,
-            "target_url":   settings.target_url,
-            "min_fee":      settings.min_fee,
+            "run_id": run_id,
+            "target_url": settings.target_url,
+            "min_fee": settings.min_fee,
             "poll_minutes": settings.poll_minutes,
         },
     )
@@ -74,7 +81,11 @@ def main(scraper: Scraper) -> None:
         pre_filter.add(SundayTimeFilter())
     if settings.enable_booked_date_filter:
         pre_filter.add(BookedDateFilter(settings.booked_dates))
-    if settings.enable_calendar_filter and settings.google_calendar_id and settings.google_calendar_credentials_file:
+    if (
+        settings.enable_calendar_filter
+        and settings.google_calendar_id
+        and settings.google_calendar_credentials_file
+    ):
         cal_client = GoogleCalendarClient(
             credentials_file=settings.google_calendar_credentials_file,
             calendar_id=settings.google_calendar_id,
@@ -83,9 +94,11 @@ def main(scraper: Scraper) -> None:
     elif not settings.enable_calendar_filter:
         logger.info("CalendarFilter disabled")
     else:
-        logger.info("CalendarFilter disabled — google_calendar_id or google_calendar_credentials_file not set")
+        logger.info(
+            "CalendarFilter disabled — google_calendar_id or google_calendar_credentials_file not set"
+        )
 
-    gigs_div: list         = []
+    gigs_div: list = []
     pre_filter_passed: int = 0
 
     response = scraper.fetch(settings.target_url)
@@ -107,7 +120,11 @@ def main(scraper: Scraper) -> None:
             pre_filter_passed += 1
 
             # Passed all cheap filters — now fetch the detail page.
-            extra = scraper.extract_full_details(scraper.fetch(basic["link"])) if basic.get("link") else {}
+            extra = (
+                scraper.extract_full_details(scraper.fetch(basic["link"]))
+                if basic.get("link")
+                else {}
+            )
             gig_list.append(Gig(**{**basic, **extra}))
         except Exception:
             gig_errors += 1
@@ -119,11 +136,11 @@ def main(scraper: Scraper) -> None:
     logger.info(
         "Scraping complete",
         extra={
-            "listed":             len(gigs_div),
-            "pre_filter_passed":  pre_filter_passed,
-            "scraped":            len(gig_list),
-            "gig_errors":         gig_errors,
-            "elapsed_ms":         int((time.perf_counter() - t0) * 1000),
+            "listed": len(gigs_div),
+            "pre_filter_passed": pre_filter_passed,
+            "scraped": len(gig_list),
+            "gig_errors": gig_errors,
+            "elapsed_ms": int((time.perf_counter() - t0) * 1000),
         },
     )
 
@@ -159,11 +176,13 @@ def main(scraper: Scraper) -> None:
         logger.info("SeenFilter disabled")
 
     if settings.enable_postcode_filter and settings.home_postcode and settings.google_maps_api_key:
-        filter_chain.add(PostcodeFilter(
-            home_postcode=settings.home_postcode,
-            api_key=settings.google_maps_api_key,
-            max_minutes=settings.max_travel_minutes,
-        ))
+        filter_chain.add(
+            PostcodeFilter(
+                home_postcode=settings.home_postcode,
+                api_key=settings.google_maps_api_key,
+                max_minutes=settings.max_travel_minutes,
+            )
+        )
     elif not settings.enable_postcode_filter:
         logger.info("PostcodeFilter disabled")
     else:
@@ -174,8 +193,8 @@ def main(scraper: Scraper) -> None:
     logger.info(
         "Filtering complete",
         extra={
-            "total_in":   len(gig_list),
-            "valid":      len(valid_gigs),
+            "total_in": len(gig_list),
+            "valid": len(valid_gigs),
             "elapsed_ms": int((time.perf_counter() - t0) * 1000),
         },
     )
@@ -186,7 +205,7 @@ def main(scraper: Scraper) -> None:
         t0 = time.perf_counter()
 
         transport = SMTPTransport(password=settings.email_password)
-        notifier  = Notifier(settings, transport)
+        notifier = Notifier(settings, transport)
         notifier.send_summary(valid_gigs)
         for gig in valid_gigs:
             notifier.apply_to_gig(gig)
@@ -194,7 +213,7 @@ def main(scraper: Scraper) -> None:
         logger.info(
             "Notifications sent",
             extra={
-                "gig_count":  len(valid_gigs),
+                "gig_count": len(valid_gigs),
                 "elapsed_ms": int((time.perf_counter() - t0) * 1000),
             },
         )
@@ -206,10 +225,10 @@ def main(scraper: Scraper) -> None:
     logger.info(
         "Run summary",
         extra={
-            "run_id":     run_id,
-            "scraped":    len(gig_list),
-            "valid":      len(valid_gigs),
-            "notified":   len(valid_gigs),
+            "run_id": run_id,
+            "scraped": len(gig_list),
+            "valid": len(valid_gigs),
+            "notified": len(valid_gigs),
             "gig_errors": gig_errors,
             "elapsed_ms": int((time.perf_counter() - run_start) * 1000),
         },

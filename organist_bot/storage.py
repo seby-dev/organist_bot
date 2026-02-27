@@ -1,11 +1,13 @@
 # organist_bot/storage.py
 
 import csv
-from pathlib import Path
 import logging
+from pathlib import Path
+
 logger = logging.getLogger(__name__)
 
-def load_seen_gigs(filepath: str = 'data/seen_gigs.csv') -> set[str]:
+
+def load_seen_gigs(filepath: str = "data/seen_gigs.csv") -> set[str]:
     path = Path(filepath)
     if not path.exists():
         logger.info(
@@ -16,7 +18,7 @@ def load_seen_gigs(filepath: str = 'data/seen_gigs.csv') -> set[str]:
 
     try:
         seen = set()
-        with path.open(newline='') as fh:
+        with path.open(newline="") as fh:
             reader = csv.reader(fh)
             for row in reader:
                 if row:
@@ -35,11 +37,11 @@ def load_seen_gigs(filepath: str = 'data/seen_gigs.csv') -> set[str]:
         return set()
 
 
-def save_seen_gigs(seen: set[str], filepath: str = 'data/seen_gigs.csv') -> None:
+def save_seen_gigs(seen: set[str], filepath: str = "data/seen_gigs.csv") -> None:
     path = Path(filepath)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open('w', newline='') as fh:
+        with path.open("w", newline="") as fh:
             writer = csv.writer(fh)
             for link in sorted(seen):
                 writer.writerow([link])

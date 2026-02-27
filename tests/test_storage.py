@@ -1,18 +1,15 @@
 # tests/test_storage.py
 
 import csv
-import pytest
-from pathlib import Path
 
 from organist_bot.storage import load_seen_gigs, save_seen_gigs
-
 
 # ─────────────────────────────────────────────────────────
 # load_seen_gigs
 # ─────────────────────────────────────────────────────────
 
-class TestLoadSeenGigs:
 
+class TestLoadSeenGigs:
     def test_returns_empty_set_when_file_missing(self, tmp_path):
         """No file → empty set, no exception raised."""
         result = load_seen_gigs(str(tmp_path / "nonexistent.csv"))
@@ -40,9 +37,7 @@ class TestLoadSeenGigs:
         """Multiple rows are all loaded into the set."""
         p = tmp_path / "seen.csv"
         p.write_text(
-            "https://example.com/gig/1\n"
-            "https://example.com/gig/2\n"
-            "https://example.com/gig/3\n"
+            "https://example.com/gig/1\nhttps://example.com/gig/2\nhttps://example.com/gig/3\n"
         )
         assert load_seen_gigs(str(p)) == {
             "https://example.com/gig/1",
@@ -53,12 +48,7 @@ class TestLoadSeenGigs:
     def test_blank_rows_are_skipped(self, tmp_path):
         """Empty rows in the CSV do not produce empty-string entries."""
         p = tmp_path / "seen.csv"
-        p.write_text(
-            "https://example.com/gig/1\n"
-            "\n"
-            "https://example.com/gig/2\n"
-            "\n"
-        )
+        p.write_text("https://example.com/gig/1\n\nhttps://example.com/gig/2\n\n")
         result = load_seen_gigs(str(p))
         assert "" not in result
         assert result == {"https://example.com/gig/1", "https://example.com/gig/2"}
@@ -66,10 +56,7 @@ class TestLoadSeenGigs:
     def test_duplicate_entries_deduplicated_by_set(self, tmp_path):
         """Duplicate rows collapse into a single set member."""
         p = tmp_path / "seen.csv"
-        p.write_text(
-            "https://example.com/gig/1\n"
-            "https://example.com/gig/1\n"
-        )
+        p.write_text("https://example.com/gig/1\nhttps://example.com/gig/1\n")
         result = load_seen_gigs(str(p))
         assert result == {"https://example.com/gig/1"}
         assert len(result) == 1
@@ -105,8 +92,8 @@ class TestLoadSeenGigs:
 # save_seen_gigs
 # ─────────────────────────────────────────────────────────
 
-class TestSaveSeenGigs:
 
+class TestSaveSeenGigs:
     def test_creates_file_when_absent(self, tmp_path):
         """Saving creates the CSV file if it does not exist yet."""
         p = tmp_path / "seen.csv"
@@ -179,8 +166,8 @@ class TestSaveSeenGigs:
 # Round-trip
 # ─────────────────────────────────────────────────────────
 
-class TestRoundTrip:
 
+class TestRoundTrip:
     def test_save_then_load_returns_same_set(self, tmp_path):
         """Whatever is saved can be loaded back identically."""
         p = tmp_path / "seen.csv"
