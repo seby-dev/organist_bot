@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>New Organ Gigs</title>
+</head>
+
+{#
+  ╔══════════════════════════════════════════════════════════════╗
+  ║  EMERALD MANUSCRIPT                                         ║
+  ║  Colour palette                                             ║
+  ║    #022C22  — near-black forest (footer)                    ║
+  ║    #064E3B  — deep emerald (header, dark badges)            ║
+  ║    #047857  — medium emerald (time badge)                   ║
+  ║    #10B981  — bright emerald (card accent border)           ║
+  ║    #34D399  — light emerald (footer text)                   ║
+  ║    #6EE7B7  — mint (header sub-text)                        ║
+  ║    #A7F3D0  — pale mint (badge text)                        ║
+  ║    #D1FAE5  — whisper mint (card borders, section bg)       ║
+  ║    #ECFDF5  — near-white mint (page background)             ║
+  ║    #D4AF37  — antique gold (CTA button, fee badge, rule)    ║
+  ║    #B8962E  — deeper gold (gold accents)                    ║
+  ╚══════════════════════════════════════════════════════════════╝
+#}
+
+<body style="margin:0; padding:0; background-color:#ECFDF5; font-family:Georgia,'Times New Roman',serif;">
+
+{# ── Page wrapper ──────────────────────────────────────────────────────────── #}
+<table width="100%" cellpadding="0" cellspacing="0" style="background-color:#ECFDF5; padding:36px 16px;">
+  <tr>
+    <td align="center">
+      <table width="600" cellpadding="0" cellspacing="0" style="max-width:600px; width:100%;">
+
+
+        {# ════════════════════════════════════════════════════════════════════ #}
+        {# HEADER                                                              #}
+        {# ════════════════════════════════════════════════════════════════════ #}
+        <tr>
+          <td style="background-color:#064E3B; border-radius:16px 16px 0 0; padding:44px 48px 36px; text-align:center;">
+
+            {# Ornament: gold music stars #}
+            <p style="margin:0 0 14px; color:#D4AF37; font-size:18px; letter-spacing:10px; line-height:1;">
+              ✦&nbsp;♪&nbsp;✦
+            </p>
+
+            {# Wordmark #}
+            <p style="margin:0 0 8px; color:#6EE7B7; font-size:10px; letter-spacing:6px; text-transform:uppercase; font-family:Arial,sans-serif; font-weight:700;">
+              OrganistBot
+            </p>
+
+            {# Title #}
+            <h1 style="margin:0 0 22px; color:#FFFFFF; font-size:30px; font-weight:normal; letter-spacing:-0.5px; line-height:1.25;">
+              New Organ Gigs Found
+            </h1>
+
+            {# Gold rule #}
+            <table cellpadding="0" cellspacing="0" align="center" style="margin:0 auto 22px;">
+              <tr>
+                <td width="24" style="background-color:#B8962E; height:1px; font-size:0; line-height:0;">&nbsp;</td>
+                <td width="8">&nbsp;</td>
+                <td width="8" height="8" style="background-color:#D4AF37; border-radius:50%; font-size:0; line-height:0;">&nbsp;</td>
+                <td width="8">&nbsp;</td>
+                <td width="24" style="background-color:#B8962E; height:1px; font-size:0; line-height:0;">&nbsp;</td>
+              </tr>
+            </table>
+
+            {# Count badge #}
+            <span style="display:inline-block; background-color:#D4AF37; color:#064E3B; font-size:12px; font-weight:700; font-family:Arial,sans-serif; padding:6px 22px; border-radius:20px; letter-spacing:0.8px; text-transform:uppercase;">
+              {{ gigs | length }} Gig{% if gigs | length != 1 %}s{% endif %} Matched
+            </span>
+
+          </td>
+        </tr>
+
+        {# Gold accent bar beneath header #}
+        <tr>
+          <td style="background-color:#D4AF37; height:3px; font-size:0; line-height:0;">&nbsp;</td>
+        </tr>
+
+
+        {# ════════════════════════════════════════════════════════════════════ #}
+        {# GIG CARDS                                                           #}
+        {# ════════════════════════════════════════════════════════════════════ #}
+        {% for gig in gigs %}
+
+        {# ── Card ── #}
+        <tr>
+          <td style="background-color:#FFFFFF; padding:0; border-left:4px solid #10B981; border-right:1px solid #D1FAE5; border-bottom:1px solid #D1FAE5;">
+            <table width="100%" cellpadding="0" cellspacing="0">
+              <tr>
+                <td style="padding:30px 36px;">
+
+                  {# ── Card number chip + gig title ─────────────────────────── #}
+                  <table cellpadding="0" cellspacing="0" style="margin-bottom:4px;">
+                    <tr>
+                      <td style="vertical-align:middle; padding-right:10px;">
+                        <span style="display:inline-block; background-color:#064E3B; color:#A7F3D0; font-size:9px; font-family:Arial,sans-serif; font-weight:700; padding:3px 8px; border-radius:3px; letter-spacing:1px;">
+                          #{{ "%02d" | format(loop.index) }}
+                        </span>
+                      </td>
+                      <td style="vertical-align:middle;">
+                        <h2 style="margin:0; font-size:19px; color:#064E3B; font-weight:bold; letter-spacing:-0.2px; line-height:1.3;">
+                          {{ gig.header }}
+                        </h2>
+                      </td>
+                    </tr>
+                  </table>
+
+                  {# Organisation · Locality #}
+                  <p style="margin:0 0 22px 0; font-size:13px; color:#6B7280; font-family:Arial,sans-serif; padding-left:38px;">
+                    {{ gig.organisation or "—" }}{% if gig.locality %}&ensp;<span style="color:#10B981;">✦</span>&ensp;{{ gig.locality }}{% endif %}
+                  </p>
+
+                  {# ── Key info panel: date · time · fee ───────────────────── #}
+                  {% if gig.date or gig.time or gig.fee %}
+                  <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:24px; border-radius:8px; overflow:hidden;">
+                    <tr>
+
+                      {# DATE column #}
+                      {% if gig.date %}
+                      <td style="background-color:#064E3B; padding:16px 10px; text-align:center; vertical-align:top; {% if gig.time or gig.fee %}border-right:2px solid #ECFDF5;{% endif %}">
+                        <p style="margin:0 0 5px; font-size:9px; color:#6EE7B7; font-family:Arial,sans-serif; font-weight:700; text-transform:uppercase; letter-spacing:1.5px;">
+                          Date
+                        </p>
+                        <p style="margin:0 0 6px; font-size:20px; line-height:1;">&#128197;</p>
+                        <p style="margin:0; font-size:12px; color:#FFFFFF; font-family:Arial,sans-serif; font-weight:700; line-height:1.5;">
+                          {{ gig.date }}
+                        </p>
+                      </td>
+                      {% endif %}
+
+                      {# TIME column #}
+                      {% if gig.time %}
+                      <td style="background-color:#047857; padding:16px 10px; text-align:center; vertical-align:top; {% if gig.fee %}border-right:2px solid #ECFDF5;{% endif %}">
+                        <p style="margin:0 0 5px; font-size:9px; color:#A7F3D0; font-family:Arial,sans-serif; font-weight:700; text-transform:uppercase; letter-spacing:1.5px;">
+                          Time
+                        </p>
+                        <p style="margin:0 0 6px; font-size:20px; line-height:1;">&#128336;</p>
+                        <p style="margin:0; font-size:14px; color:#FFFFFF; font-family:Arial,sans-serif; font-weight:700; line-height:1.5;">
+                          {{ gig.time }}
+                        </p>
+                      </td>
+                      {% endif %}
+
+                      {# FEE column — gold, largest value text #}
+                      {% if gig.fee %}
+                      <td style="background-color:#D4AF37; padding:16px 10px; text-align:center; vertical-align:top;">
+                        <p style="margin:0 0 5px; font-size:9px; color:#92650A; font-family:Arial,sans-serif; font-weight:700; text-transform:uppercase; letter-spacing:1.5px;">
+                          Fee
+                        </p>
+                        <p style="margin:0 0 4px; font-size:20px; line-height:1;">&#128183;</p>
+                        <p style="margin:0; font-size:16px; color:#064E3B; font-family:Arial,sans-serif; font-weight:700; line-height:1.5;">
+                          {{ gig.fee }}
+                        </p>
+                      </td>
+                      {% endif %}
+
+                    </tr>
+                  </table>
+                  {% endif %}
+
+                  {# ── Contact details (mint panel) ─────────────────────────── #}
+                  {% if gig.contact or gig.email or gig.phone or gig.address or gig.postcode or gig.musical_requirements %}
+                  <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:26px; background-color:#F0FDF4; border-radius:8px; border:1px solid #D1FAE5;">
+                    <tr>
+                      <td style="padding:16px 20px;">
+                        <table width="100%" cellpadding="0" cellspacing="0">
+
+                          {% if gig.contact %}
+                          <tr>
+                            <td style="font-size:10px; color:#047857; font-family:Arial,sans-serif; font-weight:700; text-transform:uppercase; letter-spacing:1px; padding:4px 0; width:116px; vertical-align:top;">
+                              Contact
+                            </td>
+                            <td style="font-size:13px; color:#1F2937; font-family:Arial,sans-serif; padding:4px 0;">
+                              {{ gig.contact }}
+                            </td>
+                          </tr>
+                          {% endif %}
+
+                          {% if gig.email %}
+                          <tr>
+                            <td style="font-size:10px; color:#047857; font-family:Arial,sans-serif; font-weight:700; text-transform:uppercase; letter-spacing:1px; padding:4px 0; vertical-align:top;">
+                              Email
+                            </td>
+                            <td style="font-size:13px; font-family:Arial,sans-serif; padding:4px 0;">
+                              <a href="mailto:{{ gig.email }}" style="color:#064E3B; text-decoration:underline;">{{ gig.email }}</a>
+                            </td>
+                          </tr>
+                          {% endif %}
+
+                          {% if gig.phone %}
+                          <tr>
+                            <td style="font-size:10px; color:#047857; font-family:Arial,sans-serif; font-weight:700; text-transform:uppercase; letter-spacing:1px; padding:4px 0;">
+                              Phone
+                            </td>
+                            <td style="font-size:13px; color:#1F2937; font-family:Arial,sans-serif; padding:4px 0;">
+                              {{ gig.phone }}
+                            </td>
+                          </tr>
+                          {% endif %}
+
+                          {% if gig.address or gig.postcode %}
+                          <tr>
+                            <td style="font-size:10px; color:#047857; font-family:Arial,sans-serif; font-weight:700; text-transform:uppercase; letter-spacing:1px; padding:4px 0; vertical-align:top;">
+                              Address
+                            </td>
+                            <td style="font-size:13px; color:#1F2937; font-family:Arial,sans-serif; padding:4px 0;">
+                              {{ gig.address or "" }}{% if gig.address and gig.postcode %},&nbsp;{% endif %}{{ gig.postcode or "" }}
+                            </td>
+                          </tr>
+                          {% endif %}
+
+                          {% if gig.musical_requirements %}
+                          <tr>
+                            <td style="font-size:10px; color:#047857; font-family:Arial,sans-serif; font-weight:700; text-transform:uppercase; letter-spacing:1px; padding:4px 0; vertical-align:top;">
+                              Music
+                            </td>
+                            <td style="font-size:13px; color:#1F2937; font-family:Arial,sans-serif; padding:4px 0; font-style:italic;">
+                              {{ gig.musical_requirements }}
+                            </td>
+                          </tr>
+                          {% endif %}
+
+                        </table>
+                      </td>
+                    </tr>
+                  </table>
+                  {% endif %}
+
+                  {# ── CTA button (centred) ──────────────────────────────────── #}
+                  {% if gig.link %}
+                  <table cellpadding="0" cellspacing="0" align="center" style="margin:0 auto;">
+                    <tr>
+                      <td style="border-radius:6px; background-color:#D4AF37;">
+                        <a href="{{ gig.link }}" style="display:inline-block; padding:11px 24px; font-size:12px; font-family:Arial,sans-serif; font-weight:700; color:#064E3B; text-decoration:none; border-radius:6px; letter-spacing:0.6px; text-transform:uppercase;">
+                          Open Listing &nbsp;&#8599;
+                        </a>
+                      </td>
+                    </tr>
+                  </table>
+                  {% endif %}
+
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+
+        {# ── Between-card ornamental separator ─────────────────────────────── #}
+        {% if not loop.last %}
+        <tr>
+          <td style="background-color:#ECFDF5; padding:10px 0; text-align:center;">
+            <table cellpadding="0" cellspacing="0" align="center">
+              <tr>
+                <td width="80" style="background-color:#A7F3D0; height:1px; font-size:0; line-height:0;">&nbsp;</td>
+                <td style="padding:0 14px; color:#10B981; font-size:14px; line-height:1; vertical-align:middle;">&nbsp;✦&nbsp;</td>
+                <td width="80" style="background-color:#A7F3D0; height:1px; font-size:0; line-height:0;">&nbsp;</td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+        {% endif %}
+
+        {% endfor %}
+
+        {# Gold accent bar above footer #}
+        <tr>
+          <td style="background-color:#D4AF37; height:3px; font-size:0; line-height:0;">&nbsp;</td>
+        </tr>
+
+
+        {# ════════════════════════════════════════════════════════════════════ #}
+        {# FOOTER                                                              #}
+        {# ════════════════════════════════════════════════════════════════════ #}
+        <tr>
+          <td style="background-color:#022C22; border-radius:0 0 16px 16px; padding:20px 48px; text-align:center;">
+            <p style="margin:0 0 4px; font-size:11px; color:#34D399; font-family:Arial,sans-serif; letter-spacing:0.4px;">
+              Sent automatically by&nbsp;<span style="color:#D4AF37; font-weight:700;">OrganistBot</span>
+              &ensp;<span style="color:#047857;">✦</span>&ensp;
+              <a href="https://organistsonline.org" style="color:#34D399; text-decoration:none;">organistsonline.org</a>
+            </p>
+          </td>
+        </tr>
+
+
+      </table>
+    </td>
+  </tr>
+</table>
+
+</body>
+</html>

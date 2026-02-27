@@ -1,0 +1,96 @@
+name: CI
+
+# ── Triggers ───────────────────────────────────────────────────────────────────
+# Run CI on every push to every branch, and on every PR targeting main.
+# This gives you feedback before merging without being limited to one branch.
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: [main]
+
+# ── Jobs ───────────────────────────────────────────────────────────────────────
+jobs:
+
+  # ── Job 1: Lint & type-check ──────────────────────────────────────────────────
+  # Kept separate from tests so the UI clearly distinguishes "lint failed" from
+  # "tests failed" — they point to different kinds of problems.
+  lint:
+    name: Lint & type-check
+    runs-on: ubuntu-latest
+
+    steps:
+      # Check out the repo onto the runner.
+      # The runner is a blank VM — without this, no files exist on it.
+      - uses: actions/checkout@v4
+
+      # Install the exact Python version the project requires.
+      # Pinning avoids surprises if ubuntu-latest upgrades its bundled Python.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Cache pip's download directory between runs.
+      # The cache key includes a checksum of requirements-dev.txt — if the file
+      # changes, the key changes and the cache is invalidated automatically.
+      # Without this, pip re-downloads the same packages on every run (~30s → ~3s).
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements-dev.txt') }}
+          restore-keys: ${{ runner.os }}-pip-
+
+      # Install dev dependencies (ruff, mypy, pytest, etc.)
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      # Ruff lint — checks for style violations, unused imports, and common
+      # Python anti-patterns. Configured in pyproject.toml [tool.ruff].
+      - name: Ruff lint
+        run: ruff check .
+
+      # Ruff format — verifies all files are correctly formatted.
+      # --check reports problems without modifying files (CI never edits files).
+      - name: Ruff format
+        run: ruff format --check .
+
+      # Mypy type-check — static analysis on the main package.
+      # Tests are excluded via pyproject.toml [tool.mypy] exclude = ["tests/"].
+      - name: Mypy
+        run: mypy organist_bot/
+
+
+  # ── Job 2: Tests ───────────────────────────────────────────────────────────────
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements-dev.txt') }}
+          restore-keys: ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      # Why these env vars?
+      # organist_bot/config.py runs `settings = Settings()` at import time.
+      # Pydantic-settings requires email_sender, email_password, and cc_email
+      # (no defaults). Without them, importing the module fails with a
+      # ValidationError before a single test runs.
+      # Tests mock `settings` internally so these dummy values are never used —
+      # they just satisfy the import-time validation.
+      - name: Run tests
+        env:
+          EMAIL_SENDER: ci@test.com
+          EMAIL_PASSWORD: ci-placeholder
+          CC_EMAIL: ci@test.com
+        run: pytest --tb=short -q

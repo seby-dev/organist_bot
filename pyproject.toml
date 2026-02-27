@@ -1,0 +1,58 @@
+[project]
+name            = "organist_bot"
+version         = "0.1.0"
+description     = "Automated organ gig scraper, filter, and notifier"
+requires-python = ">=3.12"
+dependencies = [
+    "pydantic-settings",
+    "beautifulsoup4>=4.12",
+    "requests>=2.31",
+    "python-dotenv>=1.0",
+    "schedule>=1.2",
+    "tenacity>=8.2",
+    "jinja2>=3.1",
+    "googlemaps>=4.10",
+    "google-api-python-client>=2.0",
+    "google-auth>=2.0",
+    "python-telegram-bot>=20.0",
+    "protobuf",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=9.0.2",
+    "pytest-mock>=3.14",
+    "pytest-asyncio>=0.23",
+    "mypy>=1.0",
+    "ruff>=0.4",
+    "types-requests",
+]
+
+# ── pytest ─────────────────────────────────────────────────────────────────────
+[tool.pytest.ini_options]
+testpaths       = ["tests"]
+asyncio_mode    = "auto"
+
+# ── ruff ───────────────────────────────────────────────────────────────────────
+[tool.ruff]
+line-length    = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select  = ["E", "F", "W", "I", "UP", "B"]
+ignore  = [
+    "E501",   # line too long — handled by formatter
+    "B008",   # do not perform function calls in default arguments
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101"]  # allow assert in tests
+
+# ── mypy ───────────────────────────────────────────────────────────────────────
+[tool.mypy]
+python_version         = "3.12"
+ignore_missing_imports = true
+warn_unused_ignores    = true
+warn_return_any        = false
+strict                 = false
+exclude                = ["tests/"]

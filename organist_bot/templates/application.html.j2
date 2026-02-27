@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html>
+<body>
+  <p>Dear {{ gig.contact or "Sir/Madam" }},</p>
+
+  <p>
+    I hope this email finds you well. My name is {{ applicant_name }}, and I am writing to express
+    my interest in the position of organist for the {{ gig.date }} service, as advertised on
+    organistonline.com.
+  </p>
+
+  <p>
+    I have played the keyboard for two decades. Additionally, I have acquired considerable
+    experience in the orthodox way of worship, owing to my Catholic background.
+  </p>
+
+  {% if applicant_video_1 or applicant_video_2 %}
+  <p>Please find below links to my videos showcasing my musical abilities:</p>
+  <ul>
+    {% if applicant_video_1 %}<li><a href="{{ applicant_video_1 }}">Video 1</a></li>{% endif %}
+    {% if applicant_video_2 %}<li><a href="{{ applicant_video_2 }}">Video 2</a></li>{% endif %}
+  </ul>
+  {% endif %}
+
+  <p>
+    Kind regards,<br/>
+    {{ applicant_name }}<br/>
+    Mobile: {{ applicant_mobile }}
+  </p>
+</body>
+</html>
