@@ -1,7 +1,7 @@
 # Runtime dependencies — install with: pip install -r requirements.txt
 protobuf
 pydantic-settings
-beautifulsoup4>=4.12
+beautifulsoup4>=4.13
 requests>=2.31
 python-dotenv>=1.0
 schedule>=1.2

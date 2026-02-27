@@ -169,7 +169,7 @@ class Scraper:
         if not anchor:
             return None
         try:
-            return settings.base_url + anchor["href"]
+            return settings.base_url + str(anchor["href"])
         except (KeyError, TypeError):
             logger.warning(
                 "Listing element has anchor with no href", extra={"booking": str(booking)[:120]}
@@ -185,7 +185,7 @@ class Scraper:
     @staticmethod
     def _get_sibling_text(detail_element: Tag, label: str) -> str | None:
         """Extract text from the sibling paragraph of a labeled heading."""
-        element = detail_element.find("h3", string=label)
+        element = detail_element.find("h3", string=label)  # type: ignore[call-overload]
         if element and element.find_next_sibling("p"):
             return element.find_next_sibling("p").get_text(strip=True)
         return None
