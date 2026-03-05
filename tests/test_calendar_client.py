@@ -142,3 +142,58 @@ class TestAddGig:
         client.add_gig(_make_gig())
         call_kwargs = mock_service.events().insert.call_args
         assert call_kwargs[1]["calendarId"] == "cal@test.com"
+
+
+# ── elapsed_ms logging ────────────────────────────────────────────────────────
+
+
+class TestElapsedMsLogging:
+    """Verify that both Calendar API methods emit elapsed_ms in their log records."""
+
+    def test_has_event_on_date_logs_elapsed_ms_on_success(self, client, mock_service, caplog):
+        """has_event_on_date() must include elapsed_ms in the 'Calendar check complete' DEBUG record."""
+        import logging
+
+        mock_service.events().list().execute.return_value = {"items": []}
+        with caplog.at_level(logging.DEBUG, logger="organist_bot.integrations.calendar_client"):
+            client.has_event_on_date("20260301")
+
+        record = next(
+            (r for r in caplog.records if r.message == "Calendar check complete"),
+            None,
+        )
+        assert record is not None, "Expected 'Calendar check complete' log record"
+        assert isinstance(record.elapsed_ms, int)
+        assert record.elapsed_ms >= 0
+
+    def test_has_event_on_date_logs_elapsed_ms_on_failure(self, client, mock_service, caplog):
+        """has_event_on_date() must include elapsed_ms in the WARNING record when the API fails."""
+        import logging
+
+        mock_service.events().list().execute.side_effect = Exception("quota exceeded")
+        with caplog.at_level(logging.WARNING, logger="organist_bot.integrations.calendar_client"):
+            client.has_event_on_date("20260301")
+
+        record = next(
+            (r for r in caplog.records if "Calendar check failed" in r.message),
+            None,
+        )
+        assert record is not None, "Expected 'Calendar check failed' log record"
+        assert isinstance(record.elapsed_ms, int)
+        assert record.elapsed_ms >= 0
+
+    def test_add_gig_logs_elapsed_ms_on_success(self, client, mock_service, caplog):
+        """add_gig() must include elapsed_ms in the 'Gig added to Google Calendar' INFO record."""
+        import logging
+
+        mock_service.events().insert().execute.return_value = {"id": "ev123"}
+        with caplog.at_level(logging.INFO, logger="organist_bot.integrations.calendar_client"):
+            client.add_gig(_make_gig())
+
+        record = next(
+            (r for r in caplog.records if r.message == "Gig added to Google Calendar"),
+            None,
+        )
+        assert record is not None, "Expected 'Gig added to Google Calendar' log record"
+        assert isinstance(record.elapsed_ms, int)
+        assert record.elapsed_ms >= 0

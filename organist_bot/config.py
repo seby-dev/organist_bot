@@ -30,6 +30,10 @@ class Settings(BaseSettings):
     google_calendar_id: str = ""
     google_calendar_credentials_file: str = ""
 
+    # ── Google Sheets (run log) ───────────────────────────────────────────────
+    google_sheets_id: str = ""
+    google_sheets_credentials_file: str = ""  # falls back to google_calendar_credentials_file
+
     # ── Telegram bot ──────────────────────────────────────────────────────────
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""

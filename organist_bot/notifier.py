@@ -1,5 +1,6 @@
 import logging
 import smtplib
+import time
 from email.mime.text import MIMEText
 from pathlib import Path
 from typing import Protocol, runtime_checkable
@@ -122,14 +123,27 @@ class Notifier:
                 "body_bytes": len(body.encode()),
             },
         )
+        t0 = time.perf_counter()
         try:
             self._transport.send(self._settings.email_sender, recipients, msg.as_string())
         except Exception:
             logger.exception(
                 "Email dispatch failed",
-                extra={"subject": subject, "recipient": recipient},
+                extra={
+                    "subject": subject,
+                    "recipient": recipient,
+                    "elapsed_ms": int((time.perf_counter() - t0) * 1000),
+                },
             )
             raise
+        logger.info(
+            "Email dispatched",
+            extra={
+                "subject": subject,
+                "recipient": recipient,
+                "elapsed_ms": int((time.perf_counter() - t0) * 1000),
+            },
+        )
 
     # ── public API ────────────────────────────────────────────────────────────
 

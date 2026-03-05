@@ -24,6 +24,7 @@ Authentication uses a Google service account JSON key file.  To set up:
 
 import datetime
 import logging
+import time
 
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
@@ -52,6 +53,7 @@ class GoogleCalendarClient:
 
         Fails open — returns False (don't block the gig) if the API call fails.
         """
+        t0 = time.perf_counter()
         try:
             dt = datetime.datetime.strptime(date_str, "%Y%m%d").date()
             time_min = datetime.datetime.combine(dt, datetime.time.min).isoformat() + "Z"
@@ -69,16 +71,18 @@ class GoogleCalendarClient:
             )
 
             events = result.get("items", [])
+            elapsed_ms = int((time.perf_counter() - t0) * 1000)
             logger.debug(
                 "Calendar check complete",
-                extra={"date": date_str, "event_count": len(events)},
+                extra={"date": date_str, "event_count": len(events), "elapsed_ms": elapsed_ms},
             )
             return len(events) > 0
 
         except Exception as exc:
+            elapsed_ms = int((time.perf_counter() - t0) * 1000)
             logger.warning(
                 "Calendar check failed — failing open",
-                extra={"date": date_str, "error": str(exc)},
+                extra={"date": date_str, "error": str(exc), "elapsed_ms": elapsed_ms},
             )
             return False
 
@@ -123,17 +127,24 @@ class GoogleCalendarClient:
             "end": {"dateTime": end_dt.isoformat(), "timeZone": "Europe/London"},
         }
 
+        t0 = time.perf_counter()
         try:
             created = (
                 self._service.events().insert(calendarId=self.calendar_id, body=event).execute()
             )
         except Exception:
+            elapsed_ms = int((time.perf_counter() - t0) * 1000)
             logger.exception(
                 "Failed to insert calendar event",
-                extra={"summary": event["summary"], "calendar_id": self.calendar_id},
+                extra={
+                    "summary": event["summary"],
+                    "calendar_id": self.calendar_id,
+                    "elapsed_ms": elapsed_ms,
+                },
             )
             raise
         event_id = created["id"]
+        elapsed_ms = int((time.perf_counter() - t0) * 1000)
 
         logger.info(
             "Gig added to Google Calendar",
@@ -143,6 +154,7 @@ class GoogleCalendarClient:
                 "start": start_dt.isoformat(),
                 "end": end_dt.isoformat(),
                 "calendar_id": self.calendar_id,
+                "elapsed_ms": elapsed_ms,
             },
         )
         return event_id

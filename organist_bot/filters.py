@@ -1,6 +1,7 @@
 import datetime
 import logging
 import re
+import time
 from collections.abc import Callable
 from typing import Any
 
@@ -354,6 +355,7 @@ class PostcodeFilter:
         Returns travel time in whole minutes, or None if the route is
         unavailable or the request fails.
         """
+        t0 = time.perf_counter()
         try:
             result = self._client.distance_matrix(
                 origins=[postcode],
@@ -362,20 +364,42 @@ class PostcodeFilter:
                 units="metric",
             )
             element = result["rows"][0]["elements"][0]
+            elapsed_ms = int((time.perf_counter() - t0) * 1000)
 
             if element["status"] != "OK":
                 logger.debug(
                     "Distance Matrix non-OK status",
-                    extra={"postcode": postcode, "mode": mode, "status": element["status"]},
+                    extra={
+                        "postcode": postcode,
+                        "mode": mode,
+                        "status": element["status"],
+                        "elapsed_ms": elapsed_ms,
+                    },
                 )
                 return None
 
-            return element["duration"]["value"] // 60  # seconds → whole minutes
+            minutes = element["duration"]["value"] // 60  # seconds → whole minutes
+            logger.debug(
+                "Distance Matrix OK",
+                extra={
+                    "postcode": postcode,
+                    "mode": mode,
+                    "minutes": minutes,
+                    "elapsed_ms": elapsed_ms,
+                },
+            )
+            return minutes
 
         except Exception as exc:
+            elapsed_ms = int((time.perf_counter() - t0) * 1000)
             logger.warning(
                 "Distance Matrix query failed — failing open",
-                extra={"postcode": postcode, "mode": mode, "error": str(exc)},
+                extra={
+                    "postcode": postcode,
+                    "mode": mode,
+                    "error": str(exc),
+                    "elapsed_ms": elapsed_ms,
+                },
             )
             return None
 
@@ -482,15 +506,27 @@ class GigFilterChain:
 
     def apply(self, gigs: list[Gig]) -> list[Gig]:
         """Return only the gigs that pass all filters."""
-        valid = [gig for gig in gigs if self.is_valid(gig)]
-        rejected = len(gigs) - len(valid)
+        rejection_counts: dict[str, int] = {repr(f): 0 for f in self._filters}
+        valid: list[Gig] = []
+
+        for gig in gigs:
+            passed = True
+            for f in self._filters:
+                if not f(gig):
+                    rejection_counts[repr(f)] += 1
+                    passed = False
+                    break  # short-circuit: first failing filter wins
+            if passed:
+                valid.append(gig)
+
         logger.info(
             "Filter chain applied",
             extra={
                 "total_in": len(gigs),
                 "passed": len(valid),
-                "rejected": rejected,
+                "rejected": len(gigs) - len(valid),
                 "filters": [repr(f) for f in self._filters],
+                "filter_breakdown": rejection_counts,
             },
         )
         return valid

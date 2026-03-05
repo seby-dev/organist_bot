@@ -48,7 +48,7 @@ def save_seen_gigs(seen: set[str], filepath: str = "data/seen_gigs.csv") -> None
 
         logger.info(
             "Saved seen gigs",
-            extra={"count": len(seen), "filepath": str(path.resolve())},
+            extra={"count": len(seen), "gigs_saved": seen, "filepath": str(path.resolve())},
         )
     except Exception:
         logger.exception(

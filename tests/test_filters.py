@@ -910,3 +910,88 @@ class TestGigFilterChain:
 
         assert "a" in calls
         assert "b" not in calls
+
+
+# ─────────────────────────────────────────────────────────
+# PostcodeFilter — Distance Matrix logging
+# ─────────────────────────────────────────────────────────
+
+
+class TestPostcodeFilterLogging:
+    """Tests that _query() emits the correct structured log entries."""
+
+    HOME = "SW1A 1AA"
+
+    def _ok_client(self, minutes: int, mode: str = "transit") -> MagicMock:
+        """Client that returns an OK response for the requested mode."""
+        mock = MagicMock()
+        mock.distance_matrix.return_value = {
+            "rows": [
+                {
+                    "elements": [
+                        {
+                            "status": "OK",
+                            "duration": {"value": minutes * 60, "text": f"{minutes} mins"},
+                        }
+                    ]
+                }
+            ]
+        }
+        return mock
+
+    def test_ok_result_logs_debug_with_minutes_and_elapsed_ms(self, caplog):
+        """Distance Matrix OK path emits a DEBUG 'Distance Matrix OK' record."""
+        import logging
+
+        client = self._ok_client(minutes=30)
+        f = PostcodeFilter(home_postcode=self.HOME, api_key="key", _client=client)
+
+        with caplog.at_level(logging.DEBUG, logger="organist_bot.filters"):
+            f._query("EC1A 1BB", "transit")
+
+        record = next(
+            (r for r in caplog.records if r.message == "Distance Matrix OK"),
+            None,
+        )
+        assert record is not None, "Expected 'Distance Matrix OK' log record"
+        assert record.minutes == 30
+        assert isinstance(record.elapsed_ms, int)
+        assert record.elapsed_ms >= 0
+
+    def test_non_ok_status_logs_debug_with_elapsed_ms(self, caplog):
+        """Non-OK API status emits a DEBUG record that includes elapsed_ms."""
+        import logging
+
+        client = MagicMock()
+        client.distance_matrix.return_value = {"rows": [{"elements": [{"status": "ZERO_RESULTS"}]}]}
+        f = PostcodeFilter(home_postcode=self.HOME, api_key="key", _client=client)
+
+        with caplog.at_level(logging.DEBUG, logger="organist_bot.filters"):
+            f._query("EC1A 1BB", "transit")
+
+        record = next(
+            (r for r in caplog.records if r.message == "Distance Matrix non-OK status"),
+            None,
+        )
+        assert record is not None, "Expected 'Distance Matrix non-OK status' log record"
+        assert isinstance(record.elapsed_ms, int)
+        assert record.elapsed_ms >= 0
+
+    def test_api_exception_logs_warning_with_elapsed_ms(self, caplog):
+        """API exception emits a WARNING record that includes elapsed_ms."""
+        import logging
+
+        client = MagicMock()
+        client.distance_matrix.side_effect = Exception("timeout")
+        f = PostcodeFilter(home_postcode=self.HOME, api_key="key", _client=client)
+
+        with caplog.at_level(logging.WARNING, logger="organist_bot.filters"):
+            f._query("EC1A 1BB", "transit")
+
+        record = next(
+            (r for r in caplog.records if "Distance Matrix query failed" in r.message),
+            None,
+        )
+        assert record is not None, "Expected 'Distance Matrix query failed' log record"
+        assert isinstance(record.elapsed_ms, int)
+        assert record.elapsed_ms >= 0

@@ -17,6 +17,7 @@ from organist_bot.filters import (
     SundayTimeFilter,
 )
 from organist_bot.integrations.calendar_client import GoogleCalendarClient
+from organist_bot.integrations.sheets_logger import SheetsLogger
 from organist_bot.logging_config import set_run_id, setup_logging
 from organist_bot.models import Gig
 from organist_bot.notifier import Notifier, SMTPTransport
@@ -34,17 +35,25 @@ def _send_telegram_alert(message: str) -> None:
     """
     if not settings.telegram_bot_token or not settings.telegram_chat_id:
         return
+    t0 = time.perf_counter()
     try:
         _requests.post(
             f"https://api.telegram.org/bot{settings.telegram_bot_token}/sendMessage",
             json={"chat_id": settings.telegram_chat_id, "text": message},
             timeout=10,
         )
+        logger.info(
+            "Telegram alert sent",
+            extra={"elapsed_ms": int((time.perf_counter() - t0) * 1000)},
+        )
     except Exception:
-        logger.warning("Failed to send Telegram crash alert")
+        logger.warning(
+            "Telegram alert failed",
+            extra={"elapsed_ms": int((time.perf_counter() - t0) * 1000)},
+        )
 
 
-def main(scraper: Scraper) -> None:
+def main(scraper: Scraper, sheets_logger: SheetsLogger | None = None) -> None:
     run_id = uuid.uuid4().hex[:8]
     set_run_id(run_id)
 
@@ -70,11 +79,14 @@ def main(scraper: Scraper) -> None:
     # so this cuts Phase 1 from N+1 HTTP requests down to just 1.
     seen_gigs_set = load_seen_gigs() if settings.enable_seen_filter else set()
 
-    # Pre-filter chain: filters that only need basic details (fee, date, time).
-    # Applied before fetching the detail page so we skip the HTTP request for
-    # gigs that would be rejected anyway.  Filters requiring detail-page fields
+    # Pre-filter chain: filters that only need basic details (fee, date, time, link).
+    # SeenFilter (link in seen_gigs.csv) and CalendarFilter (date in Google Calendar)
+    # are both included here so we skip the detail-page HTTP fetch for gigs that
+    # would be rejected anyway.  Filters requiring detail-page fields
     # (email → BlacklistFilter, postcode → PostcodeFilter) stay in Phase 2.
     pre_filter = GigFilterChain()
+    if settings.enable_seen_filter:
+        pre_filter.add(SeenFilter(seen_gigs_set))
     if settings.enable_fee_filter:
         pre_filter.add(FeeFilter(min_fee=settings.min_fee))
     if settings.enable_sunday_time_filter:
@@ -109,11 +121,7 @@ def main(scraper: Scraper) -> None:
         try:
             basic = scraper.extract_basic_details(gig_el)
 
-            # Skip already-seen gigs.
-            if settings.enable_seen_filter and basic.get("link") in seen_gigs_set:
-                continue
-
-            # Skip gigs that fail cheap filters — avoids the detail-page fetch.
+            # Skip gigs that fail cheap filters (incl. seen + calendar) — avoids the detail-page fetch.
             if not pre_filter.is_valid(Gig(**basic)):
                 continue
 
@@ -170,11 +178,6 @@ def main(scraper: Scraper) -> None:
     else:
         logger.info("BookedDateFilter disabled")
 
-    if settings.enable_seen_filter:
-        filter_chain.add(SeenFilter(seen_gigs_set))  # reuse set loaded in Phase 1
-    else:
-        logger.info("SeenFilter disabled")
-
     if settings.enable_postcode_filter and settings.home_postcode and settings.google_maps_api_key:
         filter_chain.add(
             PostcodeFilter(
@@ -199,6 +202,20 @@ def main(scraper: Scraper) -> None:
         },
     )
 
+    for gig in valid_gigs:
+        logger.info(
+            "Gig passed all filters",
+            extra={
+                "header": gig.header,
+                "date": gig.date,
+                "fee": gig.fee,
+                "organisation": gig.organisation or "",
+                "postcode": gig.postcode or "",
+                "contact_email": gig.email or "",
+                "link": gig.link,
+            },
+        )
+
     # ── Phase 3: Notify ───────────────────────────────────────────────────────
     if valid_gigs:
         logger.info("Phase 3 — sending notifications", extra={"gig_count": len(valid_gigs)})
@@ -217,7 +234,7 @@ def main(scraper: Scraper) -> None:
                 "elapsed_ms": int((time.perf_counter() - t0) * 1000),
             },
         )
-        save_seen_gigs(seen=set(gig.link for gig in valid_gigs))
+        save_seen_gigs(seen=seen_gigs_set | set(gig.link for gig in valid_gigs))
     else:
         logger.info("No new gigs passed the filters — notifications skipped")
 
@@ -234,6 +251,17 @@ def main(scraper: Scraper) -> None:
         },
     )
 
+    # ── Flush logs to Google Sheets ───────────────────────────────────────────
+    if sheets_logger is not None:
+        try:
+            rows = sheets_logger.flush(settings.log_file)
+            logger.info("Sheets flush complete", extra={"rows_written": rows})
+        except Exception:
+            logger.warning(
+                "Sheets flush failed — logs retained in file",
+                extra={"log_file": settings.log_file},
+            )
+
 
 if __name__ == "__main__":
     setup_logging(settings.log_file)
@@ -242,10 +270,30 @@ if __name__ == "__main__":
         extra={"poll_minutes": settings.poll_minutes},
     )
 
+    # ── Google Sheets logger (optional) ───────────────────────────────────────
+    sheets_logger: SheetsLogger | None = None
+    if settings.google_sheets_id:
+        creds_file = (
+            settings.google_sheets_credentials_file or settings.google_calendar_credentials_file
+        )
+        if creds_file:
+            try:
+                sheets_logger = SheetsLogger(
+                    spreadsheet_id=settings.google_sheets_id,
+                    credentials_file=creds_file,
+                )
+            except Exception:
+                logger.warning("SheetsLogger init failed — Sheets logging disabled")
+        else:
+            logger.info(
+                "SheetsLogger disabled — no credentials file configured "
+                "(set GOOGLE_SHEETS_CREDENTIALS_FILE or GOOGLE_CALENDAR_CREDENTIALS_FILE)"
+            )
+
     scraper = Scraper()
     try:
-        main(scraper)  # run immediately on startup, then on schedule
-        schedule.every(settings.poll_minutes).minutes.do(main, scraper)
+        main(scraper, sheets_logger)  # run immediately on startup, then on schedule
+        schedule.every(settings.poll_minutes).minutes.do(main, scraper, sheets_logger)
 
         while True:
             try:
