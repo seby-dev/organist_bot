@@ -254,13 +254,10 @@ def main(scraper: Scraper, sheets_logger: SheetsLogger | None = None) -> None:
     # ── Flush logs to Google Sheets ───────────────────────────────────────────
     if sheets_logger is not None:
         try:
-            rows = sheets_logger.flush(settings.log_file)
+            rows = sheets_logger.drain()
             logger.info("Sheets flush complete", extra={"rows_written": rows})
         except Exception:
-            logger.warning(
-                "Sheets flush failed — logs retained in file",
-                extra={"log_file": settings.log_file},
-            )
+            logger.warning("Sheets flush failed — rows queued for next run")
 
 
 if __name__ == "__main__":
@@ -282,6 +279,7 @@ if __name__ == "__main__":
                     spreadsheet_id=settings.google_sheets_id,
                     credentials_file=creds_file,
                 )
+                logging.getLogger().addHandler(sheets_logger)
             except Exception:
                 logger.warning("SheetsLogger init failed — Sheets logging disabled")
         else:
