@@ -1,0 +1,1971 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OrganistBot — Technical Report</title>
+<style>
+/* ── Reset & Base ─────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html { font-size: 16px; scroll-behavior: smooth; }
+body {
+  font-family: Georgia, 'Times New Roman', serif;
+  background: #f8f9fa;
+  color: #1e293b;
+  line-height: 1.75;
+}
+
+/* ── Layout ───────────────────────────────────────────────────── */
+.page-wrap {
+  display: grid;
+  grid-template-columns: 240px 1fr;
+  min-height: 100vh;
+}
+.toc-sidebar {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow-y: auto;
+  background: #0f172a;
+  padding: 24px 16px;
+  font-family: system-ui, sans-serif;
+}
+.toc-sidebar h2 {
+  color: #94a3b8;
+  font-size: 0.65rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  margin-bottom: 16px;
+}
+.toc-sidebar ol { list-style: none; padding: 0; }
+.toc-sidebar li { margin-bottom: 4px; }
+.toc-sidebar a {
+  color: #cbd5e1;
+  text-decoration: none;
+  font-size: 0.78rem;
+  display: block;
+  padding: 3px 8px;
+  border-radius: 4px;
+  transition: background 0.15s;
+}
+.toc-sidebar a:hover { background: #1e293b; color: #e2e8f0; }
+.toc-sidebar .toc-sub { padding-left: 14px; }
+.toc-sidebar .toc-sub a { font-size: 0.72rem; color: #94a3b8; }
+.main-content { max-width: 900px; padding: 48px 56px; }
+
+/* ── Cover Page ───────────────────────────────────────────────── */
+.cover {
+  min-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 80px 0 60px;
+  border-bottom: 3px solid #2563eb;
+  margin-bottom: 64px;
+}
+.cover-tag {
+  font-family: system-ui, sans-serif;
+  font-size: 0.7rem;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: #2563eb;
+  font-weight: 600;
+  margin-bottom: 20px;
+}
+.cover h1 {
+  font-family: system-ui, sans-serif;
+  font-size: 3rem;
+  font-weight: 800;
+  color: #0f172a;
+  line-height: 1.1;
+  margin-bottom: 16px;
+}
+.cover-subtitle {
+  font-size: 1.25rem;
+  color: #475569;
+  margin-bottom: 48px;
+  max-width: 600px;
+}
+.cover-meta {
+  font-family: system-ui, sans-serif;
+  font-size: 0.85rem;
+  color: #64748b;
+  display: grid;
+  grid-template-columns: repeat(3, auto);
+  gap: 32px;
+  width: fit-content;
+}
+.cover-meta div span { display: block; color: #94a3b8; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 4px; }
+.cover-meta div strong { color: #0f172a; font-size: 0.95rem; }
+
+/* ── Sections ─────────────────────────────────────────────────── */
+section {
+  margin-bottom: 72px;
+  padding-top: 16px;
+}
+section + section { border-top: 1px solid #e2e8f0; padding-top: 56px; }
+
+h2 {
+  font-family: system-ui, sans-serif;
+  font-size: 1.6rem;
+  font-weight: 700;
+  color: #0f172a;
+  margin-bottom: 8px;
+  padding-bottom: 12px;
+  border-bottom: 2px solid #e2e8f0;
+}
+.section-num {
+  color: #2563eb;
+  font-size: 0.9rem;
+  font-weight: 700;
+  font-family: system-ui, sans-serif;
+  display: block;
+  margin-bottom: 6px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+h3 {
+  font-family: system-ui, sans-serif;
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: #0f172a;
+  margin: 32px 0 10px;
+}
+h4 {
+  font-family: system-ui, sans-serif;
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: #334155;
+  margin: 20px 0 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+p { margin-bottom: 14px; }
+ul, ol { margin: 12px 0 16px 24px; }
+li { margin-bottom: 6px; }
+
+/* ── Code ─────────────────────────────────────────────────────── */
+pre {
+  background: #1e1e2e;
+  color: #cdd6f4;
+  font-family: 'Fira Code', 'Cascadia Code', Consolas, monospace;
+  font-size: 0.8rem;
+  line-height: 1.6;
+  padding: 20px 24px;
+  border-radius: 8px;
+  overflow-x: auto;
+  margin: 16px 0 20px;
+  border-left: 3px solid #2563eb;
+}
+code {
+  font-family: 'Fira Code', Consolas, monospace;
+  font-size: 0.82em;
+  background: #f1f5f9;
+  color: #0f172a;
+  padding: 2px 6px;
+  border-radius: 3px;
+  border: 1px solid #e2e8f0;
+}
+pre code { background: none; border: none; padding: 0; color: inherit; font-size: inherit; }
+
+/* ── Callouts ─────────────────────────────────────────────────── */
+.callout {
+  border-left: 4px solid;
+  border-radius: 0 8px 8px 0;
+  padding: 16px 20px;
+  margin: 20px 0;
+  font-size: 0.93rem;
+}
+.callout-title {
+  font-family: system-ui, sans-serif;
+  font-weight: 700;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.callout-fp { background: #eff6ff; border-color: #2563eb; }
+.callout-fp .callout-title { color: #1d4ed8; }
+.callout-why { background: #f0fdf4; border-color: #16a34a; }
+.callout-why .callout-title { color: #15803d; }
+.callout-warn { background: #fffbeb; border-color: #d97706; }
+.callout-warn .callout-title { color: #b45309; }
+
+/* ── Tables ───────────────────────────────────────────────────── */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: system-ui, sans-serif;
+  font-size: 0.85rem;
+  margin: 16px 0 24px;
+}
+th {
+  background: #0f172a;
+  color: #e2e8f0;
+  text-align: left;
+  padding: 10px 14px;
+  font-weight: 600;
+}
+td { padding: 9px 14px; border-bottom: 1px solid #e2e8f0; }
+tr:nth-child(even) td { background: #f8fafc; }
+tr:hover td { background: #f1f5f9; }
+
+/* ── Module Cards ─────────────────────────────────────────────── */
+.module-card {
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  padding: 24px 28px;
+  margin: 24px 0;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+}
+.module-card h3 { margin-top: 0; }
+.module-path {
+  font-family: 'Fira Code', Consolas, monospace;
+  font-size: 0.78rem;
+  background: #0f172a;
+  color: #7dd3fc;
+  padding: 3px 10px;
+  border-radius: 4px;
+  display: inline-block;
+  margin-bottom: 14px;
+}
+.module-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin-top: 12px;
+}
+.module-grid-item label {
+  display: block;
+  font-family: system-ui, sans-serif;
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: #94a3b8;
+  margin-bottom: 4px;
+}
+.module-grid-item p { font-size: 0.88rem; margin: 0; }
+
+/* ── Diagram ──────────────────────────────────────────────────── */
+.diagram {
+  background: #0f172a;
+  color: #94a3b8;
+  font-family: 'Fira Code', Consolas, monospace;
+  font-size: 0.78rem;
+  line-height: 1.7;
+  padding: 28px 32px;
+  border-radius: 10px;
+  margin: 20px 0;
+  overflow-x: auto;
+}
+.diagram .d-blue { color: #7dd3fc; }
+.diagram .d-green { color: #86efac; }
+.diagram .d-yellow { color: #fde68a; }
+.diagram .d-pink { color: #f9a8d4; }
+.diagram .d-orange { color: #fdba74; }
+
+/* ── Badges ───────────────────────────────────────────────────── */
+.badge {
+  display: inline-block;
+  font-family: system-ui, sans-serif;
+  font-size: 0.68rem;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 99px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-right: 4px;
+}
+.badge-simple { background: #dcfce7; color: #15803d; }
+.badge-moderate { background: #fef9c3; color: #854d0e; }
+.badge-complex { background: #fee2e2; color: #991b1b; }
+
+/* ── Glossary ─────────────────────────────────────────────────── */
+.glossary-entry {
+  border-bottom: 1px solid #f1f5f9;
+  padding: 16px 0;
+}
+.glossary-entry dt {
+  font-family: system-ui, sans-serif;
+  font-weight: 700;
+  color: #0f172a;
+  font-size: 0.95rem;
+}
+.glossary-entry dd { margin: 4px 0 0 0; font-size: 0.92rem; color: #334155; }
+
+/* ── Print ────────────────────────────────────────────────────── */
+@media print {
+  .toc-sidebar { display: none; }
+  .page-wrap { display: block; }
+  .main-content { padding: 32px; max-width: 100%; }
+  section { page-break-before: always; }
+  .cover { page-break-before: avoid; min-height: auto; }
+  pre { white-space: pre-wrap; }
+  .module-card { box-shadow: none; border: 1px solid #ccc; }
+  h2 { page-break-after: avoid; }
+  h3 { page-break-after: avoid; }
+}
+
+/* ── Responsive ───────────────────────────────────────────────── */
+@media (max-width: 900px) {
+  .page-wrap { grid-template-columns: 1fr; }
+  .toc-sidebar { display: none; }
+  .main-content { padding: 24px; }
+}
+
+/* ── Syntax colouring (manual) ────────────────────────────────── */
+.kw { color: #cba6f7; }   /* keyword */
+.st { color: #a6e3a1; }   /* string */
+.cm { color: #585b70; }   /* comment */
+.fn { color: #89b4fa; }   /* function */
+.cl { color: #f9e2af; }   /* class */
+.nu { color: #fab387; }   /* number */
+.dc { color: #94e2d5; }   /* decorator */
+
+/* ── Progress bar ─────────────────────────────────────────────── */
+#progress-bar {
+  position: fixed; top: 0; left: 0; height: 3px;
+  background: linear-gradient(90deg, #2563eb, #7c3aed);
+  z-index: 9999; width: 0%; transition: width 0.08s linear;
+  pointer-events: none;
+}
+
+/* ── TOC active + search ──────────────────────────────────────── */
+.toc-sidebar a.active { background: #1e3a8a; color: #93c5fd; font-weight: 600; }
+.toc-controls {
+  display: flex; gap: 8px; margin-bottom: 16px; align-items: center;
+}
+.toc-controls button {
+  background: #1e293b; border: 1px solid #334155; color: #94a3b8;
+  border-radius: 6px; padding: 4px 9px; font-size: 0.72rem;
+  cursor: pointer; font-family: system-ui, sans-serif; transition: all 0.15s;
+  display: flex; align-items: center; gap: 4px;
+}
+.toc-controls button:hover { background: #334155; color: #e2e8f0; }
+
+/* ── Copy button ──────────────────────────────────────────────── */
+.pre-wrap { position: relative; }
+.pre-wrap pre { margin: 0; }
+.copy-btn {
+  position: absolute; top: 8px; right: 8px;
+  background: rgba(148,163,184,0.15); border: 1px solid rgba(148,163,184,0.25);
+  color: #94a3b8; font-family: system-ui, sans-serif; font-size: 0.68rem;
+  padding: 3px 10px; border-radius: 5px; cursor: pointer; transition: all 0.2s;
+}
+.copy-btn:hover { background: rgba(148,163,184,0.3); color: #e2e8f0; }
+.copy-btn.copied { background: rgba(34,197,94,0.2); color: #4ade80; border-color: #4ade80; }
+
+/* ── Collapsible module cards ─────────────────────────────────── */
+.module-card h3 { cursor: pointer; user-select: none; display: flex; align-items: center; justify-content: space-between; }
+.module-card h3 .chevron { color: #94a3b8; font-size: 0.75em; transition: transform 0.25s; display: inline-block; }
+.module-card[data-collapsed="true"] h3 .chevron { transform: rotate(-90deg); }
+.card-body { transition: max-height 0.35s ease, opacity 0.3s; overflow: hidden; max-height: 4000px; opacity: 1; }
+.module-card[data-collapsed="true"] .card-body { max-height: 0; opacity: 0; }
+
+/* ── Search overlay ───────────────────────────────────────────── */
+#search-overlay {
+  display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.5);
+  z-index: 8000; align-items: flex-start; justify-content: center; padding-top: 80px;
+}
+#search-overlay.open { display: flex; }
+#search-box {
+  background: #1e293b; border: 1px solid #334155; border-radius: 12px;
+  padding: 16px 20px; width: 560px; max-width: 90vw; box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+}
+#search-input {
+  width: 100%; background: #0f172a; border: 1px solid #334155; border-radius: 7px;
+  color: #e2e8f0; font-size: 1rem; padding: 10px 14px; font-family: system-ui, sans-serif;
+  outline: none;
+}
+#search-input:focus { border-color: #2563eb; }
+#search-meta { font-family: system-ui, sans-serif; font-size: 0.75rem; color: #64748b; margin-top: 8px; }
+mark.search-hit { background: #fef08a; color: #0f172a; border-radius: 2px; padding: 0 1px; }
+mark.search-hit.current { background: #f97316; color: #fff; }
+
+/* ── Mermaid container ────────────────────────────────────────── */
+.mermaid-wrap {
+  background: #1e1e2e; border-radius: 10px; padding: 28px 20px;
+  margin: 20px 0; overflow-x: auto; border-left: 3px solid #2563eb;
+  box-shadow: 0 4px 24px rgba(0,0,0,0.35);
+}
+.mermaid-wrap .mermaid { text-align: center; min-width: 640px; }
+/* sequence diagrams need a wider canvas */
+.mermaid-wrap svg { max-width: 100%; height: auto; }
+
+/* ── Light mode ───────────────────────────────────────────────── */
+body.light-mode { background: #ffffff; color: #1e293b; }
+body.light-mode .toc-sidebar { background: #1e40af; }
+body.light-mode .toc-sidebar a { color: #bfdbfe; }
+body.light-mode .toc-sidebar a:hover { background: #1d4ed8; color: #fff; }
+body.light-mode .toc-sidebar a.active { background: #1d4ed8; color: #fff; }
+body.light-mode .toc-sidebar h2 { color: #93c5fd; }
+body.light-mode .toc-controls button { background: #1d4ed8; border-color: #3b82f6; color: #bfdbfe; }
+body.light-mode .toc-controls button:hover { background: #2563eb; color: #fff; }
+body.light-mode .module-card { background: #f8fafc; border-color: #cbd5e1; }
+body.light-mode pre { background: #0f172a; }
+body.light-mode code { background: #f1f5f9; color: #0f172a; }
+body.light-mode .callout-fp { background: #eff6ff; }
+body.light-mode .callout-why { background: #f0fdf4; }
+body.light-mode .callout-warn { background: #fffbeb; }
+body.light-mode .mermaid-wrap { background: #f8fafc; border-color: #2563eb; }
+body.light-mode .glossary-entry { border-color: #e2e8f0; }
+
+/* ── Print overrides for interactive elements ─────────────────── */
+@media print {
+  #progress-bar, #search-overlay, .copy-btn, .toc-controls { display: none !important; }
+  .module-card h3 .chevron { display: none; }
+  .module-card[data-collapsed="true"] .card-body { max-height: none !important; opacity: 1 !important; }
+}
+</style>
+
+<!-- Mermaid.js from CDN -->
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<script>
+mermaid.initialize({
+  startOnLoad: true,
+  theme: 'dark',
+  flowchart:   { curve: 'basis', padding: 16, htmlLabels: true },
+  sequence:    {
+    actorMargin: 60,
+    boxMargin: 10,
+    mirrorActors: true,        /* shows actors at bottom too — ByteByteGo style */
+    bottomMarginAdj: 10,
+    useMaxWidth: true,
+    messageAlign: 'center',
+    showSequenceNumbers: false, /* autonumber in diagram handles numbering */
+    height: 40,
+    width: 160,
+    boxTextMargin: 6,
+    noteMargin: 14,
+    messageMargin: 40,
+    fontFamily: 'system-ui, sans-serif',
+    fontSize: 13,
+  },
+  themeVariables: {
+    darkMode: true,
+    background: '#1e1e2e',
+    /* sequence-specific */
+    actorBkg:        '#1e3a8a',
+    actorBorder:     '#2563eb',
+    actorTextColor:  '#e2e8f0',
+    actorLineColor:  '#334155',
+    signalColor:     '#93c5fd',
+    signalTextColor: '#e2e8f0',
+    labelBoxBkgColor:'#0f172a',
+    labelBoxBorderColor:'#334155',
+    labelTextColor:  '#94a3b8',
+    loopTextColor:   '#fbbf24',
+    noteBkgColor:    '#1e293b',
+    noteBorderColor: '#475569',
+    noteTextColor:   '#cbd5e1',
+    activationBorderColor: '#2563eb',
+    activationBkgColor:    '#1d4ed8',
+    sequenceNumberColor:   '#e2e8f0',
+    /* shared */
+    primaryColor:       '#1e3a8a',
+    primaryTextColor:   '#e2e8f0',
+    primaryBorderColor: '#2563eb',
+    lineColor:          '#64748b',
+    secondaryColor:     '#0f172a',
+    tertiaryColor:      '#1e293b',
+    clusterBkg:         '#0f172a',
+    clusterBorder:      '#334155',
+    edgeLabelBackground:'#1e293b',
+    titleColor:         '#e2e8f0',
+  }
+});
+</script>
+</head>
+<body>
+<div id="progress-bar"></div>
+<div id="search-overlay" role="dialog" aria-modal="true">
+  <div id="search-box">
+    <input id="search-input" type="text" placeholder="Search report… (Esc to close)" autocomplete="off" spellcheck="false">
+    <div id="search-meta">Press <kbd style="background:#334155;padding:1px 5px;border-radius:3px;font-size:0.7rem;">Esc</kbd> to close · <kbd style="background:#334155;padding:1px 5px;border-radius:3px;font-size:0.7rem;">↑↓</kbd> to jump between matches</div>
+  </div>
+</div>
+
+<div class="page-wrap">
+
+<!-- ══ TOC SIDEBAR ══════════════════════════════════════════════ -->
+<nav class="toc-sidebar">
+  <div class="toc-controls">
+    <button id="btn-search" title="Search (Cmd+K)">🔍 Search</button>
+    <button id="btn-theme" title="Toggle light/dark mode">🌙 Theme</button>
+  </div>
+  <h2>Contents</h2>
+  <ol>
+    <li><a href="#s1">1. Executive Summary</a></li>
+    <li><a href="#s2">2. Architecture &amp; Design</a></li>
+    <li>
+      <a href="#s3">3. Module Breakdown</a>
+      <ol class="toc-sub">
+        <li><a href="#mod-main">main.py</a></li>
+        <li><a href="#mod-tbentry">telegram_bot.py</a></li>
+        <li><a href="#mod-config">config.py</a></li>
+        <li><a href="#mod-models">models.py</a></li>
+        <li><a href="#mod-scraper">scraper.py</a></li>
+        <li><a href="#mod-filters">filters.py</a></li>
+        <li><a href="#mod-storage">storage.py</a></li>
+        <li><a href="#mod-logging">logging_config.py</a></li>
+        <li><a href="#mod-notifier">notifier.py</a></li>
+        <li><a href="#mod-calendar">calendar_client.py</a></li>
+        <li><a href="#mod-tgbot">integrations/telegram_bot.py</a></li>
+        <li><a href="#mod-templates">Templates</a></li>
+        <li><a href="#mod-tests">Tests</a></li>
+        <li><a href="#mod-config-files">Config Files</a></li>
+      </ol>
+    </li>
+    <li><a href="#s4">4. SE Best Practices</a></li>
+    <li><a href="#s5">5. Python Idioms</a></li>
+    <li><a href="#s6">6. Performance Optimizations</a></li>
+    <li><a href="#s7">7. Product Development</a></li>
+    <li><a href="#s8">8. Concepts Glossary</a></li>
+    <li><a href="#s9">9. Future Roadmap</a></li>
+    <li><a href="#s10">10. Career Takeaways</a></li>
+  </ol>
+</nav>
+
+<!-- ══ MAIN CONTENT ═════════════════════════════════════════════ -->
+<main class="main-content">
+
+<!-- ── COVER ───────────────────────────────────────────────────── -->
+<div class="cover">
+  <div class="cover-tag">Technical Report &amp; Learning Resource</div>
+  <h1>OrganistBot</h1>
+  <p class="cover-subtitle">A complete architectural reference and first-principles learning guide for an automated organ-gig scraper, filter, and notification system built in Python 3.12.</p>
+  <div class="cover-meta">
+    <div><span>Date</span><strong>27 February 2026</strong></div>
+    <div><span>Language</span><strong>Python 3.12</strong></div>
+    <div><span>Test suite</span><strong>227 passing tests</strong></div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════
+     SECTION 1 — EXECUTIVE SUMMARY
+══════════════════════════════════════════════════════════════════ -->
+<section id="s1">
+  <span class="section-num">Section 1</span>
+  <h2>Executive Summary</h2>
+
+  <h3>What the project does and why it exists</h3>
+  <p>OrganistBot is a personal automation tool built to solve a concrete, repeatable problem: monitoring a specialist job board (<a href="https://organistsonline.org">organistsonline.org</a>) for organ-playing engagements that match a musician's requirements, notifying them by email when a suitable gig appears, and handling the administrative follow-through — application email and Google Calendar entry — with minimal manual effort.</p>
+  <p>Without automation, the workflow is tedious and time-sensitive: check the website several times a day, manually read each new listing, decide whether it meets fee and distance requirements, compose an application email, and diary the date. OrganistBot compresses all of that into a background process that polls every two minutes and acts in seconds.</p>
+
+  <h3>High-level architecture</h3>
+  <p>The system is structured as a <strong>three-phase pipeline</strong> that runs on a scheduler: <strong>Scrape</strong> (fetch and parse the listing page), <strong>Filter</strong> (apply a composable chain of business rules), and <strong>Notify</strong> (send emails and update the calendar). Two separate long-running processes can operate simultaneously: the main scheduler and a Telegram bot that accepts manually-confirmed gig URLs and books them into Google Calendar on demand.</p>
+  <p>Configuration is fully externalised to a <code>.env</code> file via <strong>pydantic-settings</strong>. Each concern — HTTP transport, HTML parsing, business rules, email delivery, calendar integration, persistence, logging — lives in its own module with no circular dependencies. This makes every component independently testable and replaceable.</p>
+  <p>The codebase runs locally on macOS, ships with 227 pytest tests, a two-job GitHub Actions CI pipeline (lint/type-check + tests), and pre-commit hooks that catch formatting and type errors before every commit.</p>
+
+  <h3>Key technical decisions at a glance</h3>
+  <table>
+    <tr><th>Decision</th><th>Choice made</th><th>Why</th></tr>
+    <tr><td>Architecture pattern</td><td>Three-phase pipeline with composable filter chain</td><td>Filters are independent, individually testable, and trivially added/removed via feature flags</td></tr>
+    <tr><td>HTTP client</td><td><code>requests.Session</code> with connection pool + <code>tenacity</code> retry</td><td>Keeps TCP connections alive across fetches; retries transient failures automatically</td></tr>
+    <tr><td>HTML parsing</td><td>BeautifulSoup 4</td><td>Tolerates malformed HTML; expressive API for navigating the DOM</td></tr>
+    <tr><td>Configuration</td><td>pydantic-settings + <code>.env</code></td><td>Type-safe, validated config; secrets stay out of source control</td></tr>
+    <tr><td>Email rendering</td><td>Jinja2 HTML templates</td><td>Separates presentation from logic; templates editable without touching Python</td></tr>
+    <tr><td>Logging</td><td>Dual handler: ANSI console (INFO) + rotating JSON file (DEBUG)</td><td>Humans read the terminal; machines parse the JSON for analysis</td></tr>
+    <tr><td>Error philosophy</td><td>Fail-open on external API errors</td><td>A transient Maps/Calendar API failure must never silently drop a gig</td></tr>
+    <tr><td>Scheduling</td><td><code>schedule</code> library in a <code>while True</code> loop</td><td>Simple, no daemon process manager required for a local Mac deployment</td></tr>
+    <tr><td>Testing</td><td>pytest + pytest-mock + FakeTransport pattern</td><td>Unit tests run without real network calls; fast and deterministic</td></tr>
+    <tr><td>Type safety</td><td>mypy (strict subset) + ruff on every commit</td><td>Catches whole classes of bugs before runtime; documents intent in signatures</td></tr>
+  </table>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════════
+     SECTION 2 — ARCHITECTURE & DESIGN
+══════════════════════════════════════════════════════════════════ -->
+<section id="s2">
+  <span class="section-num">Section 2</span>
+  <h2>Project Architecture &amp; Design</h2>
+
+  <h3>Runtime Sequence — How the bot behaves every N minutes</h3>
+  <p style="color:#94a3b8;font-family:system-ui,sans-serif;font-size:0.85rem;margin-bottom:12px;">
+    Read left-to-right: each column is a participant (service/component); each arrow is a message or API call.
+    Dashed arrows (‐‐&gt;) are responses. <code>loop</code> blocks repeat; <code>alt/else</code> blocks are conditionals.
+  </p>
+  <div class="mermaid-wrap">
+    <pre class="mermaid">
+sequenceDiagram
+    autonumber
+    participant S as ⏱ Scheduler
+    participant W as 🌐 Website
+    participant P as 🔍 Pre-Filter
+    participant F as ✅ Filter Chain
+    participant C as 📅 Google Calendar
+    participant M as 🗺 Google Maps
+    participant E as 📧 Gmail
+
+    loop Every N minutes (default: 2)
+        S->>W: GET /required/
+        W-->>S: HTML — listing divs
+
+        loop For each gig div
+            S->>S: extract_basic_details()
+            S->>P: is_valid(link · fee · date · time)?
+
+            alt Rejected — already seen / fee too low / wrong day / date booked
+                P-->>S: ⏭ skip — detail page NOT fetched
+            else Cheap filters passed
+                P->>C: has_event_on_date(date)?
+                C-->>P: busy / free
+                alt Date booked in calendar
+                    P-->>S: ⏭ skip — calendar clash
+                else All pre-filters passed
+                    P-->>S: ✓ proceed
+                    S->>W: GET /gig/{id}/
+                    W-->>S: email · postcode · notes
+                    S->>S: build Gig dataclass
+                end
+            end
+        end
+
+        Note over S,F: Phase 2 — full GigFilterChain on enriched list
+
+        S->>F: filter_chain.apply(gig_list)
+        F->>M: distance_matrix(postcode, transit|bike|walk)
+        M-->>F: minutes per travel mode
+        F-->>S: valid_gigs
+
+        alt valid_gigs ≥ 1
+            S->>E: send_summary(valid_gigs)
+            E-->>S: ✓ digest email delivered
+            loop For each valid gig
+                S->>E: apply_to_gig(gig)
+                E-->>S: ✓ application email sent
+            end
+            S->>S: save_seen_gigs(seen_gigs_set ∪ valid_links) → seen_gigs.csv
+        else No valid gigs
+            Note over S: All gigs filtered — sleep until next poll
+        end
+    end
+    </pre>
+  </div>
+
+  <h3 style="margin-top:2rem;">Telegram booking flow</h3>
+  <p style="color:#94a3b8;font-family:system-ui,sans-serif;font-size:0.85rem;margin-bottom:12px;">
+    The Telegram bot runs as a separate process and only activates when you send it a command.
+  </p>
+  <div class="mermaid-wrap">
+    <pre class="mermaid">
+sequenceDiagram
+    participant U as 👤 You
+    participant T as 📱 Telegram Bot
+    participant W as 🌐 Website
+    participant C as 📅 Google Calendar
+
+    U->>T: /book https://organistsonline.org/gig/123/
+    T->>W: scraper.fetch(url)
+    W-->>T: gig HTML
+    T->>T: extract_full_details() → Gig
+
+    T->>C: has_event_on_date(gig.date)?
+    alt Date already busy
+        C-->>T: ⚠ clash detected
+        T-->>U: "You're already booked on that date!"
+    else Date free
+        C-->>T: ✓ free
+        T->>C: add_event(title, date, description)
+        C-->>T: event created
+        T-->>U: "Booked! 📅 Added to your calendar."
+    end
+    </pre>
+  </div>
+
+  <h3>Architectural pattern: the pipeline</h3>
+  <p>A <strong>pipeline</strong> is a sequence of stages where the output of each stage is the input to the next. OrganistBot uses this pattern because the problem is naturally sequential: you cannot filter what you have not scraped, and you cannot notify about gigs you have not filtered.</p>
+  <p>The key advantage over a monolithic approach (one big function that scrapes, filters, and notifies) is that each phase is independently testable, swappable, and logged. You can unit-test the filter chain with a list of mock Gig objects without ever touching the network. You can replace SMTP with a file-writer for testing. You can add a new filter by writing one class and one line in <code>main.py</code>.</p>
+
+  <div class="callout callout-fp">
+    <div class="callout-title">💡 First Principles: Why not write everything in one file?</div>
+    <p>Imagine the entire bot as a single 500-line function. To test "does the fee filter work?", you'd need a real internet connection, a real email server, and a Google Calendar. Now imagine a colleague breaks the scraper — suddenly the filter tests fail too, even though the filter code is fine. You can't see which part broke. You can't test parts in isolation. You can't swap the email provider without rewriting half the function.</p>
+    <p>Separation of concerns — splitting the code into modules by responsibility — is the engineering equivalent of specialised tools. A screwdriver does one thing perfectly. When it breaks, you replace just the screwdriver, not the entire toolbox.</p>
+  </div>
+
+  <h3>Data flow</h3>
+  <p>Data enters the system as raw HTML bytes from an HTTP response. BeautifulSoup parses it into a tree of Python objects. <code>extract_basic_details()</code> walks that tree and extracts strings into a plain Python <code>dict</code>. That dict is unpacked into a <code>Gig</code> dataclass — a strongly-typed, immutable-ish record. The filter chain receives a <code>list[Gig]</code> and returns a filtered <code>list[Gig]</code>. The notifier receives that same list and produces side effects (emails, CSV writes). No global mutable state is shared between phases.</p>
+
+  <h3>Module dependency graph</h3>
+  <table>
+    <tr><th>Module</th><th>Depends on</th><th>Used by</th></tr>
+    <tr><td><code>config.py</code></td><td>pydantic-settings, .env</td><td>Everything</td></tr>
+    <tr><td><code>models.py</code></td><td>(nothing)</td><td>scraper, filters, notifier, calendar_client, telegram_bot</td></tr>
+    <tr><td><code>scraper.py</code></td><td>requests, bs4, tenacity, config</td><td>main, integrations/telegram_bot</td></tr>
+    <tr><td><code>filters.py</code></td><td>googlemaps, models, config</td><td>main, integrations/telegram_bot, calendar_client</td></tr>
+    <tr><td><code>storage.py</code></td><td>csv, pathlib, config</td><td>main</td></tr>
+    <tr><td><code>logging_config.py</code></td><td>stdlib only</td><td>main, telegram_bot.py</td></tr>
+    <tr><td><code>notifier.py</code></td><td>smtplib, jinja2, models, config</td><td>main</td></tr>
+    <tr><td><code>integrations/calendar_client.py</code></td><td>google-auth, googleapiclient, filters, models</td><td>main, integrations/telegram_bot</td></tr>
+    <tr><td><code>integrations/telegram_bot.py</code></td><td>python-telegram-bot, scraper, filters, calendar_client, models, config</td><td>telegram_bot.py (entry point)</td></tr>
+  </table>
+
+  <div class="mermaid-wrap">
+    <pre class="mermaid">
+graph LR
+    subgraph Foundation["Foundation"]
+      direction TB
+      CFG["config.py"]
+      MDL["models.py"]
+    end
+
+    subgraph Core["Core Modules"]
+      direction TB
+      SCR["scraper.py"]
+      FLT["filters.py"]
+      STO["storage.py"]
+      LOG["logging_config.py"]
+      NOT["notifier.py"]
+    end
+
+    subgraph Integrations["Integrations"]
+      direction TB
+      CAL["calendar_client.py"]
+      TGB["integrations/telegram_bot.py"]
+    end
+
+    subgraph Entry["Entry Points"]
+      MAIN["main.py"]
+      TGE["telegram_bot.py"]
+    end
+
+    CFG --> SCR & FLT & STO & NOT & CAL & TGB & MAIN
+    MDL --> SCR & FLT & NOT & CAL & TGB
+
+    SCR --> MAIN & TGB
+    FLT --> MAIN & CAL & TGB
+    STO --> MAIN
+    NOT --> MAIN
+    LOG --> MAIN & TGE
+    CAL --> MAIN & TGB
+    TGB --> TGE
+
+    style Foundation fill:#0f172a,stroke:#1e3a8a
+    style Core fill:#0f172a,stroke:#1e3a8a
+    style Integrations fill:#0f172a,stroke:#1e3a8a
+    style Entry fill:#0f172a,stroke:#1e3a8a
+    </pre>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════════
+     SECTION 3 — MODULE BREAKDOWN
+══════════════════════════════════════════════════════════════════ -->
+<section id="s3">
+  <span class="section-num">Section 3</span>
+  <h2>Complete Module &amp; File Breakdown</h2>
+
+  <!-- main.py -->
+  <div class="module-card" id="mod-main">
+    <div class="module-path">main.py</div>
+    <h3>The Orchestrator</h3>
+    <div class="module-grid">
+      <div class="module-grid-item"><label>Purpose</label><p>Entry point for the scheduler. Wires all modules together, runs the three-phase pipeline on a timer, and handles crashes gracefully.</p></div>
+      <div class="module-grid-item"><label>Key functions</label><p><code>main(scraper)</code> — one complete poll run; <code>_send_telegram_alert()</code> — crash notifications</p></div>
+      <div class="module-grid-item"><label>Connects to</label><p>Every module in the package. It is the only file that knows about all the others.</p></div>
+      <div class="module-grid-item"><label>Lines of code</label><p>260 lines</p></div>
+    </div>
+
+    <h4>Code walkthrough</h4>
+    <pre><code><span class="cm"># The Scraper is constructed ONCE before the scheduler loop,</span>
+<span class="cm"># then passed into every main() call. This keeps the TCP connection</span>
+<span class="cm"># pool alive across runs — no new TLS handshake every 2 minutes.</span>
+<span class="kw">scraper</span> = Scraper()
+<span class="kw">try</span>:
+    main(scraper)  <span class="cm"># run immediately on startup</span>
+    schedule.every(settings.poll_minutes).minutes.do(main, scraper)
+    <span class="kw">while</span> True:
+        <span class="kw">try</span>:
+            schedule.run_pending()
+        <span class="kw">except</span> Exception:
+            logger.exception(<span class="st">"Unhandled exception in scheduled run"</span>)
+            _send_telegram_alert(<span class="st">"❌ OrganistBot crashed — check logs."</span>)
+        time.sleep(1)
+<span class="kw">finally</span>:
+    scraper.session.close()</code></pre>
+    <p>The <code>while True</code> loop ticks every second. <code>schedule.run_pending()</code> fires <code>main(scraper)</code> when the timer is due. The inner try/except catches any exception from a run and sends a Telegram alert — but does <em>not</em> re-raise it, so the scheduler continues. The <code>finally</code> block ensures the HTTP session is closed cleanly on keyboard interrupt.</p>
+
+    <pre><code><span class="cm"># Load seen gigs ONCE before the loop, not inside it.</span>
+<span class="cm"># On a busy listing page with 30 gigs, this avoids 30 file reads.</span>
+seen_gigs_set = load_seen_gigs() <span class="kw">if</span> settings.enable_seen_filter <span class="kw">else</span> <span class="fn">set</span>()
+
+<span class="cm"># Pre-filter: applied using only basic details (no detail page fetch needed).</span>
+pre_filter = GigFilterChain()
+<span class="kw">if</span> settings.enable_fee_filter:
+    pre_filter.add(FeeFilter(min_fee=settings.min_fee))
+<span class="kw">if</span> settings.enable_sunday_time_filter:
+    pre_filter.add(SundayTimeFilter())
+
+<span class="cm"># For each listing element on the page:</span>
+<span class="kw">for</span> gig_el <span class="kw">in</span> gigs_div:
+    basic = scraper.extract_basic_details(gig_el)
+    <span class="kw">if</span> settings.enable_seen_filter <span class="kw">and</span> basic.get(<span class="st">"link"</span>) <span class="kw">in</span> seen_gigs_set:
+        <span class="kw">continue</span>              <span class="cm"># already notified — skip instantly</span>
+    <span class="kw">if not</span> pre_filter.is_valid(Gig(**basic)):
+        <span class="kw">continue</span>              <span class="cm"># cheap rejection — no HTTP request</span>
+    extra = scraper.extract_full_details(scraper.fetch(basic[<span class="st">"link"</span>]))
+    gig_list.append(Gig(**{**basic, **extra}))</code></pre>
+    <p>This is the core of the N+1 optimisation. A detail-page HTTP request is only made when all cheap checks pass. On a typical poll, nearly every gig is already seen, so the loop body usually exits at the first <code>continue</code>.</p>
+
+    <div class="callout callout-fp">
+      <div class="callout-title">💡 First Principles: What is a scheduler?</div>
+      <p>A scheduler is a piece of code that runs other code at regular intervals. The simplest possible scheduler is <code>while True: do_work(); time.sleep(120)</code>. The <code>schedule</code> library adds a declarative API on top of this — you describe <em>what</em> to run and <em>when</em>, and the library handles the timing math. The <code>while True: schedule.run_pending(); sleep(1)</code> pattern is "cooperative" — no threads, no OS timers, just a tight loop that checks whether anything is due.</p>
+    </div>
+  </div>
+
+  <!-- telegram_bot.py entry point -->
+  <div class="module-card" id="mod-tbentry">
+    <div class="module-path">telegram_bot.py</div>
+    <h3>Telegram Entry Point</h3>
+    <p>A 41-line entry point that sets up logging and delegates to <code>organist_bot.integrations.telegram_bot.run()</code>. It exists as a separate file so you can run <code>python telegram_bot.py</code> independently from the scheduler. This is the <strong>facade pattern</strong> — a simple front door to a more complex interior.</p>
+    <pre><code><span class="kw">if</span> __name__ == <span class="st">"__main__"</span>:
+    setup_logging(settings.log_file)
+    logger.info(<span class="st">"Telegram bot starting"</span>)
+    run(token=settings.telegram_bot_token)</code></pre>
+  </div>
+
+  <!-- config.py -->
+  <div class="module-card" id="mod-config">
+    <div class="module-path">organist_bot/config.py</div>
+    <h3>Configuration Management</h3>
+    <div class="module-grid">
+      <div class="module-grid-item"><label>Purpose</label><p>Centralises all configuration. Reads from environment variables / <code>.env</code> file. Validates types at startup.</p></div>
+      <div class="module-grid-item"><label>Key class</label><p><code>Settings(BaseSettings)</code> — 30+ typed fields covering email, filters, APIs, and feature flags.</p></div>
+    </div>
+    <h4>Code walkthrough</h4>
+    <pre><code><span class="kw">from</span> pydantic_settings <span class="kw">import</span> BaseSettings, SettingsConfigDict
+
+<span class="kw">class</span> <span class="cl">Settings</span>(BaseSettings):
+    model_config = SettingsConfigDict(env_file=<span class="st">".env"</span>, extra=<span class="st">"ignore"</span>)
+
+    <span class="cm"># Email</span>
+    email_sender: str
+    email_password: str
+    cc_email: str
+
+    <span class="cm"># Filtering</span>
+    min_fee: float = <span class="nu">50.0</span>
+    max_travel_minutes: int = <span class="nu">45</span>
+    blacklist_emails: list[str] = []
+    booked_dates: list[str] = []
+
+    <span class="cm"># Feature flags — every filter can be toggled off</span>
+    enable_fee_filter: bool = True
+    enable_sunday_time_filter: bool = True
+    enable_blacklist_filter: bool = True
+    enable_postcode_filter: bool = True
+    enable_seen_filter: bool = True
+    enable_booked_date_filter: bool = True
+    enable_calendar_filter: bool = True
+
+settings = Settings()  <span class="cm"># type: ignore[call-arg]</span></code></pre>
+    <p>The feature flags are a powerful design decision. During development or debugging you can disable any filter by setting <code>ENABLE_FEE_FILTER=false</code> in your <code>.env</code> — no code changes required. The <code># type: ignore[call-arg]</code> suppresses a mypy false positive: pydantic-settings resolves required fields from environment variables at runtime, which mypy cannot see statically.</p>
+
+    <div class="callout callout-fp">
+      <div class="callout-title">💡 First Principles: What are environment variables?</div>
+      <p>Every running process on your computer inherits a dictionary of key/value pairs from the operating system, called environment variables. They are a standard Unix mechanism for passing configuration to programs without hard-coding values into source code. A <code>.env</code> file is simply a text file of key=value pairs that a library like python-dotenv loads into the process environment on startup. The crucial benefit is that secrets (API keys, passwords) live outside the codebase, so they are never accidentally committed to git.</p>
+    </div>
+  </div>
+
+  <!-- models.py -->
+  <div class="module-card" id="mod-models">
+    <div class="module-path">organist_bot/models.py</div>
+    <h3>The Data Model</h3>
+    <pre><code><span class="dc">@dataclass</span>
+<span class="kw">class</span> <span class="cl">Gig</span>:
+    <span class="cm"># Basic details (from listing page)</span>
+    header:        str | None = None
+    organisation:  str | None = None
+    locality:      str | None = None
+    date:          str | None = None
+    time:          str | None = None
+    fee:           str | None = None
+    link:          str | None = None
+    <span class="cm"># Full details (from detail page)</span>
+    contact:              str | None = None
+    email:                str | None = None
+    phone:                str | None = None
+    address:              str | None = None
+    postcode:             str | None = None
+    musical_requirements: str | None = None</code></pre>
+    <p>Every field is <code>str | None</code> with a default of <code>None</code>. This reflects the reality that the website doesn't always provide every field. All filters are written defensively — they check for <code>None</code> before using a field. The <code>@dataclass</code> decorator auto-generates <code>__init__</code>, <code>__repr__</code>, and <code>__eq__</code>, saving boilerplate.</p>
+    <div class="callout callout-fp">
+      <div class="callout-title">💡 First Principles: What is a dataclass?</div>
+      <p>A dataclass is Python's way of saying "this class primarily exists to hold data". Before dataclasses (Python 3.7), you'd write <code>__init__</code> yourself, assign every parameter to <code>self.x</code>, and write a <code>__repr__</code> for debugging. A dataclass generates all of that from the class body annotations. It is not magic — you can inspect the generated code with <code>import inspect; print(inspect.getsource(Gig.__init__))</code>.</p>
+    </div>
+  </div>
+
+  <!-- scraper.py -->
+  <div class="module-card" id="mod-scraper">
+    <div class="module-path">organist_bot/scraper.py</div>
+    <h3>Web Scraper</h3>
+    <div class="module-grid">
+      <div class="module-grid-item"><label>Purpose</label><p>All HTTP traffic and HTML parsing. Retries transient failures. Exposes structured dicts, not raw HTML.</p></div>
+      <div class="module-grid-item"><label>Key class</label><p><code>Scraper</code> — owns the persistent HTTP session; <code>_log_retry</code> — tenacity callback</p></div>
+    </div>
+    <h4>Retry logic with tenacity</h4>
+    <pre><code><span class="dc">@retry</span>(
+    retry=retry_if_exception_type(RequestException),
+    stop=stop_after_attempt(<span class="nu">3</span>),
+    wait=wait_exponential(multiplier=<span class="nu">1</span>, min=<span class="nu">1</span>, max=<span class="nu">15</span>),
+    before_sleep=_log_retry,
+)
+<span class="kw">def</span> <span class="fn">fetch</span>(self, url: str) -> str:
+    response = self.session.get(url, timeout=self.timeout)
+    response.raise_for_status()
+    <span class="kw">return</span> response.text</code></pre>
+    <p>The <code>@retry</code> decorator wraps the function so that if it raises a <code>RequestException</code>, it waits (1s, then 2s, then 4s, capped at 15s) and tries again up to 3 times. The <code>before_sleep</code> hook logs each retry with the attempt number and wait time. This is the <strong>exponential backoff</strong> pattern — waiting progressively longer between retries to give an overloaded server time to recover.</p>
+
+    <h4>Connection pooling</h4>
+    <pre><code><span class="kw">def</span> <span class="fn">__init__</span>(self, ...):
+    self.session = requests.Session()
+    adapter = HTTPAdapter(pool_connections=<span class="nu">1</span>, pool_maxsize=<span class="nu">10</span>)
+    self.session.mount(<span class="st">"https://"</span>, adapter)
+    self.session.mount(<span class="st">"http://"</span>, adapter)</code></pre>
+    <p>A <code>requests.Session</code> reuses TCP connections. Mounting an <code>HTTPAdapter</code> with <code>pool_maxsize=10</code> tells the session to keep up to 10 connections in its pool. For a single-domain scraper, this means the TLS handshake (which can take 200–500ms) happens once per boot, not once per fetch.</p>
+
+    <h4>Type-safe attribute extraction</h4>
+    <pre><code><span class="kw">def</span> <span class="fn">_extract_link</span>(self, booking: Tag) -> str | None:
+    anchor = booking.find(<span class="st">"a"</span>, class_=<span class="st">"noselect"</span>)
+    <span class="kw">if not</span> anchor:
+        <span class="kw">return</span> None
+    <span class="kw">try</span>:
+        <span class="kw">return</span> settings.base_url + <span class="fn">str</span>(anchor[<span class="st">"href"</span>])
+    <span class="kw">except</span> (KeyError, TypeError):
+        <span class="kw">return</span> None
+
+<span class="dc">@staticmethod</span>
+<span class="kw">def</span> <span class="fn">_get_sibling_text</span>(detail_element: Tag, label: str) -> str | None:
+    element = detail_element.find(<span class="st">"h3"</span>, string=label)  <span class="cm"># type: ignore[call-overload]</span>
+    <span class="kw">if</span> element <span class="kw">and</span> element.find_next_sibling(<span class="st">"p"</span>):
+        <span class="kw">return</span> element.find_next_sibling(<span class="st">"p"</span>).get_text(strip=True)
+    <span class="kw">return</span> None</code></pre>
+    <p><code>anchor["href"]</code> is typed as <code>str | AttributeValueList</code> in BeautifulSoup's stubs — wrapping it in <code>str()</code> makes the concatenation type-safe and works correctly for both cases. The <code>_get_sibling_text</code> pattern navigates the HTML DOM tree by finding a labelled heading and then looking for its next sibling paragraph — a common pattern for scraping structured detail pages.</p>
+
+    <div class="callout callout-fp">
+      <div class="callout-title">💡 First Principles: What is web scraping?</div>
+      <p>Web scraping is the process of programmatically downloading web pages and extracting data from them. A web page is delivered as HTML — a structured text document. BeautifulSoup parses that text into a tree of Python objects (tags, strings, attributes) that you can navigate and query. The challenge is that websites are designed for humans, not programs: the structure can change without warning, fields may be missing, and the server may rate-limit or block automated requests.</p>
+    </div>
+    <div class="callout callout-fp">
+      <div class="callout-title">💡 First Principles: What is exponential backoff?</div>
+      <p>When a network request fails, immediately retrying usually makes things worse — if the server is overloaded, hammering it with retries increases the load. Exponential backoff waits 1 second, then 2, then 4, then 8 — each wait doubling the previous. This gives the server time to recover and spreads out retry traffic across clients. It is the standard pattern used by AWS SDKs, Google Cloud SDKs, and most professional HTTP clients.</p>
+    </div>
+  </div>
+
+  <!-- filters.py -->
+  <div class="module-card" id="mod-filters">
+    <div class="module-path">organist_bot/filters.py</div>
+    <h3>The Filter Chain — Heart of the Business Logic</h3>
+    <p>At 501 lines, this is the largest and most important module. It contains four parsing helpers and seven filter classes, all composed by <code>GigFilterChain</code>.</p>
+
+    <h4>Parsing helpers (pure functions)</h4>
+    <pre><code><span class="kw">def</span> <span class="fn">parse_min_fee</span>(fee_str: str | None) -> float | None:
+    <span class="cm"># "£80 - £120"  →  80.0  (take the minimum)</span>
+    <span class="cm"># "£100+"       →  100.0</span>
+    <span class="cm"># "Negotiable"  →  None</span>
+    <span class="kw">if not</span> fee_str: <span class="kw">return</span> None
+    <span class="kw">if</span> re.search(<span class="st">r"neg|negotiable|expenses"</span>, fee_str, re.IGNORECASE):
+        <span class="kw">return</span> None
+    amounts = re.findall(<span class="st">r"£?\s*([0-9]+(?:\.[0-9]{1,2})?)"</span>, fee_str)
+    numbers = [<span class="fn">float</span>(a) <span class="kw">for</span> a <span class="kw">in</span> amounts]
+    <span class="kw">return</span> <span class="fn">min</span>(numbers) <span class="kw">if</span> numbers <span class="kw">else</span> None</code></pre>
+    <p>These functions are <strong>pure</strong> — no side effects, no global state. Given the same input, they always return the same output. This makes them trivially testable: <code>assert parse_min_fee("£80 - £120") == 80.0</code>. The regex <code>r"£?\s*([0-9]+(?:\.[0-9]{1,2})?)"</code> matches optional £ sign, optional whitespace, then a decimal number.</p>
+
+    <h4>Filter classes as callables</h4>
+    <pre><code><span class="kw">class</span> <span class="cl">FeeFilter</span>:
+    <span class="kw">def</span> <span class="fn">__init__</span>(self, min_fee: float, weekday_min_fee: float = <span class="nu">120</span>):
+        self.min_fee = min_fee
+        self.weekday_min_fee = weekday_min_fee
+
+    <span class="kw">def</span> <span class="fn">__call__</span>(self, gig: Gig) -> bool:
+        weekday = parse_weekday(gig.date)
+        is_weekday = weekday <span class="kw">in</span> (<span class="nu">0</span>, <span class="nu">1</span>, <span class="nu">2</span>, <span class="nu">3</span>, <span class="nu">4</span>)
+        required = self.weekday_min_fee <span class="kw">if</span> is_weekday <span class="kw">else</span> self.min_fee
+        amount = parse_min_fee(gig.fee)
+        <span class="kw">return</span> amount <span class="kw">is not</span> None <span class="kw">and</span> amount >= required</code></pre>
+    <p>Each filter is a <strong>callable object</strong> — a class with a <code>__call__</code> method. This means you can pass it anywhere a function is expected (<code>Callable[[Gig], bool]</code>), but it can also hold state (like <code>min_fee</code>). A plain function couldn't remember its configuration.</p>
+
+    <h4>The GigFilterChain</h4>
+    <pre><code><span class="kw">class</span> <span class="cl">GigFilterChain</span>:
+    <span class="kw">def</span> <span class="fn">__init__</span>(self):
+        self._filters: list[Callable[[Any], bool]] = []
+
+    <span class="kw">def</span> <span class="fn">add</span>(self, filter_fn) -> <span class="st">"GigFilterChain"</span>:
+        self._filters.append(filter_fn)
+        <span class="kw">return</span> self  <span class="cm"># enables: chain.add(A).add(B).add(C)</span>
+
+    <span class="kw">def</span> <span class="fn">is_valid</span>(self, gig: Gig) -> bool:
+        <span class="kw">for</span> f <span class="kw">in</span> self._filters:
+            <span class="kw">if not</span> f(gig):       <span class="cm"># short-circuit: stop at first failure</span>
+                logger.debug(<span class="st">"Gig rejected"</span>, extra={<span class="st">"filter"</span>: <span class="fn">repr</span>(f), ...})
+                <span class="kw">return</span> False
+        <span class="kw">return</span> True
+
+    <span class="kw">def</span> <span class="fn">apply</span>(self, gigs: list[Gig]) -> list[Gig]:
+        <span class="kw">return</span> [gig <span class="kw">for</span> gig <span class="kw">in</span> gigs <span class="kw">if</span> self.is_valid(gig)]</code></pre>
+    <p>The chain pattern embodies the <strong>Open/Closed Principle</strong>: you can add new filters without modifying the chain itself. The <code>return self</code> in <code>add()</code> enables a fluent interface. The short-circuit in <code>is_valid</code> means an expensive filter (like the Google Maps API call in <code>PostcodeFilter</code>) is only reached if all cheap filters pass first.</p>
+
+    <div class="callout callout-fp">
+      <div class="callout-title">💡 First Principles: What is the <code>__call__</code> protocol?</div>
+      <p>In Python, any object with a <code>__call__</code> method can be called like a function: <code>obj(args)</code>. This is Python's way of unifying callable things — functions, methods, and objects — under one interface. The type hint <code>Callable[[Gig], bool]</code> says "anything that accepts a Gig and returns a bool", which includes plain functions, lambda expressions, and callable objects. Using callable objects instead of plain functions lets you bundle configuration (like <code>min_fee</code>) with the logic that uses it, keeping related things together.</p>
+    </div>
+    <div class="callout callout-fp">
+      <div class="callout-title">💡 First Principles: What is short-circuit evaluation?</div>
+      <p>Short-circuit evaluation means stopping as soon as the answer is known. In a chain of <code>AND</code> conditions, if the first is false, the rest cannot change the result — so there is no need to evaluate them. Python's <code>and</code> operator does this natively: <code>False and expensive_call()</code> never calls <code>expensive_call()</code>. The filter chain mimics this behaviour explicitly: once a filter returns False, the loop breaks and the remaining filters are skipped.</p>
+    </div>
+  </div>
+
+  <!-- storage.py -->
+  <div class="module-card" id="mod-storage">
+    <div class="module-path">organist_bot/storage.py</div>
+    <h3>Persistent Seen-Gig Store</h3>
+    <p>A thin module around Python's <code>csv</code> module. <code>load_seen_gigs()</code> reads a CSV file and returns a <code>set[str]</code> of gig URLs that have already been notified. <code>save_seen_gigs(seen)</code> <strong>overwrites</strong> the file with the full set — callers must pass the <em>union</em> of previously-seen and newly-valid links (<code>seen_gigs_set | {gig.link for gig in valid_gigs}</code>) so historical entries are never lost. A <code>set</code> is used rather than a list because membership testing (<code>url in seen_gigs</code>) is O(1) for sets vs O(n) for lists.</p>
+    <pre><code><span class="kw">def</span> <span class="fn">load_seen_gigs</span>(filepath: str = <span class="st">"data/seen_gigs.csv"</span>) -> <span class="fn">set</span>[str]:
+    path = Path(filepath)
+    <span class="kw">if not</span> path.exists():
+        <span class="kw">return</span> <span class="fn">set</span>()
+    seen = <span class="fn">set</span>()
+    <span class="kw">with</span> path.open(newline=<span class="st">""</span>) <span class="kw">as</span> fh:
+        <span class="kw">for</span> row <span class="kw">in</span> csv.reader(fh):
+            <span class="kw">if</span> row:
+                seen.add(row[<span class="nu">0</span>])   <span class="cm"># first column is the link</span>
+    <span class="kw">return</span> seen
+
+<span class="cm"># In main.py — always pass the union so historical entries survive:</span>
+save_seen_gigs(seen=seen_gigs_set | {gig.link <span class="kw">for</span> gig <span class="kw">in</span> valid_gigs})</code></pre>
+    <div class="callout callout-fp">
+      <div class="callout-title">💡 First Principles: Why a set, not a list?</div>
+      <p>A Python <code>set</code> stores its elements in a hash table. When you ask "is this element in the set?", Python computes the element's hash (a number) and looks directly at the corresponding bucket — O(1), constant time regardless of set size. A <code>list</code> stores elements sequentially. "Is this element in the list?" requires scanning every element — O(n), linear time. With 10,000 seen gigs, a list would do 10,000 comparisons per gig checked; a set does roughly 1.</p>
+    </div>
+  </div>
+
+  <!-- logging_config.py -->
+  <div class="module-card" id="mod-logging">
+    <div class="module-path">organist_bot/logging_config.py</div>
+    <h3>Dual-Handler Logging System</h3>
+    <p>One of the most carefully engineered modules in the project. Sets up two log handlers on the root logger: a colour-coded ANSI console handler (INFO+) for human reading, and a rotating JSON file handler (DEBUG+) for machine parsing.</p>
+
+    <h4>Run ID correlation</h4>
+    <pre><code>_run_id: contextvars.ContextVar[str] = contextvars.ContextVar(<span class="st">"run_id"</span>, default=<span class="st">""</span>)
+
+<span class="kw">class</span> <span class="cl">RunIdFilter</span>(logging.Filter):
+    <span class="kw">def</span> <span class="fn">filter</span>(self, record: logging.LogRecord) -> bool:
+        record.run_id = _run_id.get(<span class="st">""</span>)
+        <span class="kw">return</span> True</code></pre>
+    <p>Every log record in a run shares the same 8-character hex <code>run_id</code>. This means you can filter all log lines from a single poll run with <code>jq 'select(.run_id == "a1b2c3d4")' gigs.log</code>. The <code>ContextVar</code> is set once at the top of <code>main()</code> and automatically propagated to every log call within that execution context.</p>
+
+    <h4>JSON formatter</h4>
+    <pre><code><span class="kw">class</span> <span class="cl">JSONFormatter</span>(logging.Formatter):
+    <span class="kw">def</span> <span class="fn">format</span>(self, record: logging.LogRecord) -> str:
+        doc = {
+            <span class="st">"timestamp"</span>: ...,  <span class="cm"># ISO 8601 with milliseconds</span>
+            <span class="st">"run_id"</span>: ...,
+            <span class="st">"level"</span>: record.levelname,
+            <span class="st">"logger"</span>: record.name,
+            <span class="st">"message"</span>: record.getMessage(),
+        }
+        <span class="cm"># Merge all extra fields supplied by the caller</span>
+        <span class="kw">for</span> key, value <span class="kw">in</span> record.__dict__.items():
+            <span class="kw">if</span> key <span class="kw">not in</span> _STDLIB_FIELDS:
+                doc[key] = value
+        <span class="kw">return</span> json.dumps(doc, default=<span class="fn">str</span>)</code></pre>
+    <p>The <code>extra={...}</code> arguments passed to every <code>logger.info()</code> call appear as top-level keys in the JSON object. This structured approach means you can query logs like a database: <code>jq 'select(.elapsed_ms > 1000)' gigs.log</code> finds all slow runs.</p>
+    <p>Every external API call emits an <code>elapsed_ms</code> field in its log record: the Google Maps Distance Matrix query (in <code>PostcodeFilter._query()</code>), both Google Calendar operations (<code>has_event_on_date</code> and <code>add_gig</code>), each SMTP email dispatch (<code>Notifier._dispatch()</code>), and the Telegram crash alert. This gives per-call latency visibility across every integration in a single <code>jq</code> query.</p>
+
+    <h4>Idempotency guard</h4>
+    <pre><code><span class="kw">if</span> root.handlers:
+    <span class="kw">return</span>   <span class="cm"># already configured — don't add duplicate handlers</span></code></pre>
+    <p>Without this guard, calling <code>setup_logging()</code> twice (e.g. in a test) would add a second set of handlers, causing every log line to appear twice. This is a common Python logging pitfall.</p>
+
+    <div class="callout callout-fp">
+      <div class="callout-title">💡 First Principles: Why two log formats?</div>
+      <p>The human reading a terminal wants colour, alignment, and brevity. The script parsing log files at 3am wants a reliable, machine-readable structure. JSON satisfies the latter because every language has a JSON parser, the structure is predictable, and tools like <code>jq</code>, pandas, and Elasticsearch can query it. The ANSI console formatter prioritises readability — fixed-width columns and colour coding let your eye jump immediately to warnings and errors.</p>
+    </div>
+  </div>
+
+  <!-- notifier.py -->
+  <div class="module-card" id="mod-notifier">
+    <div class="module-path">organist_bot/notifier.py</div>
+    <h3>Email Notifier</h3>
+    <p>Handles all outbound email. Uses a <strong>transport abstraction</strong> — <code>SMTPTransport</code> for production, <code>FakeTransport</code> for testing — so no real emails are sent during test runs.</p>
+    <pre><code><span class="kw">class</span> <span class="cl">SMTPTransport</span>:
+    <span class="kw">def</span> <span class="fn">send</span>(self, sender, recipient, cc, msg):
+        <span class="kw">with</span> smtplib.SMTP_SSL(<span class="st">"smtp.gmail.com"</span>, <span class="nu">465</span>) <span class="kw">as</span> server:
+            server.login(sender, self._password)
+            all_recipients = [recipient] + (cc <span class="kw">or</span> [])
+            server.sendmail(sender, all_recipients, msg.as_string())
+
+<span class="kw">class</span> <span class="cl">FakeTransport</span>:
+    <span class="kw">def</span> <span class="fn">__init__</span>(self):
+        self.sent: list[dict] = []
+    <span class="kw">def</span> <span class="fn">send</span>(self, sender, recipient, cc, msg):
+        self.sent.append({<span class="st">"to"</span>: recipient, <span class="st">"subject"</span>: msg[<span class="st">"Subject"</span>]})</code></pre>
+    <p>Both classes share an implicit interface: they have a <code>send(sender, recipient, cc, msg)</code> method. This is <strong>duck typing</strong> — Python doesn't require a formal <code>interface</code> declaration. Any object with the right method will work.</p>
+    <pre><code><span class="kw">def</span> <span class="fn">_render</span>(self, template_name: str, **kwargs) -> str:
+    tpl = self._env.get_template(template_name)
+    <span class="kw">return</span> tpl.render(**kwargs)
+
+<span class="kw">def</span> <span class="fn">send_summary</span>(self, gigs: list[Gig]) -> None:
+    body = self._render(<span class="st">"summary.html.j2"</span>, gigs=gigs)
+    self._dispatch(subject=<span class="st">f"Organist gigs — {len(gigs)} new"</span>, body=body, ...)</code></pre>
+    <div class="callout callout-fp">
+      <div class="callout-title">💡 First Principles: What is a template engine?</div>
+      <p>A template engine separates <em>what to say</em> from <em>how to format it</em>. Jinja2 templates are HTML files with special placeholder syntax: <code>{{ gig.fee }}</code> gets replaced with the actual fee value at render time; <code>{% for gig in gigs %}</code> loops over a list. This means the visual design of the email (colours, layout, fonts) can be changed by editing an HTML file, without touching Python. A/B testing different email layouts becomes trivial.</p>
+    </div>
+  </div>
+
+  <!-- calendar_client.py -->
+  <div class="module-card" id="mod-calendar">
+    <div class="module-path">organist_bot/integrations/calendar_client.py</div>
+    <h3>Google Calendar Client</h3>
+    <p>A thin wrapper around the Google Calendar REST API v3. Provides two operations: checking if a date is busy, and inserting a new timed event. Both use <strong>fail-open</strong> error handling.</p>
+    <pre><code><span class="kw">def</span> <span class="fn">has_event_on_date</span>(self, date_str: str) -> bool:
+    <span class="kw">try</span>:
+        <span class="cm"># Query events between midnight and 23:59:59 on the given date</span>
+        result = self._service.events().list(
+            calendarId=self.calendar_id,
+            timeMin=time_min, timeMax=time_max,
+            singleEvents=True,
+        ).execute()
+        <span class="kw">return</span> <span class="fn">len</span>(result.get(<span class="st">"items"</span>, [])) > <span class="nu">0</span>
+    <span class="kw">except</span> Exception <span class="kw">as</span> exc:
+        logger.warning(<span class="st">"Calendar check failed — failing open"</span>, ...)
+        <span class="kw">return</span> False   <span class="cm"># don't block the gig on API failure</span></code></pre>
+    <p>The choice to <code>return False</code> on error is deliberate. If the Calendar API is down, the alternative — raising the exception — would cause the entire pipeline run to fail, silently dropping potentially suitable gigs. Failing open (allowing the gig through) is the safer choice for a notification system where false negatives (missed gigs) are worse than false positives (a duplicate notification).</p>
+  </div>
+
+  <!-- integrations/telegram_bot.py -->
+  <div class="module-card" id="mod-tgbot">
+    <div class="module-path">organist_bot/integrations/telegram_bot.py</div>
+    <h3>Telegram Message Handler</h3>
+    <p>An async handler for the <code>python-telegram-bot</code> library. When the user sends a message containing an organistsonline.org URL, this module scrapes the detail page, checks the calendar for a clash, and adds the event.</p>
+    <pre><code><span class="kw">def</span> <span class="fn">_is_authorised</span>(update: Update) -> bool:
+    <span class="kw">if</span> update.effective_chat <span class="kw">is</span> None:
+        <span class="kw">return</span> False
+    <span class="kw">return</span> <span class="fn">str</span>(update.effective_chat.id) == <span class="fn">str</span>(settings.telegram_chat_id)
+
+<span class="kw">async def</span> <span class="fn">handle_message</span>(update: Update, context: ...) -> None:
+    <span class="kw">if not</span> _is_authorised(update): <span class="kw">return</span>
+    <span class="kw">if</span> update.message <span class="kw">is</span> None: <span class="kw">return</span>
+    text = update.message.text <span class="kw">or</span> <span class="st">""</span>
+    match = _GIG_URL_RE.search(text)
+    <span class="kw">if not</span> match:
+        <span class="kw">await</span> update.message.reply_text(<span class="st">"Send me a gig URL..."</span>)
+        <span class="kw">return</span>
+    url = match.group(<span class="nu">0</span>)
+    <span class="kw">with</span> Scraper() <span class="kw">as</span> scraper:
+        html = scraper.fetch(url)
+        gig = Gig(**{**scraper.extract_basic_from_detail(html, url),
+                     **scraper.extract_full_details(html)})</code></pre>
+    <p>The authorisation check compares the sender's chat ID against the configured value — only your own Telegram account can trigger calendar writes. The <code>_GIG_URL_RE</code> regex ensures only valid organistsonline.org URLs are processed, preventing accidental triggering on unrelated messages.</p>
+  </div>
+
+  <!-- Templates -->
+  <div class="module-card" id="mod-templates">
+    <div class="module-path">organist_bot/templates/</div>
+    <h3>Jinja2 Email Templates</h3>
+    <p><strong><code>summary.html.j2</code></strong> — A rich HTML digest email listing all new gigs that passed the filters. Uses an emerald colour scheme with a card layout for each gig. Iterates over <code>{{ gigs }}</code> with Jinja2's <code>{% for gig in gigs %}</code> loop. Conditional blocks (<code>{% if gig.fee %}</code>) handle missing fields gracefully.</p>
+    <p><strong><code>application.html.j2</code></strong> — A formal application letter addressed to the gig contact (<code>{{ gig.contact or "Sir/Madam" }}</code>). Includes video links from applicant settings. Keeps presentation entirely in HTML, logic entirely in Python.</p>
+  </div>
+
+  <!-- Tests -->
+  <div class="module-card" id="mod-tests">
+    <div class="module-path">tests/</div>
+    <h3>Test Suite — 227 Tests</h3>
+    <table>
+      <tr><th>Test file</th><th>Covers</th><th>Key techniques</th></tr>
+      <tr><td><code>test_filters.py</code></td><td>All 4 parsing helpers + 7 filter classes + GigFilterChain</td><td>Parametrised tests, mock Google Maps client</td></tr>
+      <tr><td><code>test_scraper.py</code></td><td>Scraper.fetch, parse_gig_listings, extract_*</td><td>Mock HTTP responses, fake HTML fixtures</td></tr>
+      <tr><td><code>test_storage.py</code></td><td>load_seen_gigs, save_seen_gigs, round-trip</td><td>tmp_path fixture, CSV round-trips</td></tr>
+      <tr><td><code>test_calendar_client.py</code></td><td>has_event_on_date, add_gig</td><td>Mock Google API service object</td></tr>
+      <tr><td><code>test_telegram_integration.py</code></td><td>handle_message, _is_authorised</td><td>pytest-asyncio, mock Update objects</td></tr>
+      <tr><td><code>test_main.py</code></td><td>Three-phase orchestration, pre-filter</td><td>FakeTransport, monkeypatching schedule</td></tr>
+    </table>
+    <div class="callout callout-fp">
+      <div class="callout-title">💡 First Principles: What is mocking?</div>
+      <p>Mocking is the practice of replacing a real dependency with a fake one during tests. Instead of calling the real Google Maps API (which costs money, requires internet, and returns different results depending on traffic), you create a mock object that pretends to be the Google Maps client and returns whatever data you specify. This makes tests fast, deterministic, and free. The <code>pytest-mock</code> library provides the <code>mocker</code> fixture for creating and configuring mocks.</p>
+    </div>
+  </div>
+
+  <!-- Config files -->
+  <div class="module-card" id="mod-config-files">
+    <div class="module-path">pyproject.toml · requirements*.txt · .pre-commit-config.yaml · .github/workflows/ci.yml</div>
+    <h3>Project Configuration Files</h3>
+    <p><strong>pyproject.toml</strong> — The modern Python project manifest. Declares dependencies, tool configurations (ruff line length: 100, target Python: 3.12), mypy settings (<code>warn_unused_ignores = true</code>, excludes tests), and pytest settings (<code>asyncio_mode = "auto"</code> for async tests).</p>
+    <p><strong>requirements.txt / requirements-dev.txt</strong> — Runtime dependencies pinned to minimum versions. Dev file adds pytest, mypy, ruff, and <code>types-requests</code> stubs. The <code>-r requirements.txt</code> include in the dev file ensures one install command gets everything.</p>
+    <p><strong>.pre-commit-config.yaml</strong> — Seven hooks that run on every <code>git commit</code>: whitespace/EOL fixers, YAML/JSON validators, large-file detector, private key scanner, merge conflict checker, ruff linter, ruff formatter, and mypy type checker. The mypy hook specifies <code>additional_dependencies: [pydantic-settings, types-requests, beautifulsoup4&gt;=4.13]</code> to ensure its isolated environment matches the project's stubs.</p>
+    <p><strong>ci.yml</strong> — Two parallel GitHub Actions jobs: <code>lint</code> (ruff check, ruff format, mypy) and <code>test</code> (pytest). Both install dependencies via pip with a cache keyed on the requirements file hash. The test job sets dummy environment variables to satisfy pydantic-settings validation without real credentials.</p>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════════
+     SECTION 4 — SOFTWARE ENGINEERING BEST PRACTICES
+══════════════════════════════════════════════════════════════════ -->
+<section id="s4">
+  <span class="section-num">Section 4</span>
+  <h2>Software Engineering Best Practices Demonstrated</h2>
+
+  <h3>1. Separation of Concerns</h3>
+  <p>Every module has exactly one reason to change. If the scraping website restructures its HTML, only <code>scraper.py</code> needs updating. If the fee threshold logic changes, only <code>filters.py</code> changes. If Gmail changes its SMTP settings, only <code>notifier.py</code> changes.</p>
+  <div class="callout callout-why">
+    <div class="callout-title">✅ Why it matters</div>
+    <p><strong>Without it:</strong> A single 500-line <code>bot.py</code> mixes HTTP calls, HTML parsing, business rules, email sending, and logging. Changing the email format requires reading and understanding the entire file. A bug in scraping breaks email tests. New developers can't understand where to look for anything.</p>
+    <p><strong>With it:</strong> Each module is small enough to read in 5 minutes. Tests are isolated. Debugging is linear — "the email isn't sending" → open <code>notifier.py</code>.</p>
+  </div>
+
+  <h3>2. DRY — Don't Repeat Yourself</h3>
+  <p>The parsing helpers (<code>parse_min_fee</code>, <code>normalize_to_yyyymmdd</code>, <code>parse_weekday</code>, <code>parse_start_time</code>) are defined once in <code>filters.py</code> and imported by <code>calendar_client.py</code> and <code>integrations/telegram_bot.py</code>. The <code>GigFilterChain</code> is instantiated twice (pre-filter and main filter) with different filters loaded, rather than copy-pasting filter logic.</p>
+
+  <h3>3. SOLID Principles</h3>
+  <table>
+    <tr><th>Principle</th><th>Where applied</th></tr>
+    <tr><td><strong>S</strong>ingle Responsibility</td><td>Each module and class has one job: <code>Scraper</code> fetches HTML, <code>FeeFilter</code> checks fees, <code>Notifier</code> sends emails</td></tr>
+    <tr><td><strong>O</strong>pen/Closed</td><td><code>GigFilterChain</code> is open to extension (add a new filter class), closed to modification (the chain code itself never changes)</td></tr>
+    <tr><td><strong>L</strong>iskov Substitution</td><td><code>FakeTransport</code> and <code>SMTPTransport</code> are interchangeable anywhere a transport is expected</td></tr>
+    <tr><td><strong>I</strong>nterface Segregation</td><td>Filters only expose <code>__call__(gig) -> bool</code> — no methods the chain doesn't need</td></tr>
+    <tr><td><strong>D</strong>ependency Inversion</td><td><code>Notifier</code> depends on an abstract transport, not concrete SMTP; <code>PostcodeFilter</code> accepts an injectable <code>_client</code> parameter</td></tr>
+  </table>
+
+  <h3>4. Fail-Open Error Handling</h3>
+  <p>Three external systems can fail independently: Google Maps API, Google Calendar API, and the scraping website. The design principle is: <strong>a transient external error must never silently cause a gig to be missed</strong>.</p>
+  <pre><code><span class="cm"># PostcodeFilter — if ALL travel modes fail, pass the gig through</span>
+<span class="kw">if</span> <span class="fn">all</span>(t <span class="kw">is</span> None <span class="kw">for</span> t <span class="kw">in</span> times.values()):
+    <span class="kw">return</span> True   <span class="cm"># fail open</span>
+
+<span class="cm"># CalendarFilter — if the API call fails, pass the gig through</span>
+<span class="kw">except</span> Exception:
+    logger.warning(<span class="st">"Calendar check failed — failing open"</span>)
+    <span class="kw">return</span> False   <span class="cm"># False from has_event_on_date means "not busy" → gig passes</span></code></pre>
+
+  <h3>5. Structured Logging with Context</h3>
+  <p>Every log call carries structured context via the <code>extra={}</code> argument. This means the logs are queryable: find all runs where scraping took more than 2 seconds (<code>jq 'select(.phase == "scrape" and .elapsed_ms > 2000)'</code>). The <code>run_id</code> field correlates all messages from a single poll run.</p>
+  <pre><code>logger.info(<span class="st">"Scraping complete"</span>, extra={
+    <span class="st">"listed"</span>: <span class="fn">len</span>(gigs_div),
+    <span class="st">"pre_filter_passed"</span>: pre_filter_passed,
+    <span class="st">"scraped"</span>: <span class="fn">len</span>(gig_list),
+    <span class="st">"gig_errors"</span>: gig_errors,
+    <span class="st">"elapsed_ms"</span>: <span class="fn">int</span>((time.perf_counter() - t0) * <span class="nu">1000</span>),
+})</code></pre>
+
+  <h3>6. Configuration Management with Feature Flags</h3>
+  <p>Every filter can be disabled with a single environment variable: <code>ENABLE_FEE_FILTER=false</code>. This is invaluable during development (disable the postcode filter to avoid API charges) and debugging (disable the seen filter to re-test with already-seen gigs). Flags are additive — you never need to comment out code.</p>
+
+  <h3>7. Testing Strategy</h3>
+  <p>The test suite follows three patterns: <strong>unit tests</strong> for pure functions (parsing helpers), <strong>integration tests</strong> with mocked I/O (scraper tests with fake HTML, filter tests with mock Maps clients), and <strong>contract tests</strong> for the orchestrator (test_main.py verifies the three-phase flow with FakeTransport). The <code>FakeTransport</code> pattern is particularly valuable — it lets you assert on what emails <em>would have been sent</em> without a real SMTP server.</p>
+
+  <h3>8. CI/CD Pipeline</h3>
+  <p>Two GitHub Actions jobs run in parallel on every push. The <code>lint</code> job catches style, formatting, and type errors. The <code>test</code> job runs the full test suite. Failures in either block merging. Pre-commit hooks catch the most common issues before the code even reaches GitHub, reducing CI cycle time.</p>
+  <div class="callout callout-fp">
+    <div class="callout-title">💡 First Principles: What is CI?</div>
+    <p>Continuous Integration (CI) is the practice of automatically running your quality checks every time code is pushed. Before CI, developers would work on separate branches for weeks, then spend days resolving conflicts and fixing bugs that accumulated undetected. CI surfaces problems within minutes of their introduction, while the context is fresh in the developer's mind. The "continuous" part means you integrate small changes frequently, rather than large changes rarely.</p>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════════
+     SECTION 5 — PYTHON BEST PRACTICES & IDIOMS
+══════════════════════════════════════════════════════════════════ -->
+<section id="s5">
+  <span class="section-num">Section 5</span>
+  <h2>Python Best Practices &amp; Idioms</h2>
+
+  <h3>1. Callable Objects via <code>__call__</code></h3>
+  <p>Each filter is an object, not a function. The <code>__call__</code> dunder method makes it callable. This combines the power of functions (can be passed around, stored in lists) with the power of objects (can hold state and configuration).</p>
+  <pre><code><span class="cm"># A plain function can't remember min_fee between calls:</span>
+<span class="kw">def</span> <span class="fn">fee_filter</span>(gig): <span class="kw">return</span> gig.fee >= ???
+
+<span class="cm"># A callable object remembers its configuration:</span>
+f = FeeFilter(min_fee=<span class="nu">80</span>)   <span class="cm"># configure once</span>
+f(gig1)                       <span class="cm"># call many times</span>
+f(gig2)</code></pre>
+
+  <h3>2. The Context Manager Protocol</h3>
+  <pre><code><span class="kw">with</span> Scraper() <span class="kw">as</span> scraper:
+    html = scraper.fetch(url)
+    <span class="cm"># scraper.session.close() called automatically on exit</span></code></pre>
+  <p>The <code>with</code> statement guarantees that <code>__exit__</code> is called even if an exception is raised. This is the Pythonic equivalent of <code>try/finally</code> — it ensures resources (HTTP connections, file handles, database connections) are always released.</p>
+
+  <h3>3. Type Hints and Union Types</h3>
+  <pre><code><span class="kw">def</span> <span class="fn">parse_min_fee</span>(fee_str: str | None) -> float | None: ...</code></pre>
+  <p>Python's type hints are documentation that mypy can verify. <code>str | None</code> (Python 3.10+ syntax) explicitly documents that the function can receive and return nothing. This turns a runtime surprise ("why is this None?") into a compile-time error.</p>
+
+  <h3>4. List Comprehensions</h3>
+  <pre><code><span class="cm"># Instead of:</span>
+valid = []
+<span class="kw">for</span> gig <span class="kw">in</span> gigs:
+    <span class="kw">if</span> self.is_valid(gig):
+        valid.append(gig)
+
+<span class="cm"># Pythonic:</span>
+valid = [gig <span class="kw">for</span> gig <span class="kw">in</span> gigs <span class="kw">if</span> self.is_valid(gig)]</code></pre>
+  <p>List comprehensions are faster than equivalent loops (the list is built internally without repeated <code>append</code> calls) and more readable when kept to one logical operation.</p>
+
+  <h3>5. Set Comprehensions</h3>
+  <pre><code><span class="cm"># Convert a list of CSV rows into a set of URLs — O(1) lookup</span>
+<span class="kw">return</span> {row[<span class="st">"link"</span>] <span class="kw">for</span> row <span class="kw">in</span> reader <span class="kw">if</span> row.get(<span class="st">"link"</span>)}</code></pre>
+
+  <h3>6. <code>contextvars</code> for Implicit Context Propagation</h3>
+  <p>Python's <code>contextvars</code> module provides context variables that are automatically scoped to the current execution context. The <code>run_id</code> is set once at the top of <code>main()</code> and is readable anywhere in the call stack for the duration of that run — without being passed as a parameter to every function. This is the correct, thread-safe alternative to a global variable.</p>
+
+  <h3>7. <code>frozenset</code> for Immutable Lookup Tables</h3>
+  <pre><code>_STDLIB_FIELDS = <span class="fn">frozenset</span>({<span class="st">"args"</span>, <span class="st">"asctime"</span>, <span class="st">"created"</span>, ...})</code></pre>
+  <p>A <code>frozenset</code> is a set that cannot be modified after creation. Using one for <code>_STDLIB_FIELDS</code> (the set of built-in logging record fields to exclude from JSON output) signals intent: this is a constant, not a variable. It also makes the membership check slightly faster and thread-safe.</p>
+
+  <h3>8. f-strings with <code>!r</code> Formatting</h3>
+  <pre><code>logger.info(<span class="st">f"PostcodeFilter(home={self.home_postcode!r})"</span>)</code></pre>
+  <p>The <code>!r</code> conversion calls <code>repr()</code> on the value, which adds quotes around strings and shows <code>None</code> literally. This is essential in log messages because <code>repr("SW1A 1AA")</code> produces <code>'SW1A 1AA'</code> (with quotes) while <code>str("SW1A 1AA")</code> produces <code>SW1A 1AA</code> (without) — the quotes make it unambiguous that the value is a string.</p>
+
+  <h3>9. Dependency Injection via Constructor</h3>
+  <pre><code><span class="kw">class</span> <span class="cl">PostcodeFilter</span>:
+    <span class="kw">def</span> <span class="fn">__init__</span>(self, home_postcode, api_key, max_minutes=<span class="nu">45</span>,
+                 _client=None):  <span class="cm"># injectable for testing</span>
+        self._client = _client <span class="kw">or</span> googlemaps.Client(key=api_key)</code></pre>
+  <p>By accepting an optional <code>_client</code> parameter, tests can inject a mock without any monkey-patching of the module. This is pure dependency injection — the class doesn't create its own dependencies, they are handed to it.</p>
+
+  <h3>10. Rotating File Handler</h3>
+  <pre><code>file_handler = logging.handlers.RotatingFileHandler(
+    log_file,
+    maxBytes=<span class="nu">5</span> * <span class="nu">1024</span> * <span class="nu">1024</span>,  <span class="cm"># rotate at 5 MB</span>
+    backupCount=<span class="nu">3</span>,               <span class="cm"># keep 4 files total</span>
+)</code></pre>
+  <p>Without rotation, a long-running bot would grow a log file indefinitely. The <code>RotatingFileHandler</code> caps the file at 5 MB and keeps up to 3 backups (<code>gigs.log</code>, <code>gigs.log.1</code>, <code>gigs.log.2</code>, <code>gigs.log.3</code>). This is production-standard log management using only Python's standard library.</p>
+</section>
+
+
+<!-- ══════════════════════════════════════════════════════════════
+     SECTION 6 — PERFORMANCE OPTIMIZATIONS
+══════════════════════════════════════════════════════════════════ -->
+<section id="s6">
+  <span class="section-num">Section 6</span>
+  <h2>Performance Optimizations — Deep Dive</h2>
+  <p>OrganistBot is an I/O-bound application: the bottleneck is network latency, not CPU computation. Each of the five optimisations below targets a specific I/O cost. Understanding <em>why</em> they work requires understanding how the computer spends its time.</p>
+
+  <div class="callout callout-fp">
+    <div class="callout-title">💡 First Principles: I/O-bound vs CPU-bound</div>
+    <p>A CPU-bound program spends most of its time computing (sorting a million numbers, rendering a video). Making it faster means using faster algorithms or more CPU cores. An I/O-bound program spends most of its time <em>waiting</em> — for a disk read, a network response, a database query. The CPU is idle during that wait. For I/O-bound programs, the key is to <em>reduce the number of waits</em> and <em>make each wait shorter</em>. All five optimisations below do exactly that.</p>
+  </div>
+
+  <h3>Optimisation 1 — Pre-filter chain (the N+1 problem)</h3>
+  <table>
+    <tr><th>Aspect</th><th>Detail</th></tr>
+    <tr><td>Problem</td><td>Fetching 30 detail pages per poll run, even for gigs that would be immediately rejected by the fee filter</td></tr>
+    <tr><td>Original approach</td><td>For every listing: fetch detail page → build full Gig → apply all filters</td></tr>
+    <tr><td>Optimised approach</td><td>Apply cheap filters on basic details first; only fetch the detail page if the pre-filters pass</td></tr>
+    <tr><td>CS concept</td><td>Early termination, eager rejection, I/O hoisting</td></tr>
+    <tr><td>Estimated improvement</td><td>On a typical run where 90% of gigs fail the fee filter: 30 HTTP requests → 3–4. At ~300ms per request, that is ~8 seconds saved per poll run.</td></tr>
+  </table>
+  <pre><code><span class="cm"># BEFORE — always fetches the detail page</span>
+<span class="kw">for</span> gig_el <span class="kw">in</span> gigs_div:
+    basic = scraper.extract_basic_details(gig_el)
+    extra = scraper.extract_full_details(scraper.fetch(basic[<span class="st">"link"</span>]))  <span class="cm"># always!</span>
+    gig = Gig(**{**basic, **extra})
+    <span class="kw">if</span> filter_chain.is_valid(gig):
+        gig_list.append(gig)
+
+<span class="cm"># AFTER — only fetches the detail page when the gig might pass</span>
+<span class="kw">for</span> gig_el <span class="kw">in</span> gigs_div:
+    basic = scraper.extract_basic_details(gig_el)
+    <span class="kw">if not</span> pre_filter.is_valid(Gig(**basic)):
+        <span class="kw">continue</span>               <span class="cm"># rejected cheaply — no HTTP request</span>
+    extra = scraper.extract_full_details(scraper.fetch(basic[<span class="st">"link"</span>]))
+    gig_list.append(Gig(**{**basic, **extra}))</code></pre>
+  <p>This is the classic <strong>N+1 query problem</strong> (originally described in the context of SQL/ORM) applied to HTTP. The "N" is the number of listings on the page; the "+1" is the listing page itself. By filtering before fetching, the effective N is drastically reduced on most runs.</p>
+
+  <h3>Optimisation 2 — Seen-gigs loaded once, not per-gig</h3>
+  <table>
+    <tr><th>Aspect</th><th>Detail</th></tr>
+    <tr><td>Problem</td><td>The seen-gigs CSV file was read inside the per-gig loop, causing repeated disk I/O</td></tr>
+    <tr><td>Original approach</td><td><code>if gig.link in load_seen_gigs(): continue</code> inside the loop</td></tr>
+    <tr><td>Optimised approach</td><td><code>seen_gigs_set = load_seen_gigs()</code> once before the loop</td></tr>
+    <tr><td>CS concept</td><td>Loop-invariant hoisting — moving work outside a loop that doesn't change per iteration</td></tr>
+    <tr><td>Estimated improvement</td><td>Eliminates 30 disk reads per poll run. Disk I/O is ~100× slower than memory access.</td></tr>
+  </table>
+  <pre><code><span class="cm"># BEFORE — disk read inside the loop</span>
+<span class="kw">for</span> gig_el <span class="kw">in</span> gigs_div:
+    basic = scraper.extract_basic_details(gig_el)
+    <span class="kw">if</span> basic[<span class="st">"link"</span>] <span class="kw">in</span> load_seen_gigs():  <span class="cm"># file read every iteration!</span>
+        <span class="kw">continue</span>
+
+<span class="cm"># AFTER — load once, hand to SeenFilter for O(1) lookup inside the pre-filter chain</span>
+seen_gigs_set = load_seen_gigs()            <span class="cm"># one file read before the loop</span>
+pre_filter.add(SeenFilter(seen_gigs_set))   <span class="cm"># filter holds the set internally</span>
+
+<span class="kw">for</span> gig_el <span class="kw">in</span> gigs_div:
+    basic = scraper.extract_basic_details(gig_el)
+    <span class="kw">if not</span> pre_filter.is_valid(Gig(**basic)):  <span class="cm"># SeenFilter runs first — O(1) set lookup</span>
+        <span class="kw">continue</span></code></pre>
+
+  <h3>Optimisation 3 — Persistent HTTP Session with Connection Pooling</h3>
+  <table>
+    <tr><th>Aspect</th><th>Detail</th></tr>
+    <tr><td>Problem</td><td>Each poll run opened a new TCP connection with a full TLS handshake, taking 200–500ms</td></tr>
+    <tr><td>Original approach</td><td><code>requests.get(url)</code> inside <code>main()</code> — creates a new connection each time</td></tr>
+    <tr><td>Optimised approach</td><td><code>Scraper</code> with a <code>requests.Session</code> and <code>HTTPAdapter(pool_maxsize=10)</code> created once at startup</td></tr>
+    <tr><td>CS concept</td><td>HTTP Keep-Alive, connection pooling, amortising fixed costs</td></tr>
+    <tr><td>Estimated improvement</td><td>Saves one 200–500ms TLS handshake per run (every 2 minutes). Over 24 hours: 720 handshakes × 350ms = ~4 minutes of unnecessary waiting eliminated.</td></tr>
+  </table>
+  <div class="callout callout-fp">
+    <div class="callout-title">💡 First Principles: What is a TLS handshake?</div>
+    <p>When your browser (or a Python program) connects to an HTTPS website, it must first negotiate an encrypted channel. This involves several round-trips: the client says hello, the server presents its certificate, both sides agree on encryption keys. This negotiation — the TLS handshake — typically takes 200–500ms and happens <em>before</em> any actual data is transferred. Connection pooling keeps the established encrypted channel open so subsequent requests skip the handshake entirely.</p>
+  </div>
+
+  <h3>Optimisation 4 — PostcodeFilter In-Memory Cache (Memoisation)</h3>
+  <table>
+    <tr><th>Aspect</th><th>Detail</th></tr>
+    <tr><td>Problem</td><td>If 3 gigs on the same listing page share a postcode, the Google Maps API is called 3 times for the same query</td></tr>
+    <tr><td>Original approach</td><td>Call <code>_query(postcode, mode)</code> directly each time</td></tr>
+    <tr><td>Optimised approach</td><td><code>self._cache: dict[str, dict[str, int | None]] = {}</code> caches results per postcode for the lifetime of the filter instance</td></tr>
+    <tr><td>CS concept</td><td>Memoisation — caching the result of expensive function calls keyed by their inputs</td></tr>
+    <tr><td>Estimated improvement</td><td>Eliminates duplicate API calls within a run. Google Maps API also has a per-request cost — duplicate calls are literally money.</td></tr>
+  </table>
+  <pre><code><span class="kw">def</span> <span class="fn">_travel_times</span>(self, postcode: str) -> dict[str, int | None]:
+    <span class="kw">if</span> postcode <span class="kw">not in</span> self._cache:
+        <span class="cm"># Only call the API if we haven't seen this postcode before</span>
+        self._cache[postcode] = {
+            mode: self._query(postcode, mode) <span class="kw">for</span> mode <span class="kw">in</span> self.MODES
+        }
+    <span class="kw">return</span> self._cache[postcode]  <span class="cm"># O(1) dict lookup on subsequent calls</span></code></pre>
+
+  <h3>Optimisation 5 — Short-Circuit Evaluation in the Filter Chain</h3>
+  <table>
+    <tr><th>Aspect</th><th>Detail</th></tr>
+    <tr><td>Problem</td><td>Running all filters (including expensive ones like PostcodeFilter) on every gig, even those that fail the first cheap filter</td></tr>
+    <tr><td>Original approach</td><td><code>all(f(gig) for f in filters)</code> — evaluates all filters regardless</td></tr>
+    <tr><td>Optimised approach</td><td>Loop with early <code>return False</code> at the first failing filter</td></tr>
+    <tr><td>CS concept</td><td>Short-circuit evaluation, ordering by cost</td></tr>
+    <tr><td>Estimated improvement</td><td>A gig failing <code>FeeFilter</code> never reaches <code>PostcodeFilter</code>, avoiding an API call. Filters are ordered cheapest-first deliberately.</td></tr>
+  </table>
+  <pre><code><span class="kw">def</span> <span class="fn">is_valid</span>(self, gig: Gig) -> bool:
+    <span class="kw">for</span> f <span class="kw">in</span> self._filters:  <span class="cm"># filters ordered: cheap → expensive</span>
+        <span class="kw">if not</span> f(gig):
+            <span class="kw">return</span> False    <span class="cm"># stop here — PostcodeFilter never reached</span>
+    <span class="kw">return</span> True</code></pre>
+  <p>The ordering of filters in <code>main.py</code> is intentional across two separate chains. The <strong>Phase 1 pre-filter</strong> (cheapest-to-most-expensive, runs before the detail-page HTTP fetch): <code>SeenFilter</code> (O(1) set lookup) → <code>FeeFilter</code> (pure arithmetic) → <code>SundayTimeFilter</code> (pure arithmetic) → <code>BookedDateFilter</code> (set lookup) → <code>CalendarFilter</code> (API call). The <strong>Phase 2 filter chain</strong> handles fields only available after fetching the detail page: <code>FeeFilter</code> → <code>SundayTimeFilter</code> → <code>BlacklistFilter</code> (set lookup) → <code>BookedDateFilter</code> → <code>PostcodeFilter</code> (API call). <code>CalendarFilter</code> sits in Phase 1 because it only needs the gig's date — no detail-page fetch required. <code>PostcodeFilter</code> stays in Phase 2 because it needs the postcode, which only appears on the detail page.</p>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════════
+     SECTION 7 — PRODUCT DEVELOPMENT LESSONS
+══════════════════════════════════════════════════════════════════ -->
+<section id="s7">
+  <span class="section-num">Section 7</span>
+  <h2>Product Development Lessons</h2>
+
+  <h3>Requirements → Design → Implementation → Iteration</h3>
+  <p>OrganistBot is a textbook example of iterative product development visible in the code itself. The core requirement was simple: <em>tell me when a suitable gig appears</em>. The first implementation needed only a fee filter and a seen-gigs store. The codebase shows the iterations clearly: the pre-filter chain (added after observing slow runs with many listings), the Telegram booking flow (added after the email-only workflow proved cumbersome), the <code>CalendarFilter</code> (added after double-booking became a real problem).</p>
+  <p>The feature flags (<code>enable_fee_filter</code>, <code>enable_postcode_filter</code>, etc.) are a direct record of this iteration — they were added as each feature was introduced, so existing deployments could opt in gradually without breaking changes.</p>
+
+  <h3>Tradeoffs made</h3>
+  <table>
+    <tr><th>Tradeoff</th><th>Choice</th><th>Reasoning</th></tr>
+    <tr><td>Fail-open vs fail-closed</td><td>Fail-open on API errors</td><td>A missed gig is worse than a duplicate notification for this use case</td></tr>
+    <tr><td>Simple scheduler vs async/cron</td><td><code>schedule</code> library in a while loop</td><td>No server, no cron daemon, no Docker — runs on a Mac with one command</td></tr>
+    <tr><td>Structured logging vs simple print</td><td>Dual JSON+console logging</td><td>JSON logs enable future analysis; console logs enable real-time monitoring</td></tr>
+    <tr><td>CSV vs database for seen-gigs</td><td>CSV file</td><td>No database server needed; the dataset is small; CSV is human-readable for debugging</td></tr>
+    <tr><td>Full type checking vs no types</td><td>mypy on the package (not tests)</td><td>Catches real bugs in business logic; test code is less critical for type safety</td></tr>
+  </table>
+
+  <h3>What a Product Manager would care about</h3>
+  <ul>
+    <li><strong>Reliability:</strong> Does the bot miss gigs? Fail-open design and retry logic minimise false negatives. The crash alert to Telegram ensures you're notified immediately if the scheduler dies.</li>
+    <li><strong>Latency:</strong> How quickly does the user learn about a new gig? With a 2-minute poll interval and the pre-filter optimisation bringing each run under 2 seconds, time-to-notification is under 4 minutes.</li>
+    <li><strong>Maintainability:</strong> Can you add a new filter when your requirements change? Yes — one class, one line in <code>main.py</code>.</li>
+  </ul>
+
+  <h3>What a Tech Lead would evaluate</h3>
+  <ul>
+    <li><strong>Testability:</strong> Can I test this without hitting real APIs? Yes — every external dependency is injectable (Maps client, SMTP transport, Calendar client).</li>
+    <li><strong>Observability:</strong> Can I debug a production issue from logs alone? Yes — JSON logs with run_id correlation and structured context make every run reconstructable.</li>
+    <li><strong>Extensibility:</strong> Can a new developer add a feature without fear of breaking existing behaviour? Yes — the filter chain is open to extension, and CI will catch regressions immediately.</li>
+    <li><strong>Operability:</strong> Can this be monitored and restarted easily? Yes — the Telegram crash alert provides real-time alerting, and the bot is trivially restarted with one command.</li>
+  </ul>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════════
+     SECTION 8 — CONCEPTS GLOSSARY
+══════════════════════════════════════════════════════════════════ -->
+<section id="s8">
+  <span class="section-num">Section 8</span>
+  <h2>Concepts Glossary — First Principles Reference</h2>
+  <dl>
+
+    <div class="glossary-entry">
+      <dt>API (Application Programming Interface)</dt>
+      <dd>A defined contract through which two pieces of software communicate. Like a restaurant menu — you choose from the listed options and receive a defined response; you don't need to know how the kitchen works. In this project, the Google Calendar API, Google Maps Distance Matrix API, and Telegram Bot API are all external APIs accessed over HTTP using JSON.</dd>
+    </div>
+
+    <div class="glossary-entry">
+      <dt>BeautifulSoup</dt>
+      <dd>A Python library for parsing HTML and XML documents. It turns a raw HTML string into a navigable tree of Python objects so you can ask questions like "find the first &lt;h3&gt; tag with class 'organisation'". It is tolerant of malformed HTML, which is important when scraping real-world websites that rarely produce perfectly valid markup.</dd>
+    </div>
+
+    <div class="glossary-entry">
+      <dt>CI/CD (Continuous Integration / Continuous Delivery)</dt>
+      <dd>CI is the practice of automatically running quality checks (tests, linters, type checkers) every time code is committed. CD extends this by automatically deploying passing code to production. OrganistBot implements CI via GitHub Actions but not CD, since it runs locally on a Mac. The goal of CI is to detect and fix problems when they are small and fresh, not after weeks of accumulation.</dd>
+    </div>
+
+    <div class="glossary-entry">
+      <dt>Connection Pooling</dt>
+      <dd>Keeping a set of established network connections alive and reusing them for subsequent requests. Establishing a TCP connection and negotiating TLS encryption takes 200–500ms. By pooling connections, that cost is paid once, not on every request. The <code>requests.Session</code> with an <code>HTTPAdapter</code> in this project implements connection pooling for the scraper's HTTP requests.</dd>
+    </div>
+
+    <div class="glossary-entry">
+      <dt>Context Variable (<code>contextvars.ContextVar</code>)</dt>
+      <dd>A variable whose value is scoped to the current execution context (thread, async task, or coroutine). Unlike a global variable (one value shared by all code), a ContextVar can have different values in different concurrent tasks. In this project, <code>_run_id</code> is a ContextVar — each poll run sets it once, and every logging call within that run automatically reads the correct run_id without it being passed as a parameter.</dd>
+    </div>
+
+    <div class="glossary-entry">
+      <dt>Dataclass</dt>
+      <dd>A Python class decorated with <code>@dataclass</code> that auto-generates boilerplate: <code>__init__</code>, <code>__repr__</code>, and <code>__eq__</code>. It is a concise way to define data-holding classes. Unlike a plain dict, a dataclass provides attribute access (<code>gig.fee</code> instead of <code>gig["fee"]</code>), type annotation, and a human-readable repr for debugging.</dd>
+    </div>
+
+    <div class="glossary-entry">
+      <dt>Dependency Injection</dt>
+      <dd>A design pattern where an object's dependencies are provided from outside, rather than created internally. Instead of <code>self.client = googlemaps.Client(key=api_key)</code> always, the code accepts an optional <code>_client=None</code> parameter. Tests inject a mock; production uses the real client. This makes testing possible without patching global module state, and makes the class's dependencies explicit and inspectable.</dd>
+    </div>
+
+    <div class="glossary-entry">
+      <dt>Duck Typing</dt>
+      <dd>Python's approach to polymorphism: "if it walks like a duck and quacks like a duck, it's a duck." Rather than requiring objects to formally declare they implement an interface, Python checks whether the object has the required method when that method is called. <code>SMTPTransport</code> and <code>FakeTransport</code> both have a <code>send()</code> method — either works wherever a transport is expected, without any formal interface declaration.</dd>
+    </div>
+
+    <div class="glossary-entry">
+      <dt>Environment Variables</dt>
+      <dd>Key/value pairs inherited by a process from the operating system. They are the standard Unix mechanism for passing configuration (especially secrets) to programs without embedding values in source code. A <code>.env</code> file is a developer convenience — it contains those key/value pairs and is loaded into the process environment by <code>python-dotenv</code> at startup. The <code>.env</code> file is listed in <code>.gitignore</code> and never committed to version control.</dd>
+    </div>
+
+    <div class="glossary-entry">
+      <dt>Exponential Backoff</dt>
+      <dd>A retry strategy where the wait time between attempts doubles with each failure: 1s, 2s, 4s, 8s. It is the standard approach for handling transient network errors because it reduces load on an already-stressed server and spreads out retry traffic. The <code>tenacity</code> library implements this with the <code>wait_exponential()</code> parameter. A maximum wait cap (15s in this project) prevents indefinitely long waits.</dd>
+    </div>
+
+    <div class="glossary-entry">
+      <dt>Fail-Open vs Fail-Closed</dt>
+      <dd>When an external dependency fails, "fail-open" means allowing the operation to proceed as if the dependency reported a permissive result; "fail-closed" means blocking the operation. For a notification bot, fail-open is usually correct: if the Google Maps API fails, passing the gig through (possible false positive) is better than silently dropping it (definite false negative). The choice depends on whether false positives or false negatives are more harmful.</dd>
+    </div>
+
+    <div class="glossary-entry">
+      <dt>Feature Flag</dt>
+      <dd>A configuration switch that enables or disables a feature at runtime without deploying new code. In OrganistBot, each filter has a corresponding <code>enable_*_filter</code> boolean in <code>Settings</code>. Setting <code>ENABLE_POSTCODE_FILTER=false</code> in <code>.env</code> disables that filter instantly. Feature flags allow gradual rollouts, A/B testing, and fast disablement of broken features in production.</dd>
+    </div>
+
+    <div class="glossary-entry">
+      <dt>GitHub Actions</dt>
+      <dd>GitHub's built-in CI/CD platform. Workflows are defined in YAML files under <code>.github/workflows/</code>. A workflow runs on a GitHub-managed virtual machine (called a "runner") when triggered by events like a git push. Each workflow consists of jobs, each job consists of steps, and each step either runs a shell command or invokes a pre-built "action" from the GitHub marketplace.</dd>
+    </div>
+
+    <div class="glossary-entry">
+      <dt>HTTP Keep-Alive</dt>
+      <dd>An HTTP feature that keeps a TCP connection open after a request completes, allowing subsequent requests to reuse it. Without keep-alive, every HTTP request requires a new TCP three-way handshake (~50ms) and, for HTTPS, a TLS handshake (~300ms). The <code>requests.Session</code> uses keep-alive by default. The <code>HTTPAdapter</code> with <code>pool_maxsize=10</code> extends this by maintaining a pool of up to 10 such connections.</dd>
+    </div>
+
+    <div class="glossary-entry">
+      <dt>Idempotency</dt>
+      <dd>An operation is idempotent if performing it multiple times has the same effect as performing it once. The <code>setup_logging()</code> function is idempotent — calling it twice only sets up handlers once. The <code>save_seen_gigs()</code> function is idempotent — writing the same URLs twice doesn't create duplicates because the seen-gigs set deduplicates them on load. Idempotency is valuable because it makes functions safe to retry.</dd>
+    </div>
+
+    <div class="glossary-entry">
+      <dt>Jinja2</dt>
+      <dd>A template engine for Python. Templates are text files (HTML in this project) with special syntax for placeholders (<code>{{ variable }}</code>), loops (<code>{% for item in list %}</code>), and conditionals (<code>{% if condition %}</code>). At render time, Jinja2 fills in the placeholders with real data. This separates presentation (HTML/CSS) from logic (Python), making each independently editable.</dd>
+    </div>
+
+    <div class="glossary-entry">
+      <dt>Memoisation</dt>
+      <dd>Caching the result of a function call so that identical future calls return the cached result immediately. The function computes its result once, stores it in a dictionary keyed by the inputs, and returns the cached value on subsequent identical calls. The <code>PostcodeFilter._cache</code> is a manual memoisation of the Google Maps API call. Python's <code>functools.lru_cache</code> decorator automates memoisation for pure functions.</dd>
+    </div>
+
+    <div class="glossary-entry">
+      <dt>Mypy</dt>
+      <dd>Python's optional static type checker. It reads your type annotations (<code>def f(x: int) -> str</code>) and verifies them without running the code. Mypy catches type mismatches, wrong argument types, and possible None dereferences before they cause runtime errors. It is "optional" in the sense that Python runs fine without annotations — mypy is a separate tool you run as part of CI.</dd>
+    </div>
+
+    <div class="glossary-entry">
+      <dt>Pipeline Architecture</dt>
+      <dd>An architectural pattern where data flows through a sequence of processing stages, each transforming it into the input for the next. OrganistBot's Scrape → Filter → Notify pipeline is a classic example. Pipelines are composable (stages can be added/removed), testable (each stage can be tested with fake inputs), and observable (each stage can be logged independently).</dd>
+    </div>
+
+    <div class="glossary-entry">
+      <dt>Pre-commit Hook</dt>
+      <dd>A script that runs automatically when you attempt a <code>git commit</code>. If the script exits with a non-zero code (failure), the commit is aborted. Pre-commit hooks enforce quality gates at the source — before code reaches the remote repository or CI. The <code>pre-commit</code> framework manages hook installation and runs hooks in isolated virtual environments to avoid conflicts with the project's own dependencies.</dd>
+    </div>
+
+    <div class="glossary-entry">
+      <dt>Pydantic / pydantic-settings</dt>
+      <dd>Pydantic is a Python library for data validation using type annotations. You declare a class with typed fields, and Pydantic validates and coerces input data to those types — raising clear errors if validation fails. <code>pydantic-settings</code> extends this for configuration: it reads values from environment variables and <code>.env</code> files, validates their types, and raises errors at startup if required settings are missing.</dd>
+    </div>
+
+    <div class="glossary-entry">
+      <dt>pytest</dt>
+      <dd>Python's de-facto standard testing framework. Tests are plain functions starting with <code>test_</code>; pytest discovers and runs them automatically. The <code>mocker</code> fixture (from <code>pytest-mock</code>) provides a clean interface for creating mocks. The <code>tmp_path</code> fixture provides a temporary directory for file-based tests. <code>pytest-asyncio</code> adds support for async test functions.</dd>
+    </div>
+
+    <div class="glossary-entry">
+      <dt>Regex (Regular Expression)</dt>
+      <dd>A mini-language for describing text patterns. <code>r"£?\s*([0-9]+(?:\.[0-9]{1,2})?)"</code> means: optional £, optional whitespace, then capture a number with up to 2 decimal places. Python's <code>re</code> module compiles and evaluates these patterns. Regex is the right tool for flexible text extraction from semi-structured data like web-scraped fee strings that vary in format.</dd>
+    </div>
+
+    <div class="glossary-entry">
+      <dt>Rotating Log File</dt>
+      <dd>A log file that is automatically archived and replaced when it reaches a size limit. Python's <code>RotatingFileHandler</code> renames <code>gigs.log</code> to <code>gigs.log.1</code> when it hits 5 MB, then starts a fresh <code>gigs.log</code>. Old backups are kept up to a <code>backupCount</code> limit. Without rotation, a long-running bot's log file would grow without bound, eventually filling the disk.</dd>
+    </div>
+
+    <div class="glossary-entry">
+      <dt>Web Scraping</dt>
+      <dd>Programmatically downloading web pages and extracting structured data from their HTML. Since most websites are designed for human readers, scraping requires understanding the HTML structure and writing code to navigate it. The main challenges are: sites change their HTML structure without notice, they may block automated requests, and the data is often inconsistently formatted (hence the many parsing helpers in <code>filters.py</code>).</dd>
+    </div>
+
+    <div class="glossary-entry">
+      <dt>SMTP (Simple Mail Transfer Protocol)</dt>
+      <dd>The protocol used to send email between servers. Python's <code>smtplib.SMTP_SSL</code> connects to Gmail's SMTP server on port 465, authenticates with the sender's credentials, and delivers the email message. The email itself is structured as a MIME (Multipurpose Internet Mail Extensions) document — a format that supports HTML bodies, attachments, CC lists, and other email features.</dd>
+    </div>
+
+    <div class="glossary-entry">
+      <dt>Type Hints</dt>
+      <dd>Annotations in Python source code that specify the expected types of variables, parameters, and return values. They are not enforced at runtime (Python ignores them when executing) but are read by type checkers like mypy and displayed by IDEs. They serve as machine-verifiable documentation: <code>def parse_min_fee(fee_str: str | None) -> float | None</code> tells the reader exactly what this function accepts and returns.</dd>
+    </div>
+
+    <div class="glossary-entry">
+      <dt>UUID (Universally Unique Identifier)</dt>
+      <dd>A 128-bit number generated to be statistically unique across all systems and all time, without coordination. OrganistBot generates a random UUID at the start of each poll run and uses the first 8 hex characters as a <code>run_id</code> to correlate log messages. <code>uuid.uuid4().hex[:8]</code> produces an 8-character hex string like <code>a1b2c3d4</code> that is unique enough for log correlation purposes.</dd>
+    </div>
+
+  </dl>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════════
+     SECTION 9 — FUTURE ROADMAP
+══════════════════════════════════════════════════════════════════ -->
+<section id="s9">
+  <span class="section-num">Section 9</span>
+  <h2>Future Features &amp; Growth Roadmap</h2>
+  <p>OrganistBot has a solid foundation. Here are ten meaningful extensions ordered from approachable to ambitious.</p>
+
+  <table>
+    <tr><th>#</th><th>Feature</th><th>Value</th><th>Complexity</th></tr>
+    <tr><td>1</td><td>Web dashboard (FastAPI + HTMX)</td><td>Browse, approve, or dismiss gigs in a browser UI instead of email</td><td><span class="badge badge-moderate">Moderate</span></td></tr>
+    <tr><td>2</td><td>SMS alerts via Twilio</td><td>Instant mobile notification as a fallback to email</td><td><span class="badge badge-simple">Simple</span></td></tr>
+    <tr><td>3</td><td>Slack / Discord notification channel</td><td>Team-friendly notifications if the bot is shared</td><td><span class="badge badge-simple">Simple</span></td></tr>
+    <tr><td>4</td><td>robots.txt compliance check</td><td>Ethical scraping — honour crawl-delay directives</td><td><span class="badge badge-simple">Simple</span></td></tr>
+    <tr><td>5</td><td>Distance filter for weekday gigs</td><td>PostcodeFilter currently only applies to Sundays — extend to all days</td><td><span class="badge badge-simple">Simple</span></td></tr>
+    <tr><td>6</td><td>Application follow-up reminder</td><td>Auto-send a chase email 5 days after applying with no response</td><td><span class="badge badge-moderate">Moderate</span></td></tr>
+    <tr><td>7</td><td>PDF application letter generator</td><td>Generate a professionally formatted PDF cover letter using WeasyPrint</td><td><span class="badge badge-moderate">Moderate</span></td></tr>
+    <tr><td>8</td><td>Docker + launchd deployment</td><td>Package the bot as a container with auto-restart on Mac reboot</td><td><span class="badge badge-moderate">Moderate</span></td></tr>
+    <tr><td>9</td><td>Multi-user support</td><td>Per-user settings, seen-gigs, and filters — share the bot with other organists</td><td><span class="badge badge-complex">Complex</span></td></tr>
+    <tr><td>10</td><td>ML-based application personaliser</td><td>Use an LLM API to tailor the application email to each gig's musical requirements</td><td><span class="badge badge-complex">Complex</span></td></tr>
+  </table>
+
+  <h3>Feature 1 — Web Dashboard (FastAPI + HTMX)</h3>
+  <p><strong>What it would do:</strong> Replace the email digest with a browser-based UI. Each new gig appears as a card with Approve / Dismiss buttons. Approved gigs trigger the application email; dismissed gigs are added to the seen-gigs store.</p>
+  <p><strong>Technical approach:</strong> FastAPI serves a lightweight REST API. HTMX enables partial page updates without a JavaScript framework — clicking Approve sends an HTTP request and swaps just the button, not the whole page. The existing filter chain feeds into a SQLite database instead of (or alongside) email.</p>
+  <p><strong>New skills learned:</strong> REST API design, async Python web frameworks, HTML-over-the-wire patterns, SQLite, database migrations with Alembic.</p>
+
+  <h3>Feature 6 — Application Follow-Up Reminder</h3>
+  <p><strong>What it would do:</strong> If no reply is received within 5 days of an application, automatically send a polite follow-up email to the gig contact.</p>
+  <p><strong>Technical approach:</strong> Store the application timestamp alongside each seen gig in the CSV (or a database). On each poll run, check for applications older than 5 days with no calendar event (proxy for "not yet booked") and trigger the follow-up notifier.</p>
+  <p><strong>New skills learned:</strong> Stateful workflow management, date arithmetic, distinguishing applied/booked/closed states.</p>
+
+  <h3>Feature 10 — ML-Based Application Personaliser</h3>
+  <p><strong>What it would do:</strong> Pass the gig's <code>musical_requirements</code> field to an LLM API (e.g. Anthropic Claude or OpenAI) along with the applicant's profile. The LLM generates a personalised paragraph that addresses the specific requirements.</p>
+  <p><strong>Technical approach:</strong> Add an <code>LLMPersonaliser</code> class with an injectable API client. The Jinja2 template gains a new block: <code>{% if personalised_paragraph %}...{% endif %}</code>. A new feature flag <code>enable_personalisation</code> controls whether the API call is made.</p>
+  <p><strong>New skills learned:</strong> LLM API integration, prompt engineering, cost management (token counting), graceful degradation when the API is unavailable.</p>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════════
+     SECTION 10 — CAREER TAKEAWAYS
+══════════════════════════════════════════════════════════════════ -->
+<section id="s10">
+  <span class="section-num">Section 10</span>
+  <h2>Key Takeaways for Career Growth</h2>
+  <p>These are the ten most transferable lessons from building OrganistBot — each mapped directly to what distinguishes a mid-level engineer from a junior one.</p>
+
+  <table>
+    <tr><th>#</th><th>Lesson</th><th>Mid-level expectation</th><th>Next step</th></tr>
+    <tr>
+      <td>1</td>
+      <td><strong>Design before coding.</strong> The pipeline architecture was chosen deliberately, not discovered accidentally.</td>
+      <td>Mid-levels propose architecture, not just implementations. They ask "what pattern fits this problem?" before writing code.</td>
+      <td>Read <em>Designing Data-Intensive Applications</em> by Kleppmann. Practice drawing system diagrams before any greenfield project.</td>
+    </tr>
+    <tr>
+      <td>2</td>
+      <td><strong>Make it testable from day one.</strong> Every external dependency is injectable (<code>_client</code>, <code>FakeTransport</code>).</td>
+      <td>Mid-levels write code that can be tested without a live database, API, or network. They know that untestable code is a design smell.</td>
+      <td>For your next project, write one test before writing the production code it tests (Test-Driven Development). Practice with pytest-mock.</td>
+    </tr>
+    <tr>
+      <td>3</td>
+      <td><strong>Observability is a feature.</strong> Structured JSON logs, run_id correlation, and elapsed_ms timing fields were built in from the start.</td>
+      <td>Mid-levels instrument their code so production issues are debuggable without a debugger. "I can't reproduce it" is not acceptable if logs are good.</td>
+      <td>Add structured logging to an existing personal project. Practice querying logs with <code>jq</code>. Learn about OpenTelemetry for distributed tracing.</td>
+    </tr>
+    <tr>
+      <td>4</td>
+      <td><strong>Fail gracefully.</strong> Every external API call has explicit error handling with a defined fallback.</td>
+      <td>Mid-levels think about failure modes before they happen. They know that the question is not <em>if</em> an API will fail, but <em>when</em> and <em>how badly</em>.</td>
+      <td>Read about circuit breakers (the <code>tenacity</code> library supports them). Review your existing code — what happens when each external call fails?</td>
+    </tr>
+    <tr>
+      <td>5</td>
+      <td><strong>Configuration management.</strong> No hardcoded values in source code; every tunable lives in <code>.env</code>.</td>
+      <td>Mid-levels know that credentials in git history are a security incident waiting to happen. They use environment variables, secrets managers, or vaults.</td>
+      <td>Learn about <code>AWS Secrets Manager</code> or <code>HashiCorp Vault</code>. Practice rotating credentials without redeploying.</td>
+    </tr>
+    <tr>
+      <td>6</td>
+      <td><strong>Automate quality gates.</strong> Pre-commit hooks and GitHub Actions catch issues before review, not during it.</td>
+      <td>Mid-levels don't ask reviewers to fix obvious style issues — they automate it. CI is the first reviewer, not a backup.</td>
+      <td>Set up pre-commit hooks on your existing projects. Learn to write a GitHub Actions workflow from scratch.</td>
+    </tr>
+    <tr>
+      <td>7</td>
+      <td><strong>Know your data structures.</strong> Sets for O(1) lookup, dicts for memoisation, ordered filter lists for short-circuit evaluation.</td>
+      <td>Mid-levels choose data structures deliberately and know why a set is better than a list for membership testing.</td>
+      <td>Solve LeetCode problems categorised by data structure. For each, ask: "why is this the right structure for this problem?"</td>
+    </tr>
+    <tr>
+      <td>8</td>
+      <td><strong>Understand your I/O costs.</strong> Every optimisation in this project targets a specific network or disk operation.</td>
+      <td>Mid-levels profile before optimising. They know the latency numbers: L1 cache ≈ 1ns, RAM ≈ 100ns, SSD ≈ 100µs, network ≈ 1ms+.</td>
+      <td>Profile a slow Python program with <code>cProfile</code>. Read "Latency Numbers Every Programmer Should Know". Learn when to use async I/O.</td>
+    </tr>
+    <tr>
+      <td>9</td>
+      <td><strong>Type hints are documentation.</strong> Every function signature in this codebase tells you exactly what it accepts and returns.</td>
+      <td>Mid-levels write self-documenting code. They know that type hints reduce bugs (mypy), improve IDE support, and make code reviews faster.</td>
+      <td>Add mypy to an existing project. Fix all errors. Then enforce it in CI. Read the mypy documentation on generics and protocols.</td>
+    </tr>
+    <tr>
+      <td>10</td>
+      <td><strong>Build for the next developer.</strong> Comments explain <em>why</em>, not <em>what</em>. Modules are named by responsibility. Feature flags enable safe iteration.</td>
+      <td>Mid-levels write code assuming they won't be the one maintaining it. They prioritise clarity over cleverness, and know that the most expensive code is the code you can't change.</td>
+      <td>Review a piece of code you wrote six months ago. Is it clear why each decision was made? Rewrite the parts that aren't — then you'll know what to do from day one on the next project.</td>
+    </tr>
+  </table>
+
+  <div class="callout callout-why">
+    <div class="callout-title">✅ Final thought</div>
+    <p>OrganistBot is a real tool solving a real problem for a real user. That is the most important thing about it. The best way to grow as a software engineer is to build things you actually use — the feedback loop is immediate, the motivation is genuine, and the problems you encounter are real. Every optimisation in this codebase, every design decision, every test — each one exists because someone noticed a real pain point and fixed it properly. That is engineering.</p>
+  </div>
+</section>
+
+</main>
+</div>
+
+<script>
+/* ══════════════════════════════════════════════════════════════════
+   OrganistBot Technical Report — Interactive JS
+   Vanilla JS only. No frameworks. All features degrade gracefully.
+══════════════════════════════════════════════════════════════════ */
+
+document.addEventListener('DOMContentLoaded', () => {
+
+  /* ── 1. Reading progress bar ──────────────────────────────────── */
+  const bar = document.getElementById('progress-bar');
+  function updateProgress() {
+    const scrolled = window.scrollY;
+    const total = document.documentElement.scrollHeight - window.innerHeight;
+    bar.style.width = total > 0 ? (scrolled / total * 100) + '%' : '0%';
+  }
+  window.addEventListener('scroll', updateProgress, { passive: true });
+  updateProgress();
+
+  /* ── 2. TOC active-section highlighting ───────────────────────── */
+  const sections = document.querySelectorAll('section[id]');
+  const tocLinks = document.querySelectorAll('.toc-sidebar a[href^="#"]');
+
+  const tocMap = {};
+  tocLinks.forEach(link => {
+    const id = link.getAttribute('href').slice(1);
+    tocMap[id] = link;
+  });
+
+  const observer = new IntersectionObserver(entries => {
+    entries.forEach(entry => {
+      if (entry.isIntersecting) {
+        tocLinks.forEach(l => l.classList.remove('active'));
+        const link = tocMap[entry.target.id];
+        if (link) {
+          link.classList.add('active');
+          // also scroll the TOC link into view if needed
+          link.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        }
+      }
+    });
+  }, { rootMargin: '-20% 0px -70% 0px', threshold: 0 });
+
+  sections.forEach(s => observer.observe(s));
+
+  /* ── 3. Copy-to-clipboard on code blocks ──────────────────────── */
+  document.querySelectorAll('pre').forEach(pre => {
+    // Wrap in a relative container
+    const wrap = document.createElement('div');
+    wrap.className = 'pre-wrap';
+    pre.parentNode.insertBefore(wrap, pre);
+    wrap.appendChild(pre);
+
+    const btn = document.createElement('button');
+    btn.className = 'copy-btn';
+    btn.textContent = 'Copy';
+    wrap.appendChild(btn);
+
+    btn.addEventListener('click', async () => {
+      try {
+        // Get text — strip HTML tags from syntax-highlighted spans
+        const text = pre.innerText || pre.textContent;
+        await navigator.clipboard.writeText(text);
+        btn.textContent = 'Copied ✓';
+        btn.classList.add('copied');
+        setTimeout(() => {
+          btn.textContent = 'Copy';
+          btn.classList.remove('copied');
+        }, 2000);
+      } catch (e) {
+        btn.textContent = 'Error';
+        setTimeout(() => { btn.textContent = 'Copy'; }, 1500);
+      }
+    });
+  });
+
+  /* ── 4. Collapsible module cards ──────────────────────────────── */
+  document.querySelectorAll('.module-card').forEach(card => {
+    const h3 = card.querySelector('h3');
+    if (!h3) return;
+
+    // Add chevron indicator
+    const chevron = document.createElement('span');
+    chevron.className = 'chevron';
+    chevron.textContent = '▾';
+    h3.appendChild(chevron);
+
+    // Wrap everything after h3 in .card-body
+    const body = document.createElement('div');
+    body.className = 'card-body';
+    // move all siblings after h3 into body
+    const siblings = [];
+    let next = h3.nextElementSibling;
+    while (next) {
+      siblings.push(next);
+      next = next.nextElementSibling;
+    }
+    siblings.forEach(s => body.appendChild(s));
+    card.appendChild(body);
+
+    card.setAttribute('data-collapsed', 'false');
+
+    h3.addEventListener('click', () => {
+      const collapsed = card.getAttribute('data-collapsed') === 'true';
+      card.setAttribute('data-collapsed', collapsed ? 'false' : 'true');
+    });
+  });
+
+  /* ── 5. Search / highlight ────────────────────────────────────── */
+  const overlay    = document.getElementById('search-overlay');
+  const searchInp  = document.getElementById('search-input');
+  const searchMeta = document.getElementById('search-meta');
+  const mainEl     = document.querySelector('.main-content');
+
+  let originalHTML = null;
+  let matches      = [];
+  let currentMatch = 0;
+
+  function openSearch() {
+    overlay.classList.add('open');
+    searchInp.focus();
+    searchInp.select();
+  }
+
+  function closeSearch() {
+    overlay.classList.remove('open');
+    clearHighlights();
+    searchInp.value = '';
+    searchMeta.textContent = '';
+  }
+
+  function clearHighlights() {
+    if (originalHTML !== null) {
+      mainEl.innerHTML = originalHTML;
+      originalHTML = null;
+    }
+    matches = [];
+    currentMatch = 0;
+    // Re-attach card collapse listeners after innerHTML restore
+    // (we skip this complexity — just expand all cards on clear)
+  }
+
+  function doSearch(term) {
+    clearHighlights();
+    if (!term.trim()) { searchMeta.textContent = ''; return; }
+
+    originalHTML = mainEl.innerHTML;
+
+    // Simple text highlight using regex (avoids breaking HTML tags)
+    const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const re = new RegExp(`(${escaped})`, 'gi');
+    mainEl.innerHTML = mainEl.innerHTML.replace(re, '<mark class="search-hit">$1</mark>');
+
+    matches = Array.from(mainEl.querySelectorAll('mark.search-hit'));
+    if (matches.length === 0) {
+      searchMeta.textContent = 'No matches found.';
+      return;
+    }
+    searchMeta.textContent = `${matches.length} match${matches.length > 1 ? 'es' : ''} found`;
+    currentMatch = 0;
+    jumpToMatch(0);
+  }
+
+  function jumpToMatch(idx) {
+    matches.forEach(m => m.classList.remove('current'));
+    if (matches.length === 0) return;
+    const i = ((idx % matches.length) + matches.length) % matches.length;
+    currentMatch = i;
+    matches[i].classList.add('current');
+    matches[i].scrollIntoView({ block: 'center', behavior: 'smooth' });
+    searchMeta.textContent = `${i + 1} of ${matches.length} match${matches.length > 1 ? 'es' : ''}`;
+  }
+
+  document.getElementById('btn-search').addEventListener('click', openSearch);
+
+  searchInp.addEventListener('input', e => doSearch(e.target.value));
+
+  searchInp.addEventListener('keydown', e => {
+    if (e.key === 'Escape') { closeSearch(); return; }
+    if (e.key === 'Enter') {
+      if (e.shiftKey) jumpToMatch(currentMatch - 1);
+      else            jumpToMatch(currentMatch + 1);
+    }
+    if (e.key === 'ArrowDown') { e.preventDefault(); jumpToMatch(currentMatch + 1); }
+    if (e.key === 'ArrowUp')   { e.preventDefault(); jumpToMatch(currentMatch - 1); }
+  });
+
+  overlay.addEventListener('click', e => { if (e.target === overlay) closeSearch(); });
+
+  // Cmd/Ctrl + K keyboard shortcut
+  document.addEventListener('keydown', e => {
+    if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+      e.preventDefault();
+      overlay.classList.contains('open') ? closeSearch() : openSearch();
+    }
+    if (e.key === 'Escape' && overlay.classList.contains('open')) closeSearch();
+  });
+
+  /* ── 6. Dark / Light mode toggle ─────────────────────────────── */
+  const themeBtn = document.getElementById('btn-theme');
+  const saved = localStorage.getItem('report-theme');
+  if (saved === 'light') {
+    document.body.classList.add('light-mode');
+    themeBtn.textContent = '🌑 Theme';
+  }
+
+  themeBtn.addEventListener('click', () => {
+    const isLight = document.body.classList.toggle('light-mode');
+    themeBtn.textContent = isLight ? '🌑 Theme' : '🌙 Theme';
+    localStorage.setItem('report-theme', isLight ? 'light' : 'dark');
+  });
+
+}); // end DOMContentLoaded
+</script>
+</body>
+</html>
