@@ -477,20 +477,26 @@ class GigFilterChain:
 
     def __init__(self):
         self._filters: list[Callable[[Any], bool]] = []
+        # Cumulative rejection counts accumulated by is_valid() calls.
+        # Keyed by repr(filter); reset by log_and_reset_counts().
+        self._rejection_counts: dict[str, int] = {}
 
     def add(self, filter_fn: Callable[[Any], bool]) -> "GigFilterChain":
         """Add a filter to the chain. Returns self for fluent chaining."""
         self._filters.append(filter_fn)
+        self._rejection_counts.setdefault(repr(filter_fn), 0)
         return self
 
     def is_valid(self, gig: Gig) -> bool:
         """Check if a single gig passes all filters.
 
-        Stops at the first failing filter and logs the rejection reason
-        at DEBUG level so you can see exactly why each gig was dropped.
+        Stops at the first failing filter, increments its rejection counter,
+        and logs the reason at DEBUG level.
         """
         for f in self._filters:
             if not f(gig):
+                key = repr(f)
+                self._rejection_counts[key] = self._rejection_counts.get(key, 0) + 1
                 logger.debug(
                     "Gig rejected",
                     extra={
@@ -503,6 +509,30 @@ class GigFilterChain:
                 )
                 return False
         return True
+
+    def log_and_reset_counts(self, total_in: int, passed: int) -> None:
+        """Emit a 'Filter chain applied' log for accumulated is_valid() rejections.
+
+        Logs the same structured event as apply() so the dashboard aggregates
+        Phase-1 pre-filter rejections alongside Phase-2 rejections.
+        Resets the counters afterwards so the next run starts clean.
+
+        Args:
+            total_in: Total number of gigs tested via is_valid() since last reset.
+            passed:   Number that passed (i.e. is_valid() returned True).
+        """
+        counts = dict(self._rejection_counts)
+        self._rejection_counts = {repr(f): 0 for f in self._filters}
+        logger.info(
+            "Filter chain applied",
+            extra={
+                "total_in": total_in,
+                "passed": passed,
+                "rejected": total_in - passed,
+                "filters": [repr(f) for f in self._filters],
+                "filter_breakdown": counts,
+            },
+        )
 
     def apply(self, gigs: list[Gig]) -> list[Gig]:
         """Return only the gigs that pass all filters."""

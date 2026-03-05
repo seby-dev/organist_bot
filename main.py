@@ -151,6 +151,9 @@ def main(scraper: Scraper, sheets_logger: SheetsLogger | None = None) -> None:
             "elapsed_ms": int((time.perf_counter() - t0) * 1000),
         },
     )
+    # Emit Phase-1 pre-filter breakdown so the dashboard counts which filters
+    # rejected gigs before the detail-page fetch.
+    pre_filter.log_and_reset_counts(total_in=len(gigs_div), passed=pre_filter_passed)
 
     # ── Phase 2: Filter ───────────────────────────────────────────────────────
     logger.info("Phase 2 — applying filters")

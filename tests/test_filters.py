@@ -911,6 +911,82 @@ class TestGigFilterChain:
         assert "a" in calls
         assert "b" not in calls
 
+    # --- is_valid() rejection counting & log_and_reset_counts() ---
+
+    def test_is_valid_increments_rejection_count_on_failure(self):
+        fee_f = FeeFilter(min_fee=500)
+        chain = GigFilterChain().add(fee_f)
+        gig = make_gig(date="Sunday, 15 March 2026", fee="£50")
+        chain.is_valid(gig)
+        assert chain._rejection_counts[repr(fee_f)] == 1
+
+    def test_is_valid_does_not_increment_count_on_pass(self):
+        fee_f = FeeFilter(min_fee=50)
+        chain = GigFilterChain().add(fee_f)
+        gig = make_gig(date="Sunday, 15 March 2026", fee="£150")
+        chain.is_valid(gig)
+        assert chain._rejection_counts[repr(fee_f)] == 0
+
+    def test_is_valid_only_counts_first_failing_filter(self):
+        """Short-circuit: only the first failing filter's count is incremented."""
+        fee_f = FeeFilter(min_fee=500)
+        bl_f = BlacklistFilter(["x@x.com"])
+        chain = GigFilterChain().add(fee_f).add(bl_f)
+        gig = make_gig(date="Sunday, 15 March 2026", fee="£50", email="x@x.com")
+        chain.is_valid(gig)  # rejected by fee_f first
+        assert chain._rejection_counts[repr(fee_f)] == 1
+        assert chain._rejection_counts[repr(bl_f)] == 0
+
+    def test_is_valid_rejection_count_accumulates_across_calls(self):
+        fee_f = FeeFilter(min_fee=500)
+        chain = GigFilterChain().add(fee_f)
+        gig = make_gig(date="Sunday, 15 March 2026", fee="£50")
+        for _ in range(5):
+            chain.is_valid(gig)
+        assert chain._rejection_counts[repr(fee_f)] == 5
+
+    def test_log_and_reset_counts_resets_counts_to_zero(self):
+        fee_f = FeeFilter(min_fee=500)
+        chain = GigFilterChain().add(fee_f)
+        gig = make_gig(date="Sunday, 15 March 2026", fee="£50")
+        chain.is_valid(gig)
+        assert chain._rejection_counts[repr(fee_f)] == 1
+        chain.log_and_reset_counts(total_in=1, passed=0)
+        assert chain._rejection_counts[repr(fee_f)] == 0
+
+    def test_log_and_reset_counts_emits_filter_chain_applied(self, caplog):
+        import logging
+
+        fee_f = FeeFilter(min_fee=500)
+        chain = GigFilterChain().add(fee_f)
+        gig = make_gig(date="Sunday, 15 March 2026", fee="£50")
+        chain.is_valid(gig)  # 1 rejection
+
+        with caplog.at_level(logging.INFO, logger="organist_bot.filters"):
+            chain.log_and_reset_counts(total_in=3, passed=2)
+
+        records = [r for r in caplog.records if r.getMessage() == "Filter chain applied"]
+        assert records, "Expected a 'Filter chain applied' INFO log"
+        rec = records[0]
+        assert rec.total_in == 3
+        assert rec.passed == 2
+        assert rec.rejected == 1
+        breakdown = rec.filter_breakdown
+        assert breakdown[repr(fee_f)] == 1
+
+    def test_log_and_reset_counts_does_not_interfere_with_apply(self):
+        """apply() has its own local counts and is unaffected by _rejection_counts."""
+        fee_f = FeeFilter(min_fee=50)
+        chain = GigFilterChain().add(fee_f)
+        gig = make_gig(date="Sunday, 15 March 2026", fee="£150")
+        # Accumulate a spurious is_valid count
+        chain.is_valid(make_gig(date="Sunday, 15 March 2026", fee="£10"))
+        # apply() should produce its own correct count independently
+        result = chain.apply([gig])
+        assert result == [gig]
+        # _rejection_counts from is_valid() is still 1 (apply didn't touch it)
+        assert chain._rejection_counts[repr(fee_f)] == 1
+
 
 # ─────────────────────────────────────────────────────────
 # PostcodeFilter — Distance Matrix logging
