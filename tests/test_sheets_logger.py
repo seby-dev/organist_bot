@@ -9,9 +9,13 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from organist_bot.integrations.sheets_logger import (
+    _CELL_THRESHOLD,
     _EXCLUDED_LOGGER_PREFIXES,
     _HEADERS,
+    _NUM_COLS,
     SheetsLogger,
+    _latest_log_sheet,
+    _parse_last_row,
 )
 
 # ── Fixtures ───────────────────────────────────────────────────────────────────
@@ -21,11 +25,24 @@ _KNOWN_TS = datetime.datetime(2026, 3, 3, 10, 0, 1, 3000, tzinfo=datetime.UTC)
 _KNOWN_TS_STR = "2026-03-03T10:00:01.003Z"
 
 
+def _make_append_response(sheet: str = "Logs", last_row: int = 10) -> dict:
+    """Build a minimal Sheets append() response with a realistic updatedRange."""
+    col = chr(ord("A") + _NUM_COLS - 1)  # "I" for 9 columns
+    return {"updates": {"updatedRange": f"{sheet}!A1:{col}{last_row}"}}
+
+
 @pytest.fixture
 def mock_service():
     svc = MagicMock()
     # Default: sheet has a header row (A1:A1 returns a value).
     svc.spreadsheets().values().get().execute.return_value = {"values": [["timestamp"]]}
+    # Default: spreadsheet has only the "Logs" sheet (used by _resolve_active_sheet).
+    svc.spreadsheets().get().execute.return_value = {"sheets": [{"properties": {"title": "Logs"}}]}
+    # Default append response — well below the cell threshold.
+    # Use .return_value rather than calling append() to avoid counting as a call.
+    svc.spreadsheets().values().append.return_value.execute.return_value = _make_append_response(
+        "Logs", last_row=10
+    )
     return svc
 
 
@@ -258,3 +275,143 @@ class TestExcludedLoggers:
         result = sheets_logger.drain()
         assert result == 0
         mock_service.spreadsheets().values().append.assert_not_called()
+
+
+# ── Helper functions ───────────────────────────────────────────────────────────
+
+
+class TestLatestLogSheet:
+    def test_returns_logs_when_only_sheet(self):
+        assert _latest_log_sheet(["Logs"]) == "Logs"
+
+    def test_returns_highest_numbered_sheet(self):
+        assert _latest_log_sheet(["Logs", "Logs 2", "Logs 3"]) == "Logs 3"
+
+    def test_returns_logs_when_no_log_sheets(self):
+        assert _latest_log_sheet(["Sheet1", "Data"]) == "Logs"
+
+    def test_empty_list_returns_default(self):
+        assert _latest_log_sheet([]) == "Logs"
+
+    def test_ignores_non_logs_sheets(self):
+        assert _latest_log_sheet(["Logs", "Logs 2", "Archive", "Sheet1"]) == "Logs 2"
+
+    def test_handles_out_of_order_sheets(self):
+        assert _latest_log_sheet(["Logs 3", "Logs", "Logs 2"]) == "Logs 3"
+
+
+class TestParseLastRow:
+    def test_parses_standard_range(self):
+        response = {"updates": {"updatedRange": "Logs!A1001:I1010"}}
+        assert _parse_last_row(response) == 1010
+
+    def test_parses_single_row_range(self):
+        response = {"updates": {"updatedRange": "Logs!A5:I5"}}
+        assert _parse_last_row(response) == 5
+
+    def test_returns_none_for_missing_updates(self):
+        assert _parse_last_row({}) is None
+
+    def test_returns_none_for_empty_range(self):
+        assert _parse_last_row({"updates": {"updatedRange": ""}}) is None
+
+    def test_handles_multi_digit_sheet_name(self):
+        response = {"updates": {"updatedRange": "Logs 12!A1:I99999"}}
+        assert _parse_last_row(response) == 99999
+
+
+# ── Sheet rotation ─────────────────────────────────────────────────────────────
+
+
+class TestSheetRotation:
+    def test_no_rotation_below_threshold(self, sheets_logger, mock_service):
+        """drain() must NOT create a new sheet when below the cell threshold."""
+        sheets_logger.emit(_make_record())
+        sheets_logger.drain()
+        mock_service.spreadsheets().batchUpdate.assert_not_called()
+        assert sheets_logger._active_sheet == "Logs"
+
+    def test_rotates_when_threshold_reached(self, sheets_logger, mock_service):
+        """drain() creates 'Logs 2' and switches active sheet when last_row hits threshold."""
+        rows_at_threshold = _CELL_THRESHOLD // _NUM_COLS
+        mock_service.spreadsheets().values().append.return_value.execute.return_value = (
+            _make_append_response("Logs", last_row=rows_at_threshold)
+        )
+        mock_service.spreadsheets().get().execute.return_value = {
+            "sheets": [{"properties": {"title": "Logs"}}]
+        }
+        sheets_logger.emit(_make_record())
+        sheets_logger.drain()
+
+        mock_service.spreadsheets().batchUpdate.assert_called_once()
+        request_body = mock_service.spreadsheets().batchUpdate.call_args[1]["body"]
+        new_title = request_body["requests"][0]["addSheet"]["properties"]["title"]
+        assert new_title == "Logs 2"
+        assert sheets_logger._active_sheet == "Logs 2"
+
+    def test_next_drain_targets_new_sheet(self, sheets_logger, mock_service):
+        """After rotation, the next drain() appends to the new sheet."""
+        rows_at_threshold = _CELL_THRESHOLD // _NUM_COLS
+        mock_service.spreadsheets().values().append.return_value.execute.return_value = (
+            _make_append_response("Logs", last_row=rows_at_threshold)
+        )
+        mock_service.spreadsheets().get().execute.return_value = {
+            "sheets": [{"properties": {"title": "Logs"}}]
+        }
+        sheets_logger.emit(_make_record())
+        sheets_logger.drain()
+
+        # Force second drain to use a normal (non-threshold) response.
+        mock_service.spreadsheets().values().append.return_value.execute.return_value = (
+            _make_append_response("Logs 2", last_row=1)
+        )
+        sheets_logger.emit(_make_record())
+        sheets_logger.drain()
+
+        # Second append call should target "Logs 2".
+        second_call_kwargs = mock_service.spreadsheets().values().append.call_args_list[-1][1]
+        assert second_call_kwargs["range"].startswith("Logs 2!")
+
+    def test_sequential_rotation_creates_logs_3(self, sheets_logger, mock_service):
+        """When 'Logs 2' already exists, next rotation creates 'Logs 3'."""
+        rows_at_threshold = _CELL_THRESHOLD // _NUM_COLS
+        mock_service.spreadsheets().values().append.return_value.execute.return_value = (
+            _make_append_response("Logs 2", last_row=rows_at_threshold)
+        )
+        mock_service.spreadsheets().get().execute.return_value = {
+            "sheets": [
+                {"properties": {"title": "Logs"}},
+                {"properties": {"title": "Logs 2"}},
+            ]
+        }
+        sheets_logger._active_sheet = "Logs 2"  # simulate already-rotated state
+        sheets_logger.emit(_make_record())
+        sheets_logger.drain()
+
+        request_body = mock_service.spreadsheets().batchUpdate.call_args[1]["body"]
+        new_title = request_body["requests"][0]["addSheet"]["properties"]["title"]
+        assert new_title == "Logs 3"
+
+
+class TestActiveSheetResolution:
+    def test_resolves_active_sheet_on_first_drain(self, sheets_logger, mock_service):
+        """_active_sheet is None until the first drain() queries the spreadsheet."""
+        assert sheets_logger._active_sheet is None
+        sheets_logger.emit(_make_record())
+        sheets_logger.drain()
+        assert sheets_logger._active_sheet == "Logs"
+
+    def test_uses_latest_sheet_after_restart(self, sheets_logger, mock_service):
+        """If 'Logs 2' already exists, drain() targets it (simulates process restart)."""
+        mock_service.spreadsheets().get().execute.return_value = {
+            "sheets": [
+                {"properties": {"title": "Logs"}},
+                {"properties": {"title": "Logs 2"}},
+            ]
+        }
+        sheets_logger.emit(_make_record())
+        sheets_logger.drain()
+
+        assert sheets_logger._active_sheet == "Logs 2"
+        append_kwargs = mock_service.spreadsheets().values().append.call_args[1]
+        assert append_kwargs["range"].startswith("Logs 2!")

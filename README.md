@@ -55,7 +55,8 @@ cp .env.example .env
 | `CC_EMAIL` | Address to CC on every application email |
 | `MIN_FEE` | Minimum fee to accept (default: 100) |
 | `BLACKLIST_EMAILS` | JSON array of contact emails to ignore |
-| `BOOKED_DATES` | JSON array of already-booked dates as `YYYYMMDD` |
+| `UNAVAILABLE_PERIODS` | JSON array of periods when you are not available (see Availability Filter) |
+| `AVAILABLE_ONLY_PERIODS` | JSON array of periods when you are only available (see Availability Filter) |
 | `HOME_POSTCODE` | Your home postcode for travel time checks |
 | `GOOGLE_MAPS_API_KEY` | Distance Matrix API key |
 | `MAX_TRAVEL_MINUTES` | Max travel time in minutes (default: 45) |
@@ -117,8 +118,8 @@ Applied to every gig before its detail page is fetched. A gig that fails here co
 | `SeenFilter` | Link already in `seen_gigs.csv` |
 | `FeeFilter` | Fee meets the minimum threshold |
 | `SundayTimeFilter` | Service falls within the accepted time window |
-| `BookedDateFilter` | Date not already in your booked dates list |
 | `CalendarFilter` | No existing event on that date in Google Calendar |
+| `AvailabilityFilter` | Date not in your unavailable periods / outside your available-only periods |
 
 ### Phase 2 — Full filter (detail page data required)
 
@@ -128,6 +129,31 @@ Applied only to gigs that passed Phase 1 and have had their detail page fetched.
 |---|---|
 | `BlacklistFilter` | Contact email not on the blacklist |
 | `PostcodeFilter` | Travel time from home within the maximum |
+| `AvailabilityFilter` | Same availability check as Phase 1 |
+
+### Availability Filter
+
+Configure periods when you are unavailable, or periods when you are *only* available:
+
+```env
+# Block specific days, ranges, or whole months
+UNAVAILABLE_PERIODS=["2026-12-25", "2026-12-20:2027-01-04", "2026-08"]
+
+# Only accept gigs within these periods
+AVAILABLE_ONLY_PERIODS=["2026-04", "2026-05-01:2026-05-31"]
+```
+
+Period token formats:
+
+| Format | Example | Meaning |
+|---|---|---|
+| Specific date | `"2026-12-25"` | That one day |
+| Date range | `"2026-12-20:2027-01-04"` | Inclusive start–end |
+| Year-month | `"2026-08"` | All days in that month |
+
+Multiple specific dates: `["2026-04-06", "2026-04-13", "2026-04-20"]`
+
+If both are set, `UNAVAILABLE_PERIODS` takes precedence (evaluated first in the chain).
 
 ### Filter toggles
 
@@ -137,10 +163,23 @@ All filters can be enabled/disabled in `.env`:
 ENABLE_FEE_FILTER=true
 ENABLE_SUNDAY_TIME_FILTER=true
 ENABLE_BLACKLIST_FILTER=true
-ENABLE_BOOKED_DATE_FILTER=true
 ENABLE_SEEN_FILTER=true
 ENABLE_POSTCODE_FILTER=true
 ENABLE_CALENDAR_FILTER=true
+ENABLE_AVAILABILITY_FILTER=true
+```
+
+---
+
+## Google Sheets Log Rotation
+
+Run logs are streamed to a Google Sheet tab (`Logs`). When a tab approaches the 1M-cell limit, the bot automatically creates the next tab (`Logs 2`, `Logs 3`, …) and continues logging there seamlessly. Each new tab is initialised with a minimal 1×9 grid to conserve workbook cell budget (Google Sheets has a 10M-cell workbook limit).
+
+Set the Sheet ID and credentials in `.env`:
+
+```env
+GOOGLE_SHEETS_ID=your_spreadsheet_id
+GOOGLE_SHEETS_CREDENTIALS_FILE=credentials.json
 ```
 
 ---
@@ -230,6 +269,7 @@ organist_bot/
 │   ├── logging_config.py    # Structured logging (console + rotating JSON file)
 │   ├── integrations/
 │   │   ├── calendar_client.py  # Google Calendar API wrapper
+│   │   ├── sheets_logger.py    # Google Sheets run-log writer with auto tab rotation
 │   │   └── telegram_bot.py     # Telegram bot handler
 │   └── templates/
 │       ├── summary.html.j2     # Summary email template

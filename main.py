@@ -7,8 +7,8 @@ import schedule
 
 from organist_bot.config import settings
 from organist_bot.filters import (
+    AvailabilityFilter,
     BlacklistFilter,
-    BookedDateFilter,
     CalendarFilter,
     FeeFilter,
     GigFilterChain,
@@ -91,8 +91,6 @@ def main(scraper: Scraper, sheets_logger: SheetsLogger | None = None) -> None:
         pre_filter.add(FeeFilter(min_fee=settings.min_fee))
     if settings.enable_sunday_time_filter:
         pre_filter.add(SundayTimeFilter())
-    if settings.enable_booked_date_filter:
-        pre_filter.add(BookedDateFilter(settings.booked_dates))
     if (
         settings.enable_calendar_filter
         and settings.google_calendar_id
@@ -109,6 +107,11 @@ def main(scraper: Scraper, sheets_logger: SheetsLogger | None = None) -> None:
         logger.info(
             "CalendarFilter disabled — google_calendar_id or google_calendar_credentials_file not set"
         )
+    if settings.enable_availability_filter:
+        if settings.unavailable_periods:
+            pre_filter.add(AvailabilityFilter(settings.unavailable_periods, mode="block"))
+        if settings.available_only_periods:
+            pre_filter.add(AvailabilityFilter(settings.available_only_periods, mode="only"))
 
     gigs_div: list = []
     pre_filter_passed: int = 0
@@ -176,10 +179,13 @@ def main(scraper: Scraper, sheets_logger: SheetsLogger | None = None) -> None:
     else:
         logger.info("BlacklistFilter disabled")
 
-    if settings.enable_booked_date_filter:
-        filter_chain.add(BookedDateFilter(settings.booked_dates))
+    if settings.enable_availability_filter:
+        if settings.unavailable_periods:
+            filter_chain.add(AvailabilityFilter(settings.unavailable_periods, mode="block"))
+        if settings.available_only_periods:
+            filter_chain.add(AvailabilityFilter(settings.available_only_periods, mode="only"))
     else:
-        logger.info("BookedDateFilter disabled")
+        logger.info("AvailabilityFilter disabled")
 
     if settings.enable_postcode_filter and settings.home_postcode and settings.google_maps_api_key:
         filter_chain.add(
@@ -259,8 +265,12 @@ def main(scraper: Scraper, sheets_logger: SheetsLogger | None = None) -> None:
         try:
             rows = sheets_logger.drain()
             logger.info("Sheets flush complete", extra={"rows_written": rows})
-        except Exception:
-            logger.warning("Sheets flush failed — rows queued for next run")
+        except Exception as exc:
+            logger.warning(
+                "Sheets flush failed — rows queued for next run",
+                exc_info=True,
+                extra={"error": str(exc)},
+            )
 
 
 if __name__ == "__main__":

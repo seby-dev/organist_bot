@@ -34,13 +34,21 @@ One-time manual setup
 import datetime
 import json
 import logging
+import re
 import threading
 
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 
 _SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 _SHEET_NAME = "Logs"
+
+# Rotate to a new sheet tab when the active sheet reaches this many cells.
+# Google Sheets hard limit is 1 000 000 cells per sheet; we rotate at 900 000
+# to leave a comfortable margin and avoid hitting the wall mid-run.
+_CELL_THRESHOLD = 900_000
+_NUM_COLS = 9  # len(_HEADERS) — kept as a literal to avoid a forward reference
 
 # Columns written in a fixed order — all other keys go into the "details" column.
 _FIXED_COLUMNS = [
@@ -88,6 +96,36 @@ _STANDARD_RECORD_KEYS: frozenset[str] = frozenset(
         "threadName",
     }
 )
+
+
+def _latest_log_sheet(titles: list[str]) -> str:
+    """Return the name of the highest-numbered 'Logs' or 'Logs N' sheet.
+
+    Falls back to ``_SHEET_NAME`` ("Logs") if none are found — e.g. on a brand-new
+    spreadsheet where the tab hasn't been created yet.
+    """
+    pattern = re.compile(r"^Logs(?: (\d+))?$")
+    candidates: list[tuple[int, str]] = []
+    for title in titles:
+        m = pattern.match(title)
+        if m:
+            n = int(m.group(1)) if m.group(1) else 1
+            candidates.append((n, title))
+    if not candidates:
+        return _SHEET_NAME
+    return max(candidates)[1]
+
+
+def _parse_last_row(response: dict) -> int | None:
+    """Extract the last written row number from a Sheets ``append()`` response.
+
+    The response contains an ``updates.updatedRange`` string such as
+    ``"Logs!A1001:I1010"``; we parse the trailing row number (1010 here).
+    Returns ``None`` if the range is absent or unparseable.
+    """
+    updated_range = response.get("updates", {}).get("updatedRange", "")
+    m = re.search(r":(?:[A-Z]+)(\d+)$", updated_range)
+    return int(m.group(1)) if m else None
 
 
 def _record_to_row(record: logging.LogRecord) -> list:
@@ -138,6 +176,9 @@ class SheetsLogger(logging.Handler):
         self._service = build("sheets", "v4", credentials=creds, cache_discovery=False)
         self._buffer: list[list] = []
         self._lock = threading.Lock()
+        # Resolved lazily on the first drain() so we always target the latest
+        # Logs sheet even after a process restart.
+        self._active_sheet: str | None = None
 
     def emit(self, record: logging.LogRecord) -> None:
         """Buffer a single log record.  Called automatically by the logging system."""
@@ -154,7 +195,12 @@ class SheetsLogger(logging.Handler):
         """logging.Handler.flush() override — no-op (use drain() to send to Sheets)."""
 
     def drain(self) -> int:
-        """Drain the in-memory buffer and append all rows to the Sheets tab.
+        """Drain the in-memory buffer and append all rows to the active Sheets tab.
+
+        Automatically rotates to a new sheet tab (e.g. "Logs 2", "Logs 3") when
+        the active sheet reaches ``_CELL_THRESHOLD`` cells.  The first call after
+        startup queries the spreadsheet to find the latest existing Logs sheet so
+        the correct tab is targeted even after a process restart.
 
         If the Sheets API call fails the drained rows are restored to the front of
         the buffer so they will be included on the next drain() call.
@@ -169,13 +215,25 @@ class SheetsLogger(logging.Handler):
             return 0
 
         try:
-            # Check whether the "Logs" sheet already has a header row.
+            # Resolve the active sheet on first call after startup.
+            if self._active_sheet is None:
+                self._active_sheet = self._resolve_active_sheet()
+
+            sheet = self._active_sheet
+
+            # Ensure the sheet tab exists (auto-create if missing — e.g. after
+            # the workbook was cleared and the tab was deleted).
+            existing_titles = self._get_sheet_titles()
+            if sheet not in existing_titles:
+                self._ensure_sheet_exists(sheet)
+
+            # Check whether the sheet already has a header row.
             result = (
                 self._service.spreadsheets()
                 .values()
                 .get(
                     spreadsheetId=self._spreadsheet_id,
-                    range=f"{_SHEET_NAME}!A1:A1",
+                    range=f"{sheet}!A1:A1",
                 )
                 .execute()
             )
@@ -185,19 +243,65 @@ class SheetsLogger(logging.Handler):
             if not has_header:
                 self._service.spreadsheets().values().update(
                     spreadsheetId=self._spreadsheet_id,
-                    range=f"{_SHEET_NAME}!A1",
+                    range=f"{sheet}!A1",
                     valueInputOption="RAW",
                     body={"values": [_HEADERS]},
                 ).execute()
 
             # Append all data rows in a single API call.
-            self._service.spreadsheets().values().append(
-                spreadsheetId=self._spreadsheet_id,
-                range=f"{_SHEET_NAME}!A:A",
-                valueInputOption="RAW",
-                insertDataOption="INSERT_ROWS",
-                body={"values": rows},
-            ).execute()
+            try:
+                response = (
+                    self._service.spreadsheets()
+                    .values()
+                    .append(
+                        spreadsheetId=self._spreadsheet_id,
+                        range=f"{sheet}!A:A",
+                        valueInputOption="RAW",
+                        insertDataOption="INSERT_ROWS",
+                        body={"values": rows},
+                    )
+                    .execute()
+                )
+            except HttpError as exc:
+                if exc.resp.status == 400 and "cells" in str(exc).lower():
+                    # Workbook-level cell budget exhausted before our per-sheet
+                    # threshold fired.  Rotate now and retry on the new sheet.
+                    self._active_sheet = self._create_next_sheet()
+                    sheet = self._active_sheet
+                    self._service.spreadsheets().values().update(
+                        spreadsheetId=self._spreadsheet_id,
+                        range=f"{sheet}!A1",
+                        valueInputOption="RAW",
+                        body={"values": [_HEADERS]},
+                    ).execute()
+                    try:
+                        response = (
+                            self._service.spreadsheets()
+                            .values()
+                            .append(
+                                spreadsheetId=self._spreadsheet_id,
+                                range=f"{sheet}!A:A",
+                                valueInputOption="RAW",
+                                insertDataOption="INSERT_ROWS",
+                                body={"values": rows},
+                            )
+                            .execute()
+                        )
+                    except HttpError as retry_exc:
+                        if retry_exc.resp.status == 400 and "cells" in str(retry_exc).lower():
+                            raise RuntimeError(
+                                "Google Sheets workbook cell budget exhausted and cannot be "
+                                "recovered automatically. Delete old sheet tabs in the "
+                                "spreadsheet to free up cell quota, then restart the bot."
+                            ) from retry_exc
+                        raise
+                else:
+                    raise
+
+            # Rotate to a new sheet if we've reached the per-sheet cell threshold.
+            last_row = _parse_last_row(response)
+            if last_row is not None and last_row * _NUM_COLS >= _CELL_THRESHOLD:
+                self._active_sheet = self._create_next_sheet()
 
         except Exception:
             # Restore rows to the buffer so they are retried on the next drain().
@@ -206,3 +310,65 @@ class SheetsLogger(logging.Handler):
             raise
 
         return len(rows)
+
+    # ── Sheet management ──────────────────────────────────────────────────────
+
+    def _get_sheet_titles(self) -> list[str]:
+        meta = (
+            self._service.spreadsheets()
+            .get(spreadsheetId=self._spreadsheet_id, fields="sheets.properties.title")
+            .execute()
+        )
+        return [s["properties"]["title"] for s in meta.get("sheets", [])]
+
+    def _resolve_active_sheet(self) -> str:
+        """Query the spreadsheet and return the latest Logs sheet name."""
+        return _latest_log_sheet(self._get_sheet_titles())
+
+    def _ensure_sheet_exists(self, sheet_name: str) -> None:
+        """Create sheet_name if it doesn't already exist in the spreadsheet."""
+        self._service.spreadsheets().batchUpdate(
+            spreadsheetId=self._spreadsheet_id,
+            body={
+                "requests": [
+                    {
+                        "addSheet": {
+                            "properties": {
+                                "title": sheet_name,
+                                "gridProperties": {"rowCount": 1, "columnCount": _NUM_COLS},
+                            }
+                        }
+                    }
+                ]
+            },
+        ).execute()
+
+    def _create_next_sheet(self) -> str:
+        """Create the next sequential Logs sheet tab and return its name."""
+        titles = self._get_sheet_titles()
+        pattern = re.compile(r"^Logs(?: (\d+))?$")
+        max_n = 0
+        for title in titles:
+            m = pattern.match(title)
+            if m:
+                max_n = max(max_n, int(m.group(1)) if m.group(1) else 1)
+        new_name = f"Logs {max_n + 1}"
+        # Start the new sheet with the minimum grid size (1 row × 9 cols = 9 cells)
+        # rather than the default 1000×26 = 26 000 cells, to preserve the 10M
+        # workbook-level cell budget as much as possible.
+        self._service.spreadsheets().batchUpdate(
+            spreadsheetId=self._spreadsheet_id,
+            body={
+                "requests": [
+                    {
+                        "addSheet": {
+                            "properties": {
+                                "title": new_name,
+                                "gridProperties": {"rowCount": 1, "columnCount": _NUM_COLS},
+                            }
+                        }
+                    }
+                ]
+            },
+        ).execute()
+        return new_name

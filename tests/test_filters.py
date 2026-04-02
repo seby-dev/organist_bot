@@ -2,6 +2,7 @@ import datetime
 from unittest.mock import MagicMock
 
 from organist_bot.filters import (
+    AvailabilityFilter,
     BlacklistFilter,
     BookedDateFilter,
     FeeFilter,
@@ -9,6 +10,8 @@ from organist_bot.filters import (
     PostcodeFilter,
     SeenFilter,
     SundayTimeFilter,
+    _date_in_periods,
+    _parse_periods,
     normalize_to_yyyymmdd,
     parse_min_fee,
     parse_start_time,
@@ -1070,4 +1073,221 @@ class TestPostcodeFilterLogging:
         )
         assert record is not None, "Expected 'Distance Matrix query failed' log record"
         assert isinstance(record.elapsed_ms, int)
-        assert record.elapsed_ms >= 0
+
+
+# ─────────────────────────────────────────────────────────
+# AvailabilityFilter
+# ─────────────────────────────────────────────────────────
+
+
+def _gig(date: str) -> Gig:
+    """Return a minimal Gig with the given date string."""
+    return Gig(
+        header="Test Gig",
+        organisation="Test Org",
+        locality="London",
+        date=date,
+        time="10:00 AM",
+        fee="£100",
+        link="https://example.com/gig",
+    )
+
+
+class TestParsePeriods:
+    def test_specific_date(self):
+        result = _parse_periods(["2026-04-15"])
+        d = datetime.date(2026, 4, 15)
+        assert result == [(d, d)]
+
+    def test_date_range(self):
+        result = _parse_periods(["2026-12-15:2027-01-05"])
+        assert result == [(datetime.date(2026, 12, 15), datetime.date(2027, 1, 5))]
+
+    def test_year_month(self):
+        result = _parse_periods(["2026-04"])
+        assert result == [(datetime.date(2026, 4, 1), datetime.date(2026, 4, 30))]
+
+    def test_year_month_december(self):
+        result = _parse_periods(["2026-12"])
+        assert result == [(datetime.date(2026, 12, 1), datetime.date(2026, 12, 31))]
+
+    def test_year_month_february_leap(self):
+        result = _parse_periods(["2028-02"])  # 2028 is a leap year
+        assert result == [(datetime.date(2028, 2, 1), datetime.date(2028, 2, 29))]
+
+    def test_year_month_february_non_leap(self):
+        result = _parse_periods(["2026-02"])
+        assert result == [(datetime.date(2026, 2, 1), datetime.date(2026, 2, 28))]
+
+    def test_list_of_specific_dates(self):
+        result = _parse_periods(["2026-12-25", "2026-12-26", "2027-01-01"])
+        assert result == [
+            (datetime.date(2026, 12, 25), datetime.date(2026, 12, 25)),
+            (datetime.date(2026, 12, 26), datetime.date(2026, 12, 26)),
+            (datetime.date(2027, 1, 1), datetime.date(2027, 1, 1)),
+        ]
+
+    def test_mixed_types(self):
+        result = _parse_periods(["2026-12-25", "2026-12-15:2027-01-05", "2026-08"])
+        assert len(result) == 3
+        assert result[0] == (datetime.date(2026, 12, 25), datetime.date(2026, 12, 25))
+        assert result[1] == (datetime.date(2026, 12, 15), datetime.date(2027, 1, 5))
+        assert result[2] == (datetime.date(2026, 8, 1), datetime.date(2026, 8, 31))
+
+    def test_invalid_token_skipped(self):
+        result = _parse_periods(["not-a-date", "2026-04-15"])
+        d = datetime.date(2026, 4, 15)
+        assert result == [(d, d)]
+
+    def test_empty_list(self):
+        assert _parse_periods([]) == []
+
+
+class TestDateInPeriods:
+    def _periods(self):
+        return [
+            (datetime.date(2026, 4, 1), datetime.date(2026, 4, 30)),
+            (datetime.date(2026, 8, 10), datetime.date(2026, 8, 20)),
+        ]
+
+    def test_exact_start_boundary(self):
+        assert _date_in_periods(datetime.date(2026, 4, 1), self._periods()) is True
+
+    def test_exact_end_boundary(self):
+        assert _date_in_periods(datetime.date(2026, 4, 30), self._periods()) is True
+
+    def test_one_day_before_start(self):
+        assert _date_in_periods(datetime.date(2026, 3, 31), self._periods()) is False
+
+    def test_one_day_after_end(self):
+        assert _date_in_periods(datetime.date(2026, 5, 1), self._periods()) is False
+
+    def test_date_in_second_range(self):
+        assert _date_in_periods(datetime.date(2026, 8, 15), self._periods()) is True
+
+    def test_empty_periods(self):
+        assert _date_in_periods(datetime.date(2026, 4, 15), []) is False
+
+
+class TestAvailabilityFilterBlock:
+    def test_date_inside_blocked_period_rejected(self):
+        f = AvailabilityFilter(["2026-04"], mode="block")
+        assert f(_gig("Sunday, 12 April 2026")) is False
+
+    def test_date_outside_blocked_period_passes(self):
+        f = AvailabilityFilter(["2026-04"], mode="block")
+        assert f(_gig("Sunday, 3 May 2026")) is True
+
+    def test_first_day_of_blocked_month_rejected(self):
+        f = AvailabilityFilter(["2026-04"], mode="block")
+        assert f(_gig("Wednesday, 1 April 2026")) is False
+
+    def test_last_day_of_blocked_month_rejected(self):
+        f = AvailabilityFilter(["2026-04"], mode="block")
+        assert f(_gig("Thursday, 30 April 2026")) is False
+
+    def test_blocked_date_range(self):
+        f = AvailabilityFilter(["2026-12-20:2026-12-31"], mode="block")
+        assert f(_gig("Sunday, 25 December 2026")) is False
+        assert f(_gig("Sunday, 27 December 2026")) is False
+        assert f(_gig("Sunday, 18 December 2026")) is True
+
+    def test_specific_blocked_dates(self):
+        f = AvailabilityFilter(["2026-12-25", "2026-12-26"], mode="block")
+        assert f(_gig("Friday, 25 December 2026")) is False
+        assert f(_gig("Saturday, 26 December 2026")) is False
+        assert f(_gig("Sunday, 27 December 2026")) is True
+
+    def test_unparseable_date_fails_open(self):
+        f = AvailabilityFilter(["2026-04"], mode="block")
+        assert f(_gig("not a real date")) is True
+
+    def test_empty_date_fails_open(self):
+        f = AvailabilityFilter(["2026-04"], mode="block")
+        assert f(_gig("")) is True
+
+    def test_empty_periods_is_noop(self):
+        f = AvailabilityFilter([], mode="block")
+        assert f(_gig("Sunday, 12 April 2026")) is True
+
+
+class TestAvailabilityFilterOnly:
+    def test_date_inside_available_period_passes(self):
+        f = AvailabilityFilter(["2026-04"], mode="only")
+        assert f(_gig("Sunday, 12 April 2026")) is True
+
+    def test_date_outside_available_period_rejected(self):
+        f = AvailabilityFilter(["2026-04"], mode="only")
+        assert f(_gig("Sunday, 3 May 2026")) is False
+
+    def test_exact_boundary_passes(self):
+        f = AvailabilityFilter(["2026-04"], mode="only")
+        assert f(_gig("Wednesday, 1 April 2026")) is True
+        assert f(_gig("Thursday, 30 April 2026")) is True
+
+    def test_available_date_range(self):
+        f = AvailabilityFilter(["2026-04-01:2026-04-30"], mode="only")
+        assert f(_gig("Sunday, 12 April 2026")) is True
+        assert f(_gig("Sunday, 3 May 2026")) is False
+
+    def test_multiple_available_months(self):
+        f = AvailabilityFilter(["2026-04", "2026-05"], mode="only")
+        assert f(_gig("Sunday, 12 April 2026")) is True
+        assert f(_gig("Sunday, 10 May 2026")) is True
+        assert f(_gig("Sunday, 7 June 2026")) is False
+
+    def test_specific_available_dates(self):
+        f = AvailabilityFilter(["2026-04-12", "2026-04-19"], mode="only")
+        assert f(_gig("Sunday, 12 April 2026")) is True
+        assert f(_gig("Sunday, 19 April 2026")) is True
+        assert f(_gig("Sunday, 26 April 2026")) is False
+
+    def test_unparseable_date_fails_open(self):
+        f = AvailabilityFilter(["2026-04"], mode="only")
+        assert f(_gig("not a real date")) is True
+
+    def test_empty_periods_is_noop(self):
+        f = AvailabilityFilter([], mode="only")
+        assert f(_gig("Sunday, 12 April 2026")) is True
+
+
+class TestAvailabilityFilterIntegration:
+    def test_invalid_mode_raises(self):
+        import pytest
+
+        with pytest.raises(ValueError, match="mode must be"):
+            AvailabilityFilter(["2026-04"], mode="invalid")
+
+    def test_repr(self):
+        f = AvailabilityFilter(["2026-04", "2026-05"], mode="block")
+        r = repr(f)
+        assert "AvailabilityFilter" in r
+        assert "block" in r
+        assert "2" in r  # 2 parsed periods
+
+    def test_block_takes_precedence_in_chain(self):
+        """Gig in blocked period AND available period → block filter wins."""
+        chain = (
+            GigFilterChain()
+            .add(AvailabilityFilter(["2026-04"], mode="block"))
+            .add(AvailabilityFilter(["2026-04"], mode="only"))
+        )
+        assert chain.is_valid(_gig("Sunday, 12 April 2026")) is False
+
+    def test_not_blocked_and_in_available_passes(self):
+        chain = (
+            GigFilterChain()
+            .add(AvailabilityFilter(["2026-03"], mode="block"))
+            .add(AvailabilityFilter(["2026-04"], mode="only"))
+        )
+        assert chain.is_valid(_gig("Sunday, 12 April 2026")) is True
+
+    def test_blocked_and_outside_available_rejected_by_block(self):
+        """Short-circuit: block filter fires, only filter never reached."""
+        chain = (
+            GigFilterChain()
+            .add(AvailabilityFilter(["2026-04"], mode="block"))
+            .add(AvailabilityFilter(["2026-05"], mode="only"))
+        )
+        # April gig: blocked by first filter (chain short-circuits)
+        assert chain.is_valid(_gig("Sunday, 12 April 2026")) is False

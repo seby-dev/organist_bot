@@ -1,3 +1,4 @@
+import calendar as _calendar
 import datetime
 import logging
 import re
@@ -450,6 +451,109 @@ class CalendarFilter:
 
     def __repr__(self):
         return "CalendarFilter()"
+
+
+# ──────────────────────────────────────────────
+# Availability period helpers
+# ──────────────────────────────────────────────
+
+
+def _parse_periods(
+    raw: list[str],
+) -> list[tuple[datetime.date, datetime.date]]:
+    """Parse period tokens into inclusive (start, end) date tuples.
+
+    Accepted formats:
+      "2026-12-25"            – single day (use a list of these for specific days)
+      "2026-12-15:2027-01-05" – inclusive date range
+      "2026-12"               – full calendar month
+    Invalid tokens are skipped with a warning.
+    """
+    parsed = []
+    for token in raw:
+        token = token.strip()
+        try:
+            if ":" in token:
+                # Date range
+                start_str, end_str = token.split(":", 1)
+                start = datetime.date.fromisoformat(start_str.strip())
+                end = datetime.date.fromisoformat(end_str.strip())
+                parsed.append((start, end))
+            elif re.fullmatch(r"\d{4}-\d{2}", token):
+                # Year-month (e.g. "2026-12")
+                year, month = int(token[:4]), int(token[5:])
+                last_day = _calendar.monthrange(year, month)[1]
+                parsed.append(
+                    (
+                        datetime.date(year, month, 1),
+                        datetime.date(year, month, last_day),
+                    )
+                )
+            else:
+                # Specific date (e.g. "2026-12-25")
+                d = datetime.date.fromisoformat(token)
+                parsed.append((d, d))
+        except (ValueError, AttributeError):
+            logger.warning("AvailabilityFilter: could not parse period %r — skipping", token)
+    return parsed
+
+
+def _date_in_periods(
+    d: datetime.date,
+    periods: list[tuple[datetime.date, datetime.date]],
+) -> bool:
+    """Return True if `d` falls within any of the inclusive (start, end) ranges."""
+    return any(start <= d <= end for start, end in periods)
+
+
+class AvailabilityFilter:
+    """Reject gigs based on personal availability periods.
+
+    mode="block"  – reject if gig date falls IN any period (not available).
+    mode="only"   – reject if gig date falls OUTSIDE all periods (only available then).
+
+    Fails open: if the gig date cannot be parsed, the gig is allowed through.
+    If periods is empty, the filter is a no-op (all gigs pass).
+    """
+
+    def __init__(self, periods: list[str], mode: str) -> None:
+        if mode not in ("block", "only"):
+            raise ValueError(f"AvailabilityFilter mode must be 'block' or 'only', got {mode!r}")
+        self.mode = mode
+        self._raw = periods
+        self._periods = _parse_periods(periods)
+
+    def __call__(self, gig: Gig) -> bool:
+        if not self._periods:
+            return True  # no periods configured — no-op
+
+        normalized = normalize_to_yyyymmdd(gig.date)
+        if normalized is None:
+            return True  # fail-open
+
+        try:
+            d = datetime.datetime.strptime(normalized, "%Y%m%d").date()
+        except ValueError:
+            return True  # fail-open
+
+        hit = _date_in_periods(d, self._periods)
+        if self.mode == "block":
+            if hit:
+                logger.debug(
+                    "AvailabilityFilter(block): date in unavailable period — rejecting",
+                    extra={"header": gig.header, "date": gig.date},
+                )
+            return not hit
+        else:  # only
+            if not hit:
+                logger.debug(
+                    "AvailabilityFilter(only): date outside available periods — rejecting",
+                    extra={"header": gig.header, "date": gig.date},
+                )
+            return hit
+
+    def __repr__(self) -> str:
+        return f"AvailabilityFilter(mode={self.mode!r}, periods={len(self._periods)})"
 
 
 # ──────────────────────────────────────────────

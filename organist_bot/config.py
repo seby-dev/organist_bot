@@ -10,7 +10,6 @@ class Settings(BaseSettings):
     cc_email: str
     blacklist_emails: list[str] = []
     min_fee: int = 100
-    booked_dates: list[str] = []
     poll_minutes: int = 2
     log_file: str = "logs/gigs.log"
     csv_file: str = "data/seen_gigs.csv"
@@ -42,10 +41,18 @@ class Settings(BaseSettings):
     enable_fee_filter: bool = True
     enable_sunday_time_filter: bool = True
     enable_blacklist_filter: bool = True
-    enable_booked_date_filter: bool = True
     enable_seen_filter: bool = True
     enable_postcode_filter: bool = True
     enable_calendar_filter: bool = True
+
+    # ── Availability filter ───────────────────────────────────────────────────
+    # Period tokens: "2026-12-25" | "2026-12-15:2027-01-05" | "2026-12"
+    # unavailable_periods: dates/ranges when you are NOT available (any match → reject)
+    # available_only_periods: if non-empty, only gigs on these dates are accepted
+    # Blocked periods take precedence (evaluated first in the filter chain).
+    unavailable_periods: list[str] = []
+    available_only_periods: list[str] = []
+    enable_availability_filter: bool = True
 
     model_config = SettingsConfigDict(env_file=".env")
 
