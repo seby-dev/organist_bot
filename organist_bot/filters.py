@@ -179,7 +179,7 @@ class FeeFilter:
     Weekend/unknown-day gigs use the provided min_fee.
     """
 
-    def __init__(self, min_fee: float, weekday_min_fee: float = 120):
+    def __init__(self, min_fee: float, weekday_min_fee: float = 100):
         self.min_fee = min_fee
         self.weekday_min_fee = weekday_min_fee
 

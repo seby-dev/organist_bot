@@ -188,6 +188,6 @@ class Notifier:
         self._dispatch(
             subject=f"Application for Organist Position \u2013 {gig.date}",
             body=body,
-            recipient="kojodakey@gmail.com",
+            recipient=gig.email,
             cc=cc,
         )
