@@ -5,9 +5,6 @@ File-backed store for runtime-editable filter values.
 The store lives at data/filter_config.json and is read fresh on every
 call — so the Telegram bot can mutate it and main.py picks up the changes
 on the very next polling tick without a restart.
-
-On first use, call initialize_from_settings(settings) to seed the file
-from whatever is in .env; after that the file is the sole source of truth.
 """
 
 from __future__ import annotations
@@ -15,10 +12,6 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from organist_bot.config import Settings
 
 logger = logging.getLogger(__name__)
 
@@ -41,20 +34,6 @@ def _read() -> dict[str, list[str]]:
 def _write(data: dict[str, list[str]]) -> None:
     _PATH.parent.mkdir(parents=True, exist_ok=True)
     _PATH.write_text(json.dumps(data, indent=2) + "\n")
-
-
-def initialize_from_settings(s: Settings) -> None:
-    """Seed the store from settings if the file does not already exist."""
-    if _PATH.exists():
-        return
-    _write(
-        {
-            "blacklist_emails": list(s.blacklist_emails),
-            "unavailable_periods": list(s.unavailable_periods),
-            "available_only_periods": list(s.available_only_periods),
-        }
-    )
-    logger.info("filter_store: initialized from settings", extra={"path": str(_PATH)})
 
 
 # ── Read helpers (fresh read each call) ───────────────────────────────────────

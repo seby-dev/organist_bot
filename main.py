@@ -7,7 +7,6 @@ import schedule
 
 import organist_bot.filter_store as filter_store
 from organist_bot.config import settings
-from organist_bot.filter_store import initialize_from_settings
 from organist_bot.filters import (
     AvailabilityFilter,
     BlacklistFilter,
@@ -285,9 +284,6 @@ if __name__ == "__main__":
         "Scheduler starting",
         extra={"poll_minutes": settings.poll_minutes},
     )
-
-    # Seed filter_config.json from .env on first run (no-op if file exists).
-    initialize_from_settings(settings)
 
     # ── Google Sheets logger (optional) ───────────────────────────────────────
     sheets_logger: SheetsLogger | None = None

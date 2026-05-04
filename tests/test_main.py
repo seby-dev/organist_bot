@@ -114,7 +114,7 @@ class TestMain:
         s.min_fee = 100
         s.poll_minutes = 2
         s.booked_dates = []
-        s.blacklist_emails = []
+
         s.home_postcode = ""
         s.google_maps_api_key = ""
         s.google_calendar_id = ""
