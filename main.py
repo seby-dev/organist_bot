@@ -5,7 +5,9 @@ import uuid
 import requests as _requests
 import schedule
 
+import organist_bot.filter_store as filter_store
 from organist_bot.config import settings
+from organist_bot.filter_store import initialize_from_settings
 from organist_bot.filters import (
     AvailabilityFilter,
     BlacklistFilter,
@@ -108,10 +110,12 @@ def main(scraper: Scraper, sheets_logger: SheetsLogger | None = None) -> None:
             "CalendarFilter disabled — google_calendar_id or google_calendar_credentials_file not set"
         )
     if settings.enable_availability_filter:
-        if settings.unavailable_periods:
-            pre_filter.add(AvailabilityFilter(settings.unavailable_periods, mode="block"))
-        if settings.available_only_periods:
-            pre_filter.add(AvailabilityFilter(settings.available_only_periods, mode="only"))
+        unavail = filter_store.unavailable_periods()
+        avail_only = filter_store.available_only_periods()
+        if unavail:
+            pre_filter.add(AvailabilityFilter(unavail, mode="block"))
+        if avail_only:
+            pre_filter.add(AvailabilityFilter(avail_only, mode="only"))
 
     gigs_div: list = []
     pre_filter_passed: int = 0
@@ -175,15 +179,17 @@ def main(scraper: Scraper, sheets_logger: SheetsLogger | None = None) -> None:
         logger.info("SundayTimeFilter disabled")
 
     if settings.enable_blacklist_filter:
-        filter_chain.add(BlacklistFilter(settings.blacklist_emails))
+        filter_chain.add(BlacklistFilter(filter_store.blacklist_emails()))
     else:
         logger.info("BlacklistFilter disabled")
 
     if settings.enable_availability_filter:
-        if settings.unavailable_periods:
-            filter_chain.add(AvailabilityFilter(settings.unavailable_periods, mode="block"))
-        if settings.available_only_periods:
-            filter_chain.add(AvailabilityFilter(settings.available_only_periods, mode="only"))
+        unavail = filter_store.unavailable_periods()
+        avail_only = filter_store.available_only_periods()
+        if unavail:
+            filter_chain.add(AvailabilityFilter(unavail, mode="block"))
+        if avail_only:
+            filter_chain.add(AvailabilityFilter(avail_only, mode="only"))
     else:
         logger.info("AvailabilityFilter disabled")
 
@@ -279,6 +285,9 @@ if __name__ == "__main__":
         "Scheduler starting",
         extra={"poll_minutes": settings.poll_minutes},
     )
+
+    # Seed filter_config.json from .env on first run (no-op if file exists).
+    initialize_from_settings(settings)
 
     # ── Google Sheets logger (optional) ───────────────────────────────────────
     sheets_logger: SheetsLogger | None = None
