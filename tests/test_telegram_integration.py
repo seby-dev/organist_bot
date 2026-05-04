@@ -167,13 +167,37 @@ class TestAddGigEntry:
         update.message.reply_text.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_no_args_starts_manual_flow(self):
+    async def test_no_args_starts_agent_conversation(self):
         update = _make_update()
         context = MagicMock()
         context.args = []
-        context.user_data = {}
-        from organist_bot.integrations.telegram_bot import TITLE
+        from organist_bot.integrations.gig_agent import GigAgentResponse
+        from organist_bot.integrations.telegram_bot import CHATTING
 
-        result = await addgig_entry(update, context)
-        assert result == TITLE
-        assert context.user_data["gig"] == {}
+        agent_resp = GigAgentResponse(text="What's the gig title?", done=False)
+        with patch(
+            "organist_bot.integrations.gig_agent.process_message",
+            new=AsyncMock(return_value=agent_resp),
+        ):
+            result = await addgig_entry(update, context)
+
+        assert result == CHATTING
+        update.message.reply_text.assert_called_with("What's the gig title?", parse_mode="Markdown")
+
+    @pytest.mark.asyncio
+    async def test_url_arg_starts_agent_and_ends_when_done(self):
+        update = _make_update()
+        context = MagicMock()
+        context.args = ["https://organistsonline.org/required/123/"]
+        from telegram.ext import ConversationHandler
+
+        from organist_bot.integrations.gig_agent import GigAgentResponse
+
+        agent_resp = GigAgentResponse(text="✓ Added to calendar!", done=True)
+        with patch(
+            "organist_bot.integrations.gig_agent.process_message",
+            new=AsyncMock(return_value=agent_resp),
+        ):
+            result = await addgig_entry(update, context)
+
+        assert result == ConversationHandler.END
