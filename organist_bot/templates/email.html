@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<style>
+  body {
+    font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+    font-weight: 300;
+    color: #333;
+    line-height: 1.6;
+    margin: 0;
+    padding: 0;
+    background: #f5f5f5;
+  }
+  .container {
+    max-width: 600px;
+    margin: 40px auto;
+    background: #ffffff;
+    border-radius: 8px;
+    overflow: hidden;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+  }
+  .header {
+    background: #0F2B20;
+    padding: 32px 40px;
+    border-bottom: 4px solid #5EC990;
+  }
+  .header h1 {
+    color: #5EC990;
+    font-size: 12px;
+    letter-spacing: 4px;
+    text-transform: uppercase;
+    margin: 0 0 4px;
+    font-weight: 300;
+  }
+  .header .name {
+    color: #EAF2EC;
+    font-size: 24px;
+    font-weight: 500;
+    margin: 0;
+  }
+  .body-content {
+    padding: 36px 40px;
+  }
+  .body-content p {
+    margin: 0 0 16px;
+    font-size: 15px;
+    color: #444;
+  }
+  .details-box {
+    background: #f9fafb;
+    border: 1px solid #e5e7eb;
+    border-radius: 6px;
+    padding: 20px 24px;
+    margin: 24px 0;
+  }
+  .details-box table {
+    width: 100%;
+    border-collapse: collapse;
+  }
+  .details-box td {
+    padding: 6px 0;
+    font-size: 14px;
+  }
+  .details-box td:first-child {
+    color: #888;
+    width: 140px;
+  }
+  .details-box td:last-child {
+    color: #333;
+    font-weight: 400;
+  }
+  .footer {
+    padding: 24px 40px;
+    background: #fafafa;
+    border-top: 1px solid #eee;
+    text-align: center;
+  }
+  .footer p {
+    margin: 0;
+    font-size: 12px;
+    color: #999;
+  }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <h1>Invoice</h1>
+    <p class="name">{{ from_name }}</p>
+  </div>
+  <div class="body-content">
+    <p>Dear {{ client_name }},</p>
+    <p>Please find attached the invoice for your records. Below is a summary of the details:</p>
+    <div class="details-box">
+      <table>
+        <tr>
+          <td>Invoice No.</td>
+          <td>{{ invoice_number }}</td>
+        </tr>
+        <tr>
+          <td>Date</td>
+          <td>{{ date }}</td>
+        </tr>
+        {% if items|length == 1 %}
+        <tr>
+          <td>Description</td>
+          <td>{{ items[0].description }}</td>
+        </tr>
+        {% else %}
+        <tr>
+          <td style="vertical-align:top;">Services</td>
+          <td>{% for item in items %}{{ item.description }}{% if not loop.last %}<br>{% endif %}{% endfor %}</td>
+        </tr>
+        {% endif %}
+        <tr>
+          <td>Amount Due</td>
+          <td><strong>{{ currency }}{{ "%.2f"|format(total) }}</strong></td>
+        </tr>
+      </table>
+    </div>
+    <p>Kind regards,<br>{{ from_name }}</p>
+  </div>
+  <div class="footer">
+    <p>{{ from_name }} &middot; {{ from_email }}</p>
+  </div>
+</div>
+</body>
+</html>

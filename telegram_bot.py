@@ -30,6 +30,7 @@ if __name__ == "__main__":
             ("TELEGRAM_CHAT_ID", settings.telegram_chat_id),
             ("GOOGLE_CALENDAR_ID", settings.google_calendar_id),
             ("GOOGLE_CALENDAR_CREDENTIALS_FILE", settings.google_calendar_credentials_file),
+            ("ANTHROPIC_API_KEY", settings.anthropic_api_key),
         ]
         if not val
     ]

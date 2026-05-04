@@ -16,6 +16,8 @@ dependencies = [
     "google-auth>=2.0",
     "python-telegram-bot>=20.0",
     "protobuf",
+    "anthropic>=0.40",
+    "playwright>=1.40",
 ]
 
 [project.optional-dependencies]

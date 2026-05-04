@@ -37,6 +37,23 @@ class Settings(BaseSettings):
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""
 
+    # ── Invoice agent ─────────────────────────────────────────────────────────
+    anthropic_api_key: str = ""
+    from_name: str = ""
+    from_address: str = ""
+    from_email: str = ""
+    currency: str = "£"
+    payment_account_name: str = ""
+    payment_account_number: str = ""
+    payment_sort_code: str = ""
+    payment_note: str = ""
+
+    # ── SMTP ──────────────────────────────────────────────────────────────────
+    smtp_host: str = "smtp.gmail.com"
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_password: str = ""
+
     # ── Filter toggles (set to false in .env to disable) ─────────────────────
     enable_fee_filter: bool = True
     enable_sunday_time_filter: bool = True
