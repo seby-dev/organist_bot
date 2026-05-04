@@ -6,7 +6,6 @@ from datetime import datetime
 from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader
-from playwright.async_api import async_playwright
 
 from organist_bot.config import settings
 
@@ -165,6 +164,8 @@ async def generate_invoice(client_key: str, items: list[dict]) -> dict:
     html_path.write_text(html)
 
     pdf_path = OUTPUT_DIR / f"invoice-{safe_key}-{timestamp}.pdf"
+
+    from playwright.async_api import async_playwright  # lazy: requires browser install
 
     async with async_playwright() as p:
         browser = await p.chromium.launch()

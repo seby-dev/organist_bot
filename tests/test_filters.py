@@ -335,9 +335,9 @@ class TestFeeFilter:
 
     # --- defaults ---
 
-    def test_default_weekday_min_fee_is_120(self):
+    def test_default_weekday_min_fee_is_100(self):
         f = FeeFilter(min_fee=50)
-        assert f.weekday_min_fee == 120
+        assert f.weekday_min_fee == 100
 
     def test_repr(self):
         f = FeeFilter(min_fee=50, weekday_min_fee=120)

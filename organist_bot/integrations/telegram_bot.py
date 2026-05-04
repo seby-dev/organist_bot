@@ -34,10 +34,7 @@ from telegram.ext import (
 
 from organist_bot.config import settings
 from organist_bot.filters import normalize_to_yyyymmdd
-from organist_bot.integrations.calendar_client import GoogleCalendarClient
-from organist_bot.integrations.invoice_agent import process_message, reset_conversation
 from organist_bot.models import Gig
-from organist_bot.scraper import Scraper
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +93,8 @@ async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     assert update.effective_chat is not None
     assert update.message is not None
+    from organist_bot.integrations.invoice_agent import reset_conversation
+
     reset_conversation(update.effective_chat.id)
     await update.message.reply_text("Invoice conversation cleared.")
 
@@ -132,6 +131,8 @@ async def addgig_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 
 async def _add_gig_from_url(update: Update, url: str) -> None:
     assert update.message is not None
+    from organist_bot.scraper import Scraper
+
     await update.message.reply_text("⏳ Fetching gig details…")
     try:
         with Scraper() as scraper:
@@ -269,6 +270,8 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 async def _book_gig(update: Update, gig: Gig) -> None:
     assert update.message is not None
+    from organist_bot.integrations.calendar_client import GoogleCalendarClient
+
     cal = GoogleCalendarClient(
         credentials_file=settings.google_calendar_credentials_file,
         calendar_id=settings.google_calendar_id,
@@ -310,6 +313,7 @@ async def handle_invoice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
     assert update.effective_chat is not None
     assert update.message is not None
+    from organist_bot.integrations.invoice_agent import process_message
 
     chat_id = update.effective_chat.id
     text = update.message.text or ""
