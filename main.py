@@ -126,17 +126,19 @@ def main(scraper: Scraper, sheets_logger: SheetsLogger | None = None) -> None:
     pre_filter_passed: int = 0
 
     response = scraper.fetch(settings.target_url)
+    gigs_div = scraper.parse_gig_listings(response, "booking noselect")
 
-    # Skip the full pipeline if the listings page hasn't changed since last run.
+    # Skip the full pipeline if the gig listings haven't changed since last run.
+    # We hash the serialised gig elements rather than the full HTML to ignore
+    # dynamic page content (e.g. ASP.NET __VIEWSTATE) that rotates every request.
     # Note: buffered SheetsLogger records from this run are not drained here — they
     # flush with the next changed-page run. Skipped runs therefore appear in Sheets
     # with a slight timestamp lag, not in real time.
-    current_hash = hashlib.sha256(response.encode()).hexdigest()
+    listings_content = "".join(str(el) for el in gigs_div)
+    current_hash = hashlib.sha256(listings_content.encode()).hexdigest()
     if load_listings_hash() == current_hash:
         logger.info("Listings page unchanged — skipping run", extra={"hash": current_hash[:12]})
         return
-
-    gigs_div = scraper.parse_gig_listings(response, "booking noselect")
 
     for gig_el in gigs_div:
         basic: dict = {}
