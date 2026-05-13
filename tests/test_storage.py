@@ -2,7 +2,12 @@
 
 import csv
 
-from organist_bot.storage import load_seen_gigs, save_seen_gigs
+from organist_bot.storage import (
+    load_listings_hash,
+    load_seen_gigs,
+    save_listings_hash,
+    save_seen_gigs,
+)
 
 # ─────────────────────────────────────────────────────────
 # load_seen_gigs
@@ -199,3 +204,35 @@ class TestRoundTrip:
         links = {f"https://example.com/gig/{i}" for i in range(500)}
         save_seen_gigs(links, str(p))
         assert load_seen_gigs(str(p)) == links
+
+
+# ─────────────────────────────────────────────────────────
+# Listings Hash
+# ─────────────────────────────────────────────────────────
+
+
+class TestListingsHash:
+    def test_load_returns_none_when_file_missing(self, tmp_path):
+        result = load_listings_hash(str(tmp_path / "hash.txt"))
+        assert result is None
+
+    def test_save_then_load_round_trips(self, tmp_path):
+        p = str(tmp_path / "hash.txt")
+        save_listings_hash("abc123", p)
+        assert load_listings_hash(p) == "abc123"
+
+    def test_save_overwrites_existing(self, tmp_path):
+        p = str(tmp_path / "hash.txt")
+        save_listings_hash("old", p)
+        save_listings_hash("new", p)
+        assert load_listings_hash(p) == "new"
+
+    def test_load_strips_whitespace(self, tmp_path):
+        p = tmp_path / "hash.txt"
+        p.write_text("abc123\n")
+        assert load_listings_hash(str(p)) == "abc123"
+
+    def test_load_returns_none_for_empty_file(self, tmp_path):
+        p = tmp_path / "hash.txt"
+        p.write_text("")
+        assert load_listings_hash(str(p)) is None
