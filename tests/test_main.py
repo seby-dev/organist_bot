@@ -349,13 +349,15 @@ class TestMain:
 
 class TestHashChangeDetection:
     def test_skips_pipeline_when_hash_unchanged(self, caplog):
-        """When the listings HTML hash matches the stored hash, main() returns
-        without calling parse_gig_listings, filter, or notify."""
-        html = "<html>unchanged</html>"
-        stored_hash = hashlib.sha256(html.encode()).hexdigest()
+        """When the gig-elements hash matches the stored hash, main() returns
+        early without entering the per-gig loop or notifying."""
+        # Hash is derived from serialised gig elements, not the full HTML.
+        gig_elements = []  # parse_gig_listings returns empty list
+        stored_hash = hashlib.sha256("".join(str(el) for el in gig_elements).encode()).hexdigest()
 
         mock_scraper = MagicMock()
-        mock_scraper.fetch.return_value = html
+        mock_scraper.fetch.return_value = "<html>unchanged</html>"
+        mock_scraper.parse_gig_listings.return_value = gig_elements
 
         with (
             patch("main.load_listings_hash", return_value=stored_hash),
@@ -368,19 +370,19 @@ class TestHashChangeDetection:
         ):
             main_module.main(mock_scraper)
 
-        mock_scraper.parse_gig_listings.assert_not_called()
+        mock_scraper.extract_basic_details.assert_not_called()
         mock_save.assert_not_called()
         assert any("unchanged" in r.message.lower() for r in caplog.records)
 
     def test_runs_pipeline_when_hash_changes(self):
-        """When stored hash differs from the current HTML hash, the pipeline
-        proceeds and the new hash is saved."""
-        html = "<html>new content</html>"
+        """When stored hash differs from the current gig-elements hash, the
+        pipeline proceeds and the new hash is saved."""
         old_hash = "stale_hash_value"
-        new_hash = hashlib.sha256(html.encode()).hexdigest()
+        # Hash of serialised empty gig list
+        new_hash = hashlib.sha256(b"").hexdigest()
 
         mock_scraper = MagicMock()
-        mock_scraper.fetch.return_value = html
+        mock_scraper.fetch.return_value = "<html>new content</html>"
         mock_scraper.parse_gig_listings.return_value = []
 
         with (
@@ -400,11 +402,10 @@ class TestHashChangeDetection:
 
     def test_runs_pipeline_when_no_stored_hash(self):
         """First run (no hash file yet) proceeds normally and saves the hash."""
-        html = "<html>first run</html>"
-        new_hash = hashlib.sha256(html.encode()).hexdigest()
+        new_hash = hashlib.sha256(b"").hexdigest()
 
         mock_scraper = MagicMock()
-        mock_scraper.fetch.return_value = html
+        mock_scraper.fetch.return_value = "<html>first run</html>"
         mock_scraper.parse_gig_listings.return_value = []
 
         with (
