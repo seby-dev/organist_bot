@@ -128,6 +128,9 @@ def main(scraper: Scraper, sheets_logger: SheetsLogger | None = None) -> None:
     response = scraper.fetch(settings.target_url)
 
     # Skip the full pipeline if the listings page hasn't changed since last run.
+    # Note: buffered SheetsLogger records from this run are not drained here — they
+    # flush with the next changed-page run. Skipped runs therefore appear in Sheets
+    # with a slight timestamp lag, not in real time.
     current_hash = hashlib.sha256(response.encode()).hexdigest()
     if load_listings_hash() == current_hash:
         logger.info("Listings page unchanged — skipping run", extra={"hash": current_hash[:12]})
