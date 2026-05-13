@@ -1,6 +1,8 @@
 # tests/test_main.py
 """Tests for main.py — scheduler orchestration and helper functions."""
 
+import hashlib
+import logging
 from unittest.mock import MagicMock, patch
 
 import main as main_module
@@ -56,7 +58,6 @@ class TestSendTelegramAlert:
 
     def test_logs_info_on_successful_send(self, caplog):
         """A successful Telegram POST must emit an INFO 'Telegram alert sent' record."""
-        import logging
 
         mock_settings = MagicMock()
         mock_settings.telegram_bot_token = "token"
@@ -80,7 +81,6 @@ class TestSendTelegramAlert:
 
     def test_logs_warning_on_network_error(self, caplog):
         """A failing Telegram POST must emit a WARNING 'Telegram alert failed' record."""
-        import logging
 
         mock_settings = MagicMock()
         mock_settings.telegram_bot_token = "token"
@@ -148,6 +148,8 @@ class TestMain:
             patch("main.SMTPTransport"),
             patch("main.load_seen_gigs", return_value=set()),
             patch("main.save_seen_gigs"),
+            patch("main.load_listings_hash", return_value=None),
+            patch("main.save_listings_hash"),
             patch("main.set_run_id"),
         ):
             main_module.main(mock_scraper)  # should not raise
@@ -181,6 +183,8 @@ class TestMain:
             patch("main.SMTPTransport"),
             patch("main.load_seen_gigs", return_value=set()),
             patch("main.save_seen_gigs"),
+            patch("main.load_listings_hash", return_value=None),
+            patch("main.save_listings_hash"),
             patch("main.set_run_id"),
         ):
             main_module.main(mock_scraper)  # should not raise
@@ -214,6 +218,8 @@ class TestMain:
             patch("main.SMTPTransport"),
             patch("main.load_seen_gigs", return_value=set()),
             patch("main.save_seen_gigs"),
+            patch("main.load_listings_hash", return_value=None),
+            patch("main.save_listings_hash"),
             patch("main.set_run_id"),
         ):
             notifier_inst = MockNotifier.return_value
@@ -251,6 +257,8 @@ class TestMain:
                 return_value={"https://organistsonline.org/required/old"},
             ),
             patch("main.save_seen_gigs") as mock_save,
+            patch("main.load_listings_hash", return_value=None),
+            patch("main.save_listings_hash"),
             patch("main.set_run_id"),
         ):
             main_module.main(mock_scraper)
@@ -286,6 +294,8 @@ class TestMain:
             patch("main.SMTPTransport"),
             patch("main.load_seen_gigs", return_value={seen_link}),
             patch("main.save_seen_gigs"),
+            patch("main.load_listings_hash", return_value=None),
+            patch("main.save_listings_hash"),
             patch("main.set_run_id"),
         ):
             main_module.main(mock_scraper)
@@ -324,6 +334,8 @@ class TestMain:
             patch("main.SMTPTransport"),
             patch("main.load_seen_gigs", return_value=set()),
             patch("main.save_seen_gigs"),
+            patch("main.load_listings_hash", return_value=None),
+            patch("main.save_listings_hash"),
             patch("main.set_run_id"),
             patch("main.GoogleCalendarClient", return_value=mock_cal_client),
         ):
@@ -333,3 +345,79 @@ class TestMain:
         # CalendarFilter in pre-filter → rejected before detail-page fetch
         mock_scraper.extract_full_details.assert_not_called()
         notifier_inst.send_summary.assert_not_called()
+
+
+class TestHashChangeDetection:
+    def test_skips_pipeline_when_hash_unchanged(self, caplog):
+        """When the listings HTML hash matches the stored hash, main() returns
+        without calling parse_gig_listings, filter, or notify."""
+        html = "<html>unchanged</html>"
+        stored_hash = hashlib.sha256(html.encode()).hexdigest()
+
+        mock_scraper = MagicMock()
+        mock_scraper.fetch.return_value = html
+
+        with (
+            patch("main.load_listings_hash", return_value=stored_hash),
+            patch("main.save_listings_hash") as mock_save,
+            patch("main.set_run_id"),
+            patch("main.settings"),
+            patch("main.filter_store"),
+            patch("main.GoogleCalendarClient"),
+            caplog.at_level(logging.INFO),
+        ):
+            main_module.main(mock_scraper)
+
+        mock_scraper.parse_gig_listings.assert_not_called()
+        mock_save.assert_not_called()
+        assert any("unchanged" in r.message.lower() for r in caplog.records)
+
+    def test_runs_pipeline_when_hash_changes(self):
+        """When stored hash differs from the current HTML hash, the pipeline
+        proceeds and the new hash is saved."""
+        html = "<html>new content</html>"
+        old_hash = "stale_hash_value"
+        new_hash = hashlib.sha256(html.encode()).hexdigest()
+
+        mock_scraper = MagicMock()
+        mock_scraper.fetch.return_value = html
+        mock_scraper.parse_gig_listings.return_value = []
+
+        with (
+            patch("main.load_listings_hash", return_value=old_hash),
+            patch("main.save_listings_hash") as mock_save,
+            patch("main.set_run_id"),
+            patch("main.load_seen_gigs", return_value=set()),
+            patch("main.save_seen_gigs"),
+            patch("main.filter_store"),
+            patch("main.settings"),
+            patch("main.GoogleCalendarClient"),
+        ):
+            main_module.main(mock_scraper)
+
+        mock_scraper.parse_gig_listings.assert_called_once()
+        mock_save.assert_called_once_with(new_hash)
+
+    def test_runs_pipeline_when_no_stored_hash(self):
+        """First run (no hash file yet) proceeds normally and saves the hash."""
+        html = "<html>first run</html>"
+        new_hash = hashlib.sha256(html.encode()).hexdigest()
+
+        mock_scraper = MagicMock()
+        mock_scraper.fetch.return_value = html
+        mock_scraper.parse_gig_listings.return_value = []
+
+        with (
+            patch("main.load_listings_hash", return_value=None),
+            patch("main.save_listings_hash") as mock_save,
+            patch("main.set_run_id"),
+            patch("main.load_seen_gigs", return_value=set()),
+            patch("main.save_seen_gigs"),
+            patch("main.filter_store"),
+            patch("main.settings"),
+            patch("main.GoogleCalendarClient"),
+        ):
+            main_module.main(mock_scraper)
+
+        mock_scraper.parse_gig_listings.assert_called_once()
+        mock_save.assert_called_once_with(new_hash)

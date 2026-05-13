@@ -1,3 +1,4 @@
+import hashlib
 import logging
 import time
 import uuid
@@ -23,7 +24,12 @@ from organist_bot.logging_config import set_run_id, setup_logging
 from organist_bot.models import Gig
 from organist_bot.notifier import Notifier, SMTPTransport
 from organist_bot.scraper import Scraper
-from organist_bot.storage import load_seen_gigs, save_seen_gigs
+from organist_bot.storage import (
+    load_listings_hash,
+    load_seen_gigs,
+    save_listings_hash,
+    save_seen_gigs,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -120,6 +126,13 @@ def main(scraper: Scraper, sheets_logger: SheetsLogger | None = None) -> None:
     pre_filter_passed: int = 0
 
     response = scraper.fetch(settings.target_url)
+
+    # Skip the full pipeline if the listings page hasn't changed since last run.
+    current_hash = hashlib.sha256(response.encode()).hexdigest()
+    if load_listings_hash() == current_hash:
+        logger.info("Listings page unchanged — skipping run", extra={"hash": current_hash[:12]})
+        return
+
     gigs_div = scraper.parse_gig_listings(response, "booking noselect")
 
     for gig_el in gigs_div:
@@ -264,6 +277,8 @@ def main(scraper: Scraper, sheets_logger: SheetsLogger | None = None) -> None:
             "elapsed_ms": int((time.perf_counter() - run_start) * 1000),
         },
     )
+
+    save_listings_hash(current_hash)
 
     # ── Flush logs to Google Sheets ───────────────────────────────────────────
     if sheets_logger is not None:
