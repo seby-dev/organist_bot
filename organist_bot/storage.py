@@ -56,3 +56,24 @@ def save_seen_gigs(seen: set[str], filepath: str = "data/seen_gigs.csv") -> None
             extra={"filepath": str(path.resolve()), "count": len(seen)},
         )
         raise
+
+
+def load_listings_hash(filepath: str = "data/listings_hash.txt") -> str | None:
+    path = Path(filepath)
+    if not path.exists():
+        return None
+    try:
+        return path.read_text().strip() or None
+    except Exception:
+        logger.exception("Failed to load listings hash", extra={"filepath": str(path)})
+        return None
+
+
+def save_listings_hash(hash_str: str, filepath: str = "data/listings_hash.txt") -> None:
+    path = Path(filepath)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(hash_str)
+    except Exception:
+        logger.exception("Failed to save listings hash", extra={"filepath": str(path)})
+        raise
