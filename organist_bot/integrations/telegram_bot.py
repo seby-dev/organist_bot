@@ -114,7 +114,7 @@ async def addgig_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     chat_id = update.effective_chat.id
     gig_agent.reset_gig_conversation(chat_id)  # fresh start on every /addgig
 
-    initial = context.args[0] if context.args else ""
+    initial = context.args[0] if context.args else "I'd like to add a gig to my calendar."
 
     await update.message.reply_text("⏳ One moment…")
     try:
@@ -140,6 +140,10 @@ async def addgig_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 async def gig_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     assert update.message is not None
     assert update.effective_chat is not None
+
+    if not _is_authorised(update):
+        _reject(update)
+        return ConversationHandler.END
 
     from organist_bot.integrations import gig_agent
 
