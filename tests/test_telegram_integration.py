@@ -365,6 +365,15 @@ class TestCmdDeletegig:
         assert "/deletegig" in reply
 
     @pytest.mark.asyncio
+    async def test_non_integer_arg_replies_usage_hint(self):
+        update = _make_update()
+        context = MagicMock()
+        context.args = ["abc"]
+        await cmd_deletegig(update, context)
+        reply = update.message.reply_text.call_args[0][0]
+        assert "/deletegig" in reply
+
+    @pytest.mark.asyncio
     async def test_out_of_range_replies_error(self):
         update = _make_update()
         context = MagicMock()
