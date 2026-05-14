@@ -18,6 +18,10 @@ Security: only messages from TELEGRAM_CHAT_ID are processed.
 
 import logging
 import os
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from organist_bot.integrations.calendar_client import GoogleCalendarClient
 
 from telegram import Update
 from telegram.ext import (
@@ -63,7 +67,16 @@ _HELP = (
 _gig_listing: dict[int, list[dict]] = {}
 
 
-def _make_calendar_client():
+_MDV2_SPECIAL = r"\_*[]()~`>#+-=|{}.!"
+
+
+def _escape_mdv2(text: str) -> str:
+    for ch in _MDV2_SPECIAL:
+        text = text.replace(ch, f"\\{ch}")
+    return text
+
+
+def _make_calendar_client() -> "GoogleCalendarClient | None":
     if settings.google_calendar_id and settings.google_calendar_credentials_file:
         from organist_bot.integrations.calendar_client import GoogleCalendarClient
 
@@ -351,26 +364,13 @@ async def cmd_gigs(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     import datetime as _dt
 
-    now_str = _dt.datetime.now().strftime("%H:%M")
+    now_str = _escape_mdv2(_dt.datetime.now().strftime("%H:%M"))
     lines = [f"*Upcoming gigs* \\(fetched at {now_str}\\)"]
     for i, ev in enumerate(events, start=1):
         start_dt = ev["start_dt"]
-        time_str = start_dt.strftime("%I:%M%p").lstrip("0").lower()
-        date_str = start_dt.strftime("%a %d %b %Y").replace(" 0", " ")
-        summary = (
-            ev["summary"]
-            .replace("\\", "\\\\")
-            .replace(".", "\\.")
-            .replace("-", "\\-")
-            .replace("(", "\\(")
-            .replace(")", "\\)")
-            .replace("!", "\\!")
-            .replace("|", "\\|")
-            .replace("_", "\\_")
-            .replace("*", "\\*")
-            .replace("[", "\\[")
-            .replace("]", "\\]")
-        )
+        time_str = _escape_mdv2(start_dt.strftime("%I:%M%p").lstrip("0").lower())
+        date_str = _escape_mdv2(start_dt.strftime("%a %d %b %Y").replace(" 0", " "))
+        summary = _escape_mdv2(ev["summary"])
         lines.append(f"{i}\\. {summary} · {date_str} · {time_str}")
     lines.append("\nUse /deletegig \\<number\\> to remove one\\.")
     await update.message.reply_text("\n".join(lines), parse_mode="MarkdownV2")
