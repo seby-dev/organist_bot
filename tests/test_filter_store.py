@@ -90,6 +90,20 @@ class TestPurgePastPeriods:
         removed = fs.purge_past_periods()
         assert removed == 1
 
+    def test_keeps_current_month(self):
+        today = datetime.date.today()
+        current_month = f"{today.year}-{today.month:02d}"
+        _write_config(
+            {
+                "unavailable_periods": [current_month],
+                "blacklist_emails": [],
+                "available_only_periods": [],
+            }
+        )
+        removed = fs.purge_past_periods()
+        assert removed == 0
+        assert current_month in _read_config()["unavailable_periods"]
+
     def test_leaves_unparseable_tokens(self):
         _write_config(
             {

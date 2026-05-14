@@ -13,6 +13,7 @@ import calendar
 import datetime
 import json
 import logging
+import re
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -60,9 +61,8 @@ def _period_end_date(token: str) -> datetime.date | None:
         if ":" in token:
             end_str = token.split(":")[1]
             return datetime.date.fromisoformat(end_str)
-        parts = token.split("-")
-        if len(parts) == 2:
-            year, month = int(parts[0]), int(parts[1])
+        if re.fullmatch(r"\d{4}-\d{2}", token):
+            year, month = int(token[:4]), int(token[5:])
             last_day = calendar.monthrange(year, month)[1]
             return datetime.date(year, month, last_day)
         return datetime.date.fromisoformat(token)
