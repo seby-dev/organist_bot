@@ -199,6 +199,46 @@ class TestElapsedMsLogging:
         assert isinstance(record.elapsed_ms, int)
         assert record.elapsed_ms >= 0
 
+    def test_list_upcoming_events_logs_elapsed_ms_on_success(self, client, mock_service, caplog):
+        import logging
+
+        mock_service.events().list().execute.return_value = {"items": []}
+        with caplog.at_level(logging.DEBUG, logger="organist_bot.integrations.calendar_client"):
+            client.list_upcoming_events()
+        record = next(
+            (r for r in caplog.records if r.message == "list_upcoming_events complete"),
+            None,
+        )
+        assert record is not None, "Expected 'list_upcoming_events complete' log record"
+        assert isinstance(record.elapsed_ms, int)
+        assert record.elapsed_ms >= 0
+
+    def test_list_upcoming_events_logs_elapsed_ms_on_failure(self, client, mock_service, caplog):
+        import logging
+
+        mock_service.events().list().execute.side_effect = Exception("API error")
+        with caplog.at_level(logging.WARNING, logger="organist_bot.integrations.calendar_client"):
+            client.list_upcoming_events()
+        record = next(
+            (r for r in caplog.records if "list_upcoming_events failed" in r.message),
+            None,
+        )
+        assert record is not None
+        assert isinstance(record.elapsed_ms, int)
+
+    def test_delete_event_logs_elapsed_ms_on_success(self, client, mock_service, caplog):
+        import logging
+
+        mock_service.events().delete().execute.return_value = None
+        with caplog.at_level(logging.INFO, logger="organist_bot.integrations.calendar_client"):
+            client.delete_event("evt_abc")
+        record = next(
+            (r for r in caplog.records if r.message == "Calendar event deleted"),
+            None,
+        )
+        assert record is not None
+        assert isinstance(record.elapsed_ms, int)
+
 
 # ── list_upcoming_events ──────────────────────────────────────────────────────
 

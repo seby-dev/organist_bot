@@ -92,6 +92,7 @@ class GoogleCalendarClient:
         Each dict: {id, summary, start_dt (timezone-aware datetime), date_str (YYYY-MM-DD)}.
         Fails open — returns [] on any API error.
         """
+        t0 = time.perf_counter()
         try:
             now = datetime.datetime.utcnow().isoformat() + "Z"
             result = (
@@ -117,22 +118,52 @@ class GoogleCalendarClient:
                     date_str = start.get("date", "")
                     year, month, day = (int(p) for p in date_str.split("-"))
                     start_dt = datetime.datetime(year, month, day, tzinfo=datetime.UTC)
+                event_id = item.get("id")
+                if not event_id:
+                    continue
                 events.append(
                     {
-                        "id": item["id"],
+                        "id": event_id,
                         "summary": item.get("summary", "(No title)"),
                         "start_dt": start_dt,
                         "date_str": date_str,
                     }
                 )
+            elapsed_ms = int((time.perf_counter() - t0) * 1000)
+            logger.debug(
+                "list_upcoming_events complete",
+                extra={"count": len(events), "elapsed_ms": elapsed_ms},
+            )
             return events
         except Exception as exc:
-            logger.warning("list_upcoming_events failed — returning []", extra={"error": str(exc)})
+            elapsed_ms = int((time.perf_counter() - t0) * 1000)
+            logger.warning(
+                "list_upcoming_events failed — returning []",
+                extra={"error": str(exc), "elapsed_ms": elapsed_ms},
+            )
             return []
 
     def delete_event(self, event_id: str) -> None:
         """Delete a calendar event by ID. Raises on failure."""
-        self._service.events().delete(calendarId=self.calendar_id, eventId=event_id).execute()
+        t0 = time.perf_counter()
+        try:
+            self._service.events().delete(calendarId=self.calendar_id, eventId=event_id).execute()
+        except Exception:
+            elapsed_ms = int((time.perf_counter() - t0) * 1000)
+            logger.exception(
+                "Failed to delete calendar event",
+                extra={
+                    "event_id": event_id,
+                    "calendar_id": self.calendar_id,
+                    "elapsed_ms": elapsed_ms,
+                },
+            )
+            raise
+        elapsed_ms = int((time.perf_counter() - t0) * 1000)
+        logger.info(
+            "Calendar event deleted",
+            extra={"event_id": event_id, "calendar_id": self.calendar_id, "elapsed_ms": elapsed_ms},
+        )
 
     def add_gig(self, gig: Gig) -> str:
         """Create a timed calendar event for a confirmed gig.
