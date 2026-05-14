@@ -1,6 +1,7 @@
 # tests/test_calendar_client.py
 """Tests for GoogleCalendarClient."""
 
+import datetime as dt
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -197,3 +198,76 @@ class TestElapsedMsLogging:
         assert record is not None, "Expected 'Gig added to Google Calendar' log record"
         assert isinstance(record.elapsed_ms, int)
         assert record.elapsed_ms >= 0
+
+
+# ── list_upcoming_events ──────────────────────────────────────────────────────
+
+
+class TestListUpcomingEvents:
+    def test_returns_list_of_event_dicts(self, client, mock_service):
+        mock_service.events().list().execute.return_value = {
+            "items": [
+                {
+                    "id": "evt1",
+                    "summary": "Sunday Service",
+                    "start": {"dateTime": "2026-06-01T10:30:00+01:00"},
+                },
+                {
+                    "id": "evt2",
+                    "summary": "Evensong",
+                    "start": {"dateTime": "2026-06-14T18:00:00+01:00"},
+                },
+            ]
+        }
+        events = client.list_upcoming_events()
+        assert len(events) == 2
+        assert events[0]["id"] == "evt1"
+        assert events[0]["summary"] == "Sunday Service"
+        assert events[0]["date_str"] == "2026-06-01"
+        assert isinstance(events[0]["start_dt"], dt.datetime)
+
+    def test_returns_empty_list_when_no_events(self, client, mock_service):
+        mock_service.events().list().execute.return_value = {"items": []}
+        assert client.list_upcoming_events() == []
+
+    def test_returns_empty_list_on_api_error(self, client, mock_service):
+        mock_service.events().list().execute.side_effect = Exception("API down")
+        assert client.list_upcoming_events() == []
+
+    def test_respects_max_results(self, client, mock_service):
+        mock_service.events().list().execute.return_value = {"items": []}
+        client.list_upcoming_events(max_results=5)
+        call_kwargs = mock_service.events().list.call_args[1]
+        assert call_kwargs["maxResults"] == 5
+
+    def test_handles_all_day_event(self, client, mock_service):
+        mock_service.events().list().execute.return_value = {
+            "items": [{"id": "a1", "summary": "Holiday", "start": {"date": "2026-12-25"}}]
+        }
+        events = client.list_upcoming_events()
+        assert events[0]["date_str"] == "2026-12-25"
+        assert isinstance(events[0]["start_dt"], dt.datetime)
+
+    def test_events_missing_summary_use_no_title(self, client, mock_service):
+        mock_service.events().list().execute.return_value = {
+            "items": [{"id": "x1", "start": {"dateTime": "2026-07-01T10:00:00Z"}}]
+        }
+        events = client.list_upcoming_events()
+        assert events[0]["summary"] == "(No title)"
+
+
+# ── delete_event ──────────────────────────────────────────────────────────────
+
+
+class TestDeleteEvent:
+    def test_calls_delete_with_correct_args(self, client, mock_service):
+        mock_service.events().delete().execute.return_value = None
+        client.delete_event("evt_123")
+        call_kwargs = mock_service.events().delete.call_args[1]
+        assert call_kwargs["calendarId"] == "cal@test.com"
+        assert call_kwargs["eventId"] == "evt_123"
+
+    def test_raises_on_api_error(self, client, mock_service):
+        mock_service.events().delete().execute.side_effect = Exception("Not found")
+        with pytest.raises(Exception, match="Not found"):
+            client.delete_event("nonexistent_id")

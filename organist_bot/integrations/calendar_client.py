@@ -86,6 +86,52 @@ class GoogleCalendarClient:
             )
             return False
 
+    def list_upcoming_events(self, max_results: int = 10) -> list[dict]:
+        """Return upcoming events from now, ordered by start time ascending.
+
+        Each dict: {id, summary, start_dt (timezone-aware datetime), date_str (YYYY-MM-DD)}.
+        Fails open — returns [] on any API error.
+        """
+        try:
+            now = datetime.datetime.utcnow().isoformat() + "Z"
+            result = (
+                self._service.events()
+                .list(
+                    calendarId=self.calendar_id,
+                    timeMin=now,
+                    maxResults=max_results,
+                    singleEvents=True,
+                    orderBy="startTime",
+                )
+                .execute()
+            )
+            events = []
+            for item in result.get("items", []):
+                start = item.get("start", {})
+                if "dateTime" in start:
+                    start_dt = datetime.datetime.fromisoformat(start["dateTime"])
+                    date_str = start_dt.date().isoformat()
+                else:
+                    date_str = start.get("date", "")
+                    year, month, day = (int(p) for p in date_str.split("-"))
+                    start_dt = datetime.datetime(year, month, day, tzinfo=datetime.UTC)
+                events.append(
+                    {
+                        "id": item["id"],
+                        "summary": item.get("summary", "(No title)"),
+                        "start_dt": start_dt,
+                        "date_str": date_str,
+                    }
+                )
+            return events
+        except Exception as exc:
+            logger.warning("list_upcoming_events failed — returning []", extra={"error": str(exc)})
+            return []
+
+    def delete_event(self, event_id: str) -> None:
+        """Delete a calendar event by ID. Raises on failure."""
+        self._service.events().delete(calendarId=self.calendar_id, eventId=event_id).execute()
+
     def add_gig(self, gig: Gig) -> str:
         """Create a timed calendar event for a confirmed gig.
 
