@@ -18,6 +18,10 @@ Security: only messages from TELEGRAM_CHAT_ID are processed.
 
 import logging
 import os
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from organist_bot.integrations.calendar_client import GoogleCalendarClient
 
 from telegram import Update
 from telegram.ext import (
@@ -31,6 +35,7 @@ from telegram.ext import (
     filters as tg_filters,
 )
 
+from organist_bot import filter_store
 from organist_bot.config import settings
 
 logger = logging.getLogger(__name__)
@@ -41,6 +46,8 @@ CHATTING = 0
 _HELP = (
     "*Organist Bot*\n\n"
     "*Gig calendar*\n"
+    "  /gigs           — View upcoming gigs\n"
+    "  /deletegig \\<n\\> — Delete gig by number\n"
     "  /addgig \\<url\\> — Add a gig by URL\n"
     "  /addgig         — Add a gig via conversation\n"
     "  /cancel         — Cancel gig entry\n\n"
@@ -55,6 +62,29 @@ _HELP = (
     '  "List my clients"\n'
     "  /reset — Clear invoice conversation history"
 )
+
+# Per-chat cache of the last /gigs listing, keyed by chat_id.
+_gig_listing: dict[int, list[dict]] = {}
+
+
+_MDV2_SPECIAL = r"\_*[]()~`>#+-=|{}.!"
+
+
+def _escape_mdv2(text: str) -> str:
+    for ch in _MDV2_SPECIAL:
+        text = text.replace(ch, f"\\{ch}")
+    return text
+
+
+def _make_calendar_client() -> "GoogleCalendarClient | None":
+    if settings.google_calendar_id and settings.google_calendar_credentials_file:
+        from organist_bot.integrations.calendar_client import GoogleCalendarClient
+
+        return GoogleCalendarClient(
+            credentials_file=settings.google_calendar_credentials_file,
+            calendar_id=settings.google_calendar_id,
+        )
+    return None
 
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
@@ -231,7 +261,6 @@ async def cmd_blacklist(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         _reject(update)
         return
     assert update.message is not None
-    from organist_bot import filter_store
 
     args = context.args or []
     if not args or args[0] == "list":
@@ -260,7 +289,6 @@ async def cmd_unavailable(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         _reject(update)
         return
     assert update.message is not None
-    from organist_bot import filter_store
 
     args = context.args or []
     key = "unavailable_periods"
@@ -290,7 +318,6 @@ async def cmd_available(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         _reject(update)
         return
     assert update.message is not None
-    from organist_bot import filter_store
 
     args = context.args or []
     key = "available_only_periods"
@@ -315,6 +342,84 @@ async def cmd_available(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await update.message.reply_text(text, parse_mode="Markdown")
 
 
+# ── /gigs and /deletegig ──────────────────────────────────────────────────────
+
+
+async def cmd_gigs(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    assert update.message is not None
+    assert update.effective_chat is not None
+    if not _is_authorised(update):
+        _reject(update)
+        return
+    cal = _make_calendar_client()
+    if cal is None:
+        await update.message.reply_text("Google Calendar not configured.")
+        return
+    events = cal.list_upcoming_events(max_results=10)
+    chat_id = update.effective_chat.id
+    _gig_listing[chat_id] = events
+    if not events:
+        await update.message.reply_text("No upcoming gigs found.")
+        return
+
+    import datetime as _dt
+
+    now_str = _escape_mdv2(_dt.datetime.now().strftime("%H:%M"))
+    lines = [f"*Upcoming gigs* \\(fetched at {now_str}\\)"]
+    for i, ev in enumerate(events, start=1):
+        start_dt = ev["start_dt"]
+        time_str = _escape_mdv2(start_dt.strftime("%I:%M%p").lstrip("0").lower())
+        date_str = _escape_mdv2(start_dt.strftime("%a %d %b %Y").replace(" 0", " "))
+        summary = _escape_mdv2(ev["summary"])
+        lines.append(f"{i}\\. {summary} · {date_str} · {time_str}")
+    lines.append("\nUse /deletegig \\<number\\> to remove one\\.")
+    await update.message.reply_text("\n".join(lines), parse_mode="MarkdownV2")
+
+
+async def cmd_deletegig(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    assert update.message is not None
+    assert update.effective_chat is not None
+    if not _is_authorised(update):
+        _reject(update)
+        return
+    if not context.args:
+        await update.message.reply_text(
+            "Usage: /deletegig <number>  — run /gigs first to see the list."
+        )
+        return
+    try:
+        n = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("Usage: /deletegig <number>  — e.g. /deletegig 2")
+        return
+
+    chat_id = update.effective_chat.id
+    listing = _gig_listing.get(chat_id)
+    if not listing:
+        await update.message.reply_text("Run /gigs first to see your upcoming gigs.")
+        return
+    if n < 1 or n > len(listing):
+        await update.message.reply_text(f"No gig number {n}. Run /gigs to see the list.")
+        return
+
+    event = listing[n - 1]
+    cal = _make_calendar_client()
+    if cal is None:
+        await update.message.reply_text("Google Calendar not configured.")
+        return
+    try:
+        cal.delete_event(event["id"])
+    except Exception as exc:
+        await update.message.reply_text(f"Failed to delete: {exc}")
+        return
+
+    filter_store.remove_period("unavailable_periods", event["date_str"])
+    _gig_listing[chat_id] = [e for i, e in enumerate(listing) if i != n - 1]
+    await update.message.reply_text(
+        f"✓ Deleted {event['summary']}. Date removed from unavailable if it was there."
+    )
+
+
 # ── Bot setup ─────────────────────────────────────────────────────────────────
 
 
@@ -335,6 +440,8 @@ def run(token: str) -> None:
     app.add_handler(gig_conv)
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("reset", reset))
+    app.add_handler(CommandHandler("gigs", cmd_gigs))
+    app.add_handler(CommandHandler("deletegig", cmd_deletegig))
     app.add_handler(CommandHandler("blacklist", cmd_blacklist))
     app.add_handler(CommandHandler("unavailable", cmd_unavailable))
     app.add_handler(CommandHandler("available", cmd_available))
