@@ -155,16 +155,25 @@ class TestAddGigEntry:
         assert result == ConversationHandler.END
 
     @pytest.mark.asyncio
-    async def test_invalid_url_rejected(self):
+    async def test_any_arg_forwarded_to_agent(self):
+        """Any argument — including a non-organistsonline URL — is forwarded to the agent."""
         update = _make_update()
         context = MagicMock()
-        context.args = ["https://example.com/not-organists"]
-        context.user_data = {}
-        from telegram.ext import ConversationHandler
+        context.args = ["https://example.com/some-gig"]
+        from organist_bot.integrations.gig_agent import GigAgentResponse
+        from organist_bot.integrations.telegram_bot import CHATTING
 
-        result = await addgig_entry(update, context)
-        assert result == ConversationHandler.END
-        update.message.reply_text.assert_called_once()
+        agent_resp = GigAgentResponse(text="What's the organisation?", done=False)
+        with patch(
+            "organist_bot.integrations.gig_agent.process_message",
+            new=AsyncMock(return_value=agent_resp),
+        ) as mock_pm:
+            result = await addgig_entry(update, context)
+
+        mock_pm.assert_called_once()
+        call_args = mock_pm.call_args
+        assert "https://example.com/some-gig" in call_args[0][1]
+        assert result == CHATTING
 
     @pytest.mark.asyncio
     async def test_no_args_starts_agent_conversation(self):
