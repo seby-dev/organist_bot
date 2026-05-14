@@ -248,6 +248,17 @@ class TestListUpcomingEvents:
         assert events[0]["date_str"] == "2026-12-25"
         assert isinstance(events[0]["start_dt"], dt.datetime)
 
+    def test_handles_utc_z_suffix_datetime(self, client, mock_service):
+        """Google Calendar commonly returns UTC timestamps with Z suffix."""
+        mock_service.events().list().execute.return_value = {
+            "items": [
+                {"id": "u1", "summary": "Evensong", "start": {"dateTime": "2026-07-01T09:00:00Z"}}
+            ]
+        }
+        events = client.list_upcoming_events()
+        assert events[0]["date_str"] == "2026-07-01"
+        assert events[0]["start_dt"].tzinfo is not None
+
     def test_events_missing_summary_use_no_title(self, client, mock_service):
         mock_service.events().list().execute.return_value = {
             "items": [{"id": "x1", "start": {"dateTime": "2026-07-01T10:00:00Z"}}]

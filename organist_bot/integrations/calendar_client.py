@@ -109,7 +109,9 @@ class GoogleCalendarClient:
             for item in result.get("items", []):
                 start = item.get("start", {})
                 if "dateTime" in start:
-                    start_dt = datetime.datetime.fromisoformat(start["dateTime"])
+                    start_dt = datetime.datetime.fromisoformat(
+                        start["dateTime"].replace("Z", "+00:00")
+                    )
                     date_str = start_dt.date().isoformat()
                 else:
                     date_str = start.get("date", "")
