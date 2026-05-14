@@ -18,7 +18,6 @@ Security: only messages from TELEGRAM_CHAT_ID are processed.
 
 import logging
 import os
-import re
 
 from telegram import Update
 from telegram.ext import (
@@ -35,8 +34,6 @@ from telegram.ext import (
 from organist_bot.config import settings
 
 logger = logging.getLogger(__name__)
-
-_GIG_URL_RE = re.compile(r"https?://organistsonline\.org/\S+")
 
 # Single state for the agentic gig conversation
 CHATTING = 0
@@ -117,18 +114,7 @@ async def addgig_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     chat_id = update.effective_chat.id
     gig_agent.reset_gig_conversation(chat_id)  # fresh start on every /addgig
 
-    if context.args:
-        url = context.args[0]
-        if not _GIG_URL_RE.match(url):
-            await update.message.reply_text(
-                "That doesn't look like an organistsonline.org URL. "
-                "Use `/addgig` without arguments to enter a gig in conversation.",
-                parse_mode="Markdown",
-            )
-            return ConversationHandler.END
-        initial = f"Add this gig to my calendar: {url}"
-    else:
-        initial = "I'd like to add a gig to my calendar."
+    initial = context.args[0] if context.args else "I'd like to add a gig to my calendar."
 
     await update.message.reply_text("⏳ One moment…")
     try:
@@ -154,6 +140,10 @@ async def addgig_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 async def gig_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     assert update.message is not None
     assert update.effective_chat is not None
+
+    if not _is_authorised(update):
+        _reject(update)
+        return ConversationHandler.END
 
     from organist_bot.integrations import gig_agent
 
