@@ -136,9 +136,17 @@ def main(scraper: Scraper, sheets_logger: SheetsLogger | None = None) -> None:
     # with a slight timestamp lag, not in real time.
     listings_content = "".join(str(el) for el in gigs_div)
     current_hash = hashlib.sha256(listings_content.encode()).hexdigest()
-    if load_listings_hash() == current_hash:
+    stored_hash = load_listings_hash()
+    if stored_hash == current_hash:
         logger.info("Listings page unchanged — skipping run", extra={"hash": current_hash[:12]})
         return
+    logger.info(
+        "Listings hash changed — running pipeline",
+        extra={
+            "stored_hash": stored_hash[:12] if stored_hash else None,
+            "current_hash": current_hash[:12],
+        },
+    )
 
     for gig_el in gigs_div:
         basic: dict = {}
