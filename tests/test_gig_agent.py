@@ -90,3 +90,50 @@ class TestExecuteToolAddGigConfirmed:
         data = json.loads(result)
         assert "error" in data
         assert "calendar down" in data["error"]
+
+
+class TestExecuteToolAddGigAutoUnavailable:
+    @pytest.mark.asyncio
+    async def test_adds_date_to_unavailable_on_success(self):
+        """confirmed=true after calendar write adds YYYY-MM-DD date to unavailable_periods."""
+        input_data = {**_FULL_INPUT, "confirmed": True}
+        # "Sunday 1st June 2025" should normalize to 20250601 → 2025-06-01
+        with (
+            patch("organist_bot.integrations.gig_agent._make_calendar_client") as mock_factory,
+            patch("organist_bot.integrations.gig_agent.filter_store") as mock_fs,
+        ):
+            mock_cal = MagicMock()
+            mock_cal.add_gig.return_value = "evt_xyz"
+            mock_factory.return_value = mock_cal
+            await _execute_tool("add_gig", input_data)
+        mock_fs.add_period.assert_called_once_with("unavailable_periods", "2025-06-01")
+
+    @pytest.mark.asyncio
+    async def test_calendar_failure_does_not_call_add_period(self):
+        """If calendar write fails, unavailable is not touched."""
+        input_data = {**_FULL_INPUT, "confirmed": True}
+        with (
+            patch("organist_bot.integrations.gig_agent._make_calendar_client") as mock_factory,
+            patch("organist_bot.integrations.gig_agent.filter_store") as mock_fs,
+        ):
+            mock_cal = MagicMock()
+            mock_cal.add_gig.side_effect = RuntimeError("down")
+            mock_factory.return_value = mock_cal
+            await _execute_tool("add_gig", input_data)
+        mock_fs.add_period.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_unparseable_date_does_not_raise(self):
+        """If date can't be parsed, calendar write still succeeds and no error is returned."""
+        input_data = {**_FULL_INPUT, "confirmed": True, "date": "sometime in June"}
+        with (
+            patch("organist_bot.integrations.gig_agent._make_calendar_client") as mock_factory,
+            patch("organist_bot.integrations.gig_agent.filter_store") as mock_fs,
+        ):
+            mock_cal = MagicMock()
+            mock_cal.add_gig.return_value = "evt_abc"
+            mock_factory.return_value = mock_cal
+            result = await _execute_tool("add_gig", input_data)
+        data = json.loads(result)
+        assert "result" in data  # calendar write succeeded
+        mock_fs.add_period.assert_not_called()  # but unavailable not touched

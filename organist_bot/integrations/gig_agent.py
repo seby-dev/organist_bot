@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import datetime
 import json
 import logging
 from dataclasses import dataclass
 
 import anthropic
 
+from organist_bot import filter_store
 from organist_bot.config import settings
+from organist_bot.filters import normalize_to_yyyymmdd
 from organist_bot.integrations.calendar_client import GoogleCalendarClient
 from organist_bot.models import Gig
 from organist_bot.scraper import Scraper
@@ -142,6 +145,16 @@ async def _execute_tool(name: str, input_data: dict) -> str:
                 link="",
             )
             event_id = cal.add_gig(gig)
+            yyyymmdd = normalize_to_yyyymmdd(fields["date"])
+            if yyyymmdd:
+                try:
+                    date_str = datetime.datetime.strptime(yyyymmdd, "%Y%m%d").strftime("%Y-%m-%d")
+                    filter_store.add_period("unavailable_periods", date_str)
+                except Exception:
+                    logger.warning(
+                        "Failed to add gig date to unavailable periods",
+                        extra={"date": fields["date"]},
+                    )
             return json.dumps({"result": f"Added to calendar. Event ID: {event_id}"})
         except Exception as exc:
             return json.dumps({"error": str(exc)})
