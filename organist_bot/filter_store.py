@@ -9,6 +9,8 @@ on the very next polling tick without a restart.
 
 from __future__ import annotations
 
+import calendar
+import datetime
 import json
 import logging
 from pathlib import Path
@@ -44,11 +46,44 @@ def blacklist_emails() -> list[str]:
 
 
 def unavailable_periods() -> list[str]:
+    purge_past_periods()
     return _read()["unavailable_periods"]
 
 
 def available_only_periods() -> list[str]:
     return _read()["available_only_periods"]
+
+
+def _period_end_date(token: str) -> datetime.date | None:
+    """Return the end date of a period token, or None if unparseable."""
+    try:
+        if ":" in token:
+            end_str = token.split(":")[1]
+            return datetime.date.fromisoformat(end_str)
+        parts = token.split("-")
+        if len(parts) == 2:
+            year, month = int(parts[0]), int(parts[1])
+            last_day = calendar.monthrange(year, month)[1]
+            return datetime.date(year, month, last_day)
+        return datetime.date.fromisoformat(token)
+    except Exception:
+        return None
+
+
+def purge_past_periods() -> int:
+    """Remove past unavailable_periods tokens. Returns count removed."""
+    today = datetime.date.today()
+    data = _read()
+    before = len(data["unavailable_periods"])
+    data["unavailable_periods"] = [
+        t
+        for t in data["unavailable_periods"]
+        if (end := _period_end_date(t)) is None or end >= today
+    ]
+    removed = before - len(data["unavailable_periods"])
+    if removed:
+        _write(data)
+    return removed
 
 
 # ── Blacklist mutations ───────────────────────────────────────────────────────
@@ -82,6 +117,8 @@ def remove_blacklist_email(email: str) -> bool:
 
 def add_period(key: str, period: str) -> bool:
     """Add a period token. Returns True if added, False if already present."""
+    if key == "unavailable_periods":
+        purge_past_periods()
     data = _read()
     if period in data[key]:
         return False
@@ -92,6 +129,8 @@ def add_period(key: str, period: str) -> bool:
 
 def remove_period(key: str, period: str) -> bool:
     """Remove a period token. Returns True if removed, False if not found."""
+    if key == "unavailable_periods":
+        purge_past_periods()
     data = _read()
     before = len(data[key])
     data[key] = [p for p in data[key] if p != period]
