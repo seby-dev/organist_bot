@@ -94,7 +94,7 @@ class GoogleCalendarClient:
         """
         t0 = time.perf_counter()
         try:
-            now = datetime.datetime.utcnow().isoformat() + "Z"
+            now = datetime.datetime.now(datetime.UTC).isoformat().replace("+00:00", "Z")
             result = (
                 self._service.events()
                 .list(
