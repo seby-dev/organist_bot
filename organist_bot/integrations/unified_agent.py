@@ -727,7 +727,7 @@ async def process_message(chat_id: int, text: str) -> list[AgentResponse]:
                     responses.append(AgentResponse(text=block.text))
             break
 
-        if response.stop_reason not in ("end_turn", "tool_use"):
+        if response.stop_reason != "tool_use":
             responses.append(AgentResponse(text="(response truncated — please try again)"))
             break
 
