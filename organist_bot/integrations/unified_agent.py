@@ -603,11 +603,153 @@ async def _execute_tool(name: str, input_data: dict, chat_id: int) -> str:
             }
         )
 
+    # ── manage_blacklist ────────────────────────────────────────────────────
+    if name == "manage_blacklist":
+        action = input_data["action"]
+        if action == "list":
+            emails = filter_store.blacklist_emails()
+            return (
+                json.dumps({"blacklist": emails})
+                if emails
+                else json.dumps({"result": "Blacklist is empty."})
+            )
+        email = input_data.get("email", "")
+        if action == "add":
+            added = filter_store.add_blacklist_email(email)
+            msg = (
+                f"Added '{email}' to blacklist."
+                if added
+                else f"'{email}' is already in the blacklist."
+            )
+            return json.dumps({"result": msg})
+        if action == "remove":
+            removed = filter_store.remove_blacklist_email(email)
+            msg = (
+                f"Removed '{email}' from blacklist."
+                if removed
+                else f"'{email}' not found in blacklist."
+            )
+            return json.dumps({"result": msg})
+        return json.dumps({"error": f"Unknown action: {action}"})
+
+    # ── manage_unavailable ──────────────────────────────────────────────────
+    if name == "manage_unavailable":
+        action = input_data["action"]
+        if action == "list":
+            periods = filter_store.unavailable_periods()
+            return (
+                json.dumps({"unavailable_periods": periods})
+                if periods
+                else json.dumps({"result": "No unavailable periods set."})
+            )
+        period = input_data.get("period", "")
+        if action == "add":
+            added = filter_store.add_period("unavailable_periods", period)
+            msg = (
+                f"Marked '{period}' as unavailable."
+                if added
+                else f"'{period}' already in unavailable list."
+            )
+            return json.dumps({"result": msg})
+        if action == "remove":
+            removed = filter_store.remove_period("unavailable_periods", period)
+            msg = (
+                f"Removed '{period}' from unavailable periods."
+                if removed
+                else f"'{period}' not found."
+            )
+            return json.dumps({"result": msg})
+        return json.dumps({"error": f"Unknown action: {action}"})
+
+    # ── manage_available ────────────────────────────────────────────────────
+    if name == "manage_available":
+        action = input_data["action"]
+        if action == "list":
+            periods = filter_store.available_only_periods()
+            return (
+                json.dumps({"available_only_periods": periods})
+                if periods
+                else json.dumps({"result": "No available-only periods set."})
+            )
+        period = input_data.get("period", "")
+        if action == "add":
+            added = filter_store.add_period("available_only_periods", period)
+            msg = (
+                f"Added '{period}' to available-only periods."
+                if added
+                else f"'{period}' already present."
+            )
+            return json.dumps({"result": msg})
+        if action == "remove":
+            removed = filter_store.remove_period("available_only_periods", period)
+            msg = (
+                f"Removed '{period}' from available-only periods."
+                if removed
+                else f"'{period}' not found."
+            )
+            return json.dumps({"result": msg})
+        return json.dumps({"error": f"Unknown action: {action}"})
+
+    # ── clear_conversation ──────────────────────────────────────────────────
+    if name == "clear_conversation":
+        reset_conversation(chat_id)
+        return json.dumps({"result": "Conversation cleared."})
+
     return json.dumps({"error": f"Tool not implemented: {name}"})
 
 
 async def process_message(chat_id: int, text: str) -> list[AgentResponse]:
-    return [AgentResponse(text="(not implemented)")]
+    import anthropic
+
+    client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
+
+    if chat_id not in _histories:
+        _histories[chat_id] = []
+
+    _histories[chat_id].append({"role": "user", "content": text})
+
+    responses: list[AgentResponse] = []
+
+    while True:
+        response = await client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=1024,
+            system=SYSTEM_PROMPT,
+            tools=TOOLS,  # type: ignore[arg-type]
+            messages=_histories[chat_id],  # type: ignore[arg-type]
+        )
+
+        _histories[chat_id].append({"role": "assistant", "content": response.content})
+
+        if response.stop_reason == "end_turn":
+            for block in response.content:
+                if hasattr(block, "text"):
+                    responses.append(AgentResponse(text=block.text))
+            break
+
+        tool_results = []
+        for block in response.content:
+            if block.type != "tool_use":
+                continue
+            logger.info("Unified agent tool call: %s(%s)", block.name, json.dumps(block.input))
+            try:
+                result = await _execute_tool(block.name, block.input, chat_id)
+            except Exception as e:
+                logger.error("Tool execution failed: %s", e)
+                result = json.dumps({"error": str(e)})
+
+            tool_results.append({"type": "tool_result", "tool_use_id": block.id, "content": result})
+
+            if block.name in _PDF_RESPONSE_TOOLS and chat_id in _last_invoice:
+                pdf_path = str(_last_invoice[chat_id]["pdf_path"])
+                inv_num = _last_invoice[chat_id].get("invoice_number", "")
+                responses.append(
+                    AgentResponse(file_path=pdf_path, file_caption=f"Invoice {inv_num}")
+                )
+
+        _histories[chat_id].append({"role": "user", "content": tool_results})
+
+    return responses
 
 
 def reset_conversation(chat_id: int) -> None:

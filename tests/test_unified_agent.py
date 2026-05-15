@@ -494,3 +494,92 @@ class TestInvoiceGenerationTools:
         with patch("organist_bot.integrations.unified_agent.load_invoices", return_value=invoices):
             result = await _execute_tool("list_invoices", {}, CHAT_ID)
         assert "INV-2026-001" in result
+
+
+# ── Filter management tools ───────────────────────────────────────────────────
+
+
+class TestFilterTools:
+    @pytest.mark.asyncio
+    async def test_manage_blacklist_list(self):
+        with patch("organist_bot.integrations.unified_agent.filter_store") as mock_fs:
+            mock_fs.blacklist_emails.return_value = ["bad@evil.com"]
+            result = await _execute_tool("manage_blacklist", {"action": "list"}, CHAT_ID)
+        assert "bad@evil.com" in result
+
+    @pytest.mark.asyncio
+    async def test_manage_blacklist_add(self):
+        with patch("organist_bot.integrations.unified_agent.filter_store") as mock_fs:
+            mock_fs.add_blacklist_email.return_value = True
+            result = await _execute_tool(
+                "manage_blacklist", {"action": "add", "email": "x@y.com"}, CHAT_ID
+            )
+        mock_fs.add_blacklist_email.assert_called_once_with("x@y.com")
+        assert "added" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_manage_blacklist_remove(self):
+        with patch("organist_bot.integrations.unified_agent.filter_store") as mock_fs:
+            mock_fs.remove_blacklist_email.return_value = True
+            result = await _execute_tool(
+                "manage_blacklist", {"action": "remove", "email": "x@y.com"}, CHAT_ID
+            )
+        mock_fs.remove_blacklist_email.assert_called_once_with("x@y.com")
+        assert "removed" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_manage_unavailable_add(self):
+        with patch("organist_bot.integrations.unified_agent.filter_store") as mock_fs:
+            mock_fs.add_period.return_value = True
+            result = await _execute_tool(
+                "manage_unavailable", {"action": "add", "period": "2026-12"}, CHAT_ID
+            )
+        mock_fs.add_period.assert_called_once_with("unavailable_periods", "2026-12")
+        assert "unavailable" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_manage_unavailable_remove(self):
+        with patch("organist_bot.integrations.unified_agent.filter_store") as mock_fs:
+            mock_fs.remove_period.return_value = True
+            await _execute_tool(
+                "manage_unavailable", {"action": "remove", "period": "2026-12"}, CHAT_ID
+            )
+        mock_fs.remove_period.assert_called_once_with("unavailable_periods", "2026-12")
+
+    @pytest.mark.asyncio
+    async def test_manage_unavailable_list(self):
+        with patch("organist_bot.integrations.unified_agent.filter_store") as mock_fs:
+            mock_fs.unavailable_periods.return_value = ["2026-12", "2027-01-01"]
+            result = await _execute_tool("manage_unavailable", {"action": "list"}, CHAT_ID)
+        assert "2026-12" in result
+
+    @pytest.mark.asyncio
+    async def test_manage_available_add(self):
+        with patch("organist_bot.integrations.unified_agent.filter_store") as mock_fs:
+            mock_fs.add_period.return_value = True
+            await _execute_tool("manage_available", {"action": "add", "period": "2026-08"}, CHAT_ID)
+        mock_fs.add_period.assert_called_once_with("available_only_periods", "2026-08")
+
+
+# ── clear_conversation ────────────────────────────────────────────────────────
+
+
+class TestClearConversation:
+    @pytest.mark.asyncio
+    async def test_clears_all_three_dicts(self):
+        from organist_bot.integrations.unified_agent import (
+            _histories,
+            _last_gig_listing,
+            _last_invoice,
+        )
+
+        _histories[CHAT_ID] = [{"role": "user", "content": "hello"}]
+        _last_invoice[CHAT_ID] = {"invoice_number": "INV-2026-001"}
+        _last_gig_listing[CHAT_ID] = [{"id": "evt1"}]
+
+        result = await _execute_tool("clear_conversation", {}, CHAT_ID)
+
+        assert CHAT_ID not in _histories
+        assert CHAT_ID not in _last_invoice
+        assert CHAT_ID not in _last_gig_listing
+        assert "cleared" in result.lower()
