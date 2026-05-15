@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
-from typing import cast  # noqa: F401
+from typing import cast  # noqa: F401 — used by invoice tool handlers added in a later task
 
 logger = logging.getLogger(__name__)
 
@@ -12,6 +12,7 @@ You are an assistant for an organist. You handle three areas:
 
 ## Gig calendar
 - If the user provides a URL, call fetch_gig_details immediately.
+- If fetch_gig_details returns an error, tell the user plainly and ask them to enter the details manually.
 - Gather any missing fields (header, organisation, locality, date, time, fee) one at a time.
 - Always call add_gig(confirmed=false) first to show a summary; only call confirmed=true after explicit approval.
 - "Show my gigs" / "list gigs" → call list_upcoming_gigs.
@@ -20,6 +21,7 @@ You are an assistant for an organist. You handle three areas:
 ## Invoicing
 - Confirm before calling generate_invoice, duplicate_invoice, send_invoice_email, resend_invoice, or delete_client. Present a clear summary and ask "Shall I go ahead?"
 - If missing required info (client, description, quantity, or unit price), ask for the missing details.
+- Invoices can have multiple line items — ask if the user wants to add more items before generating.
 - After generating an invoice, ask if the user wants to email it.
 - Use list_clients to look up available client keys when the user mentions a client by name.
 - Use list_invoices to look up past invoices when the user mentions a client or date.
@@ -130,14 +132,18 @@ TOOLS: list[dict] = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "key": {"type": "string"},
-                "name": {"type": "string"},
+                "key": {"type": "string", "description": "Unique client key, e.g. 'st-marys'"},
+                "name": {"type": "string", "description": "Contact name, e.g. 'The Secretary'"},
                 "address": {
                     "type": "string",
                     "description": "Full address (use <br> for line breaks)",
                 },
-                "email": {"type": "string"},
-                "cc": {"type": "array", "items": {"type": "string"}},
+                "email": {"type": "string", "description": "Client email address"},
+                "cc": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "CC email addresses",
+                },
             },
             "required": ["key", "name", "address"],
         },
@@ -148,11 +154,18 @@ TOOLS: list[dict] = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "key": {"type": "string"},
-                "name": {"type": "string"},
-                "address": {"type": "string"},
-                "email": {"type": "string"},
-                "cc": {"type": "array", "items": {"type": "string"}},
+                "key": {"type": "string", "description": "The client key to update"},
+                "name": {"type": "string", "description": "New contact name"},
+                "address": {
+                    "type": "string",
+                    "description": "New address (use <br> for line breaks)",
+                },
+                "email": {"type": "string", "description": "New email address"},
+                "cc": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "New CC list (replaces existing)",
+                },
             },
             "required": ["key"],
         },
@@ -162,14 +175,14 @@ TOOLS: list[dict] = [
         "description": "Permanently delete a client from the database. Cannot be undone.",
         "input_schema": {
             "type": "object",
-            "properties": {"key": {"type": "string"}},
+            "properties": {"key": {"type": "string", "description": "The client key to delete"}},
             "required": ["key"],
         },
     },
     # ── Invoice — generation & email ────────────────────────────────────────
     {
         "name": "generate_invoice",
-        "description": "Generate a PDF invoice for a client with one or more line items.",
+        "description": "Generate a PDF invoice for a client with one or more line items. Returns the PDF.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -215,7 +228,7 @@ TOOLS: list[dict] = [
     },
     {
         "name": "list_invoices",
-        "description": "List recent invoices.",
+        "description": "List recent invoices, showing invoice number, client, amount, date, and whether they were emailed.",
         "input_schema": {
             "type": "object",
             "properties": {
