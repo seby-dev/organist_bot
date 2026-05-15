@@ -31,6 +31,8 @@ _browser = None
 async def _get_browser():
     global _pw_instance, _browser
     if _browser is None or not _browser.is_connected():
+        if _pw_instance is not None:
+            await _pw_instance.stop()
         _pw_instance = await async_playwright().start()
         _browser = await _pw_instance.chromium.launch()
     return _browser
@@ -183,11 +185,12 @@ async def generate_invoice(client_key: str, items: list[dict]) -> dict:
 
     browser = await _get_browser()
     page = await browser.new_page()
-    await page.goto(f"file://{html_path.resolve()}")
-    await page.pdf(path=str(pdf_path), format="A4", print_background=True)
-    await page.close()
-
-    html_path.unlink()
+    try:
+        await page.goto(f"file://{html_path.resolve()}")
+        await page.pdf(path=str(pdf_path), format="A4", print_background=True)
+    finally:
+        await page.close()
+        html_path.unlink(missing_ok=True)
 
     result = {
         "pdf_path": pdf_path,
