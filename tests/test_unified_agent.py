@@ -398,3 +398,99 @@ class TestInvoiceClientTools:
             result = await _execute_tool("delete_client", {"key": "missing"}, CHAT_ID)
         data = json.loads(result)
         assert "error" in data
+
+
+# ── Invoice generation & email tools ─────────────────────────────────────────
+
+
+class TestInvoiceGenerationTools:
+    @pytest.fixture(autouse=True)
+    def reset_state(self):
+        from organist_bot.integrations.unified_agent import _last_invoice
+
+        _last_invoice.pop(CHAT_ID, None)
+        yield
+        _last_invoice.pop(CHAT_ID, None)
+
+    @pytest.mark.asyncio
+    async def test_generate_invoice_stores_in_last_invoice(self):
+        from unittest.mock import AsyncMock
+
+        fake_result = {
+            "pdf_path": "/tmp/inv.pdf",
+            "client_key": "a",
+            "client_name": "A",
+            "client_email": "a@a.com",
+            "client_cc": [],
+            "invoice_number": "INV-2026-001",
+            "year": 2026,
+            "date": "1 Jan 2026",
+            "items": [],
+            "total": 100.0,
+            "currency": "£",
+            "emailed": False,
+            "created_at": "2026-01-01T00:00:00",
+        }
+        with patch(
+            "organist_bot.integrations.unified_agent.generate_invoice",
+            new=AsyncMock(return_value=fake_result),
+        ):
+            result = await _execute_tool(
+                "generate_invoice",
+                {
+                    "client_key": "a",
+                    "items": [{"description": "S", "quantity": 1, "unit_price": 100}],
+                },
+                CHAT_ID,
+            )
+        data = json.loads(result)
+        assert data["invoice_number"] == "INV-2026-001"
+        from organist_bot.integrations.unified_agent import _last_invoice
+
+        assert _last_invoice[CHAT_ID]["invoice_number"] == "INV-2026-001"
+
+    @pytest.mark.asyncio
+    async def test_send_invoice_email_no_invoice_returns_error(self):
+        result = await _execute_tool("send_invoice_email", {}, CHAT_ID)
+        data = json.loads(result)
+        assert "error" in data
+
+    @pytest.mark.asyncio
+    async def test_send_invoice_email_sends_and_marks_emailed(self):
+        from organist_bot.integrations.unified_agent import _last_invoice
+
+        _last_invoice[CHAT_ID] = {
+            "invoice_number": "INV-2026-001",
+            "client_email": "a@a.com",
+            "client_cc": [],
+            "pdf_path": "/tmp/inv.pdf",
+        }
+        with (
+            patch(
+                "organist_bot.integrations.unified_agent.send_invoice_email",
+                return_value={"success": True},
+            ) as mock_send,
+            patch("organist_bot.integrations.unified_agent.mark_invoice_emailed") as mock_mark,
+        ):
+            result = await _execute_tool("send_invoice_email", {}, CHAT_ID)
+        mock_send.assert_called_once()
+        mock_mark.assert_called_once_with("INV-2026-001")
+        assert "a@a.com" in result
+
+    @pytest.mark.asyncio
+    async def test_list_invoices_returns_summary(self):
+        invoices = {
+            "INV-2026-001": {
+                "invoice_number": "INV-2026-001",
+                "client_key": "a",
+                "client_name": "A",
+                "total": 100.0,
+                "date": "1 Jan 2026",
+                "currency": "£",
+                "emailed": False,
+                "created_at": "2026-01-01T00:00:00",
+            }
+        }
+        with patch("organist_bot.integrations.unified_agent.load_invoices", return_value=invoices):
+            result = await _execute_tool("list_invoices", {}, CHAT_ID)
+        assert "INV-2026-001" in result

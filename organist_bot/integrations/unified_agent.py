@@ -4,17 +4,21 @@ import datetime
 import json
 import logging
 from dataclasses import dataclass
-from typing import cast  # noqa: F401 — used by invoice tool handlers added in a later task
+from typing import cast
 
 from organist_bot import filter_store
 from organist_bot.config import settings
 from organist_bot.filters import normalize_to_yyyymmdd
 from organist_bot.integrations.calendar_client import GoogleCalendarClient
+from organist_bot.integrations.email_sender import send_invoice_email
 from organist_bot.integrations.invoice_generator import (
     add_client,
     delete_client,
     edit_client,
+    generate_invoice,
     load_clients,
+    load_invoices,
+    mark_invoice_emailed,
 )
 from organist_bot.models import Gig
 from organist_bot.scraper import Scraper
@@ -484,6 +488,120 @@ async def _execute_tool(name: str, input_data: dict, chat_id: int) -> str:
             return json.dumps({"result": f"Client '{input_data['key']}' deleted."})
         except ValueError as e:
             return json.dumps({"error": str(e)})
+
+    if name == "generate_invoice":
+        try:
+            result = await generate_invoice(
+                client_key=input_data["client_key"],
+                items=input_data["items"],
+            )
+        except (ValueError, KeyError) as e:
+            return json.dumps({"error": str(e)})
+        _last_invoice[chat_id] = result
+        return json.dumps(
+            {
+                "result": "Invoice generated successfully.",
+                "pdf_path": str(result["pdf_path"]),
+                "client_name": result["client_name"],
+                "client_email": result["client_email"],
+                "invoice_number": result["invoice_number"],
+                "total": result["total"],
+                "currency": result["currency"],
+            }
+        )
+
+    if name == "duplicate_invoice":
+        invoices = load_invoices()
+        inv_num = input_data["invoice_number"]
+        if inv_num not in invoices:
+            return json.dumps({"error": f"Invoice '{inv_num}' not found in history."})
+        original = invoices[inv_num]
+        result = await generate_invoice(
+            client_key=original["client_key"],
+            items=original["items"],
+        )
+        _last_invoice[chat_id] = result
+        return json.dumps(
+            {
+                "result": f"Duplicate invoice created (original: {inv_num}).",
+                "pdf_path": str(result["pdf_path"]),
+                "invoice_number": result["invoice_number"],
+                "client_name": result["client_name"],
+                "total": result["total"],
+                "currency": result["currency"],
+            }
+        )
+
+    if name == "send_invoice_email":
+        inv = _last_invoice.get(chat_id)
+        if not inv:
+            return json.dumps({"error": "No invoice has been generated yet in this session."})
+        email_result = send_invoice_email(inv)
+        if email_result["success"]:
+            mark_invoice_emailed(inv["invoice_number"])
+            cc_list = inv.get("client_cc", [])
+            cc_msg = f" (CC: {', '.join(cc_list)})" if cc_list else ""
+            return json.dumps({"result": f"Invoice emailed to {inv['client_email']}{cc_msg}."})
+        return json.dumps({"error": email_result["error"]})
+
+    if name == "resend_invoice":
+        invoices = load_invoices()
+        inv_num = input_data["invoice_number"]
+        if inv_num not in invoices:
+            return json.dumps({"error": f"Invoice '{inv_num}' not found in history."})
+        inv = cast(dict, invoices[inv_num])
+        email_result = send_invoice_email(inv)
+        if email_result["success"]:
+            mark_invoice_emailed(inv_num)
+            return json.dumps({"result": f"Invoice {inv_num} re-sent to {inv['client_email']}."})
+        return json.dumps({"error": email_result["error"]})
+
+    if name == "list_invoices":
+        invoices = load_invoices()
+        if not invoices:
+            return json.dumps({"result": "No invoices found."})
+
+        client_filter = input_data.get("client_key")
+        limit = input_data.get("limit", 10)
+
+        records = list(invoices.values())
+        if client_filter:
+            records = [r for r in records if r.get("client_key") == client_filter]
+
+        records.sort(key=lambda r: r.get("created_at", ""), reverse=True)
+        records = records[:limit]
+
+        summary = [
+            {
+                "invoice_number": r["invoice_number"],
+                "client": r["client_name"],
+                "total": f"{r['currency']}{r['total']:.2f}",
+                "date": r["date"],
+                "emailed": r.get("emailed", False),
+            }
+            for r in records
+        ]
+        return json.dumps(summary, indent=2)
+
+    if name == "get_invoice":
+        invoices = load_invoices()
+        inv_num = input_data["invoice_number"]
+        if inv_num not in invoices:
+            return json.dumps({"error": f"Invoice '{inv_num}' not found in history."})
+        inv = cast(dict, invoices[inv_num])
+        _last_invoice[chat_id] = inv
+        return json.dumps(
+            {
+                "result": "Invoice found.",
+                "invoice_number": inv["invoice_number"],
+                "client_name": inv["client_name"],
+                "date": inv["date"],
+                "total": inv["total"],
+                "currency": inv["currency"],
+                "emailed": inv.get("emailed", False),
+                "pdf_path": inv["pdf_path"],
+            }
+        )
 
     return json.dumps({"error": f"Tool not implemented: {name}"})
 
