@@ -24,6 +24,51 @@ _GIG_INPUT_BASE = {
 }
 
 
+# ── fetch_gig_details ─────────────────────────────────────────────────────────
+
+
+class TestFetchGigDetails:
+    @pytest.mark.asyncio
+    async def test_returns_merged_gig_fields(self):
+        """Successful scrape returns merged basic + full details as JSON."""
+        basic = {
+            "header": "Sunday Service",
+            "date": "2025-06-01",
+            "link": "https://example.com/gig/1",
+        }
+        full = {"organisation": "St Mary's", "locality": "Oxford", "fee": "£150", "postcode": None}
+        mock_scraper = MagicMock()
+        mock_scraper.fetch.return_value = "<html/>"
+        mock_scraper.extract_basic_from_detail.return_value = basic
+        mock_scraper.extract_full_details.return_value = full
+        mock_scraper.session.close = MagicMock()
+
+        with patch("organist_bot.integrations.unified_agent.Scraper", return_value=mock_scraper):
+            result = await _execute_tool(
+                "fetch_gig_details", {"url": "https://example.com/gig/1"}, CHAT_ID
+            )
+
+        data = json.loads(result)
+        assert data["header"] == "Sunday Service"
+        assert data["organisation"] == "St Mary's"
+        assert "postcode" not in data  # None values excluded
+
+    @pytest.mark.asyncio
+    async def test_scrape_exception_returns_error(self):
+        """If scraping raises, returns JSON error without crashing."""
+        mock_scraper = MagicMock()
+        mock_scraper.fetch.side_effect = RuntimeError("network error")
+
+        with patch("organist_bot.integrations.unified_agent.Scraper", return_value=mock_scraper):
+            result = await _execute_tool(
+                "fetch_gig_details", {"url": "https://example.com/bad"}, CHAT_ID
+            )
+
+        data = json.loads(result)
+        assert "error" in data
+        assert "network error" in data["error"]
+
+
 # ── add_gig (confirmed=false) ─────────────────────────────────────────────────
 
 
