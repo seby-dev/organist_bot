@@ -727,6 +727,10 @@ async def process_message(chat_id: int, text: str) -> list[AgentResponse]:
                     responses.append(AgentResponse(text=block.text))
             break
 
+        if response.stop_reason not in ("end_turn", "tool_use"):
+            responses.append(AgentResponse(text="(response truncated — please try again)"))
+            break
+
         tool_results = []
         for block in response.content:
             if block.type != "tool_use":
@@ -741,11 +745,18 @@ async def process_message(chat_id: int, text: str) -> list[AgentResponse]:
             tool_results.append({"type": "tool_result", "tool_use_id": block.id, "content": result})
 
             if block.name in _PDF_RESPONSE_TOOLS and chat_id in _last_invoice:
-                pdf_path = str(_last_invoice[chat_id]["pdf_path"])
-                inv_num = _last_invoice[chat_id].get("invoice_number", "")
-                responses.append(
-                    AgentResponse(file_path=pdf_path, file_caption=f"Invoice {inv_num}")
-                )
+                pdf_path = _last_invoice[chat_id].get("pdf_path")
+                if pdf_path:
+                    inv_num = _last_invoice[chat_id].get("invoice_number", "")
+                    responses.append(
+                        AgentResponse(file_path=str(pdf_path), file_caption=f"Invoice {inv_num}")
+                    )
+
+        if not tool_results:
+            responses.append(
+                AgentResponse(text="(unexpected empty tool response — please try again)")
+            )
+            break
 
         _histories[chat_id].append({"role": "user", "content": tool_results})
 

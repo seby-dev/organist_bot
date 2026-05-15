@@ -560,6 +560,25 @@ class TestFilterTools:
             await _execute_tool("manage_available", {"action": "add", "period": "2026-08"}, CHAT_ID)
         mock_fs.add_period.assert_called_once_with("available_only_periods", "2026-08")
 
+    @pytest.mark.asyncio
+    async def test_manage_available_list(self):
+        with patch("organist_bot.integrations.unified_agent.filter_store") as mock_fs:
+            mock_fs.available_only_periods.return_value = ["2026-08"]
+            result = await _execute_tool("manage_available", {"action": "list"}, CHAT_ID)
+        data = json.loads(result)
+        assert data.get("available_only_periods") == ["2026-08"]
+
+    @pytest.mark.asyncio
+    async def test_manage_available_remove(self):
+        with patch("organist_bot.integrations.unified_agent.filter_store") as mock_fs:
+            mock_fs.remove_period.return_value = True
+            result = await _execute_tool(
+                "manage_available", {"action": "remove", "period": "2026-08"}, CHAT_ID
+            )
+        mock_fs.remove_period.assert_called_once_with("available_only_periods", "2026-08")
+        data = json.loads(result)
+        assert "2026-08" in data.get("result", "")
+
 
 # ── clear_conversation ────────────────────────────────────────────────────────
 
