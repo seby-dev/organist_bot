@@ -1,9 +1,17 @@
 from __future__ import annotations
 
+import datetime
 import json
 import logging
 from dataclasses import dataclass
 from typing import cast  # noqa: F401 — used by invoice tool handlers added in a later task
+
+from organist_bot import filter_store
+from organist_bot.config import settings
+from organist_bot.filters import normalize_to_yyyymmdd
+from organist_bot.integrations.calendar_client import GoogleCalendarClient
+from organist_bot.models import Gig
+from organist_bot.scraper import Scraper
 
 logger = logging.getLogger(__name__)
 
@@ -308,7 +316,121 @@ _last_gig_listing: dict[int, list[dict]] = {}
 _PDF_RESPONSE_TOOLS = {"generate_invoice", "duplicate_invoice", "get_invoice"}
 
 
+def _make_calendar_client() -> GoogleCalendarClient | None:
+    if settings.google_calendar_id and settings.google_calendar_credentials_file:
+        return GoogleCalendarClient(
+            credentials_file=settings.google_calendar_credentials_file,
+            calendar_id=settings.google_calendar_id,
+        )
+    return None
+
+
 async def _execute_tool(name: str, input_data: dict, chat_id: int) -> str:
+    # ── fetch_gig_details ───────────────────────────────────────────────────
+    if name == "fetch_gig_details":
+        try:
+            scraper = Scraper()
+            html = scraper.fetch(input_data["url"])
+            basic = scraper.extract_basic_from_detail(html, input_data["url"])
+            full = scraper.extract_full_details(html)
+            details = {**basic, **full}
+            scraper.session.close()
+            return json.dumps({k: v for k, v in details.items() if v is not None})
+        except Exception as exc:
+            return json.dumps({"error": str(exc)})
+
+    # ── add_gig ─────────────────────────────────────────────────────────────
+    if name == "add_gig":
+        confirmed = input_data.get("confirmed", False)
+        fields = {
+            "header": input_data.get("header", ""),
+            "organisation": input_data.get("organisation") or "",
+            "locality": input_data.get("locality") or "",
+            "date": input_data.get("date", ""),
+            "time": input_data.get("time", ""),
+            "fee": input_data.get("fee") or "not specified",
+        }
+        if not confirmed:
+            return (
+                "*Please confirm the following gig:*\n"
+                f"• *Title:* {fields['header']}\n"
+                f"• *Organisation:* {fields['organisation']}\n"
+                f"• *Locality:* {fields['locality']}\n"
+                f"• *Date:* {fields['date']}\n"
+                f"• *Time:* {fields['time']}\n"
+                f"• *Fee:* {fields['fee']}\n\n"
+                "Reply *yes* to add to calendar, or tell me what to change."
+            )
+        try:
+            cal = _make_calendar_client()
+            if cal is None:
+                return json.dumps({"error": "Google Calendar not configured."})
+            gig = Gig(
+                header=fields["header"],
+                organisation=fields["organisation"],
+                locality=fields["locality"],
+                date=fields["date"],
+                time=fields["time"],
+                fee=fields["fee"] if fields["fee"] != "not specified" else None,
+                link="",
+            )
+            event_id = cal.add_gig(gig)
+            yyyymmdd = normalize_to_yyyymmdd(fields["date"])
+            if yyyymmdd:
+                try:
+                    date_str = datetime.datetime.strptime(yyyymmdd, "%Y%m%d").strftime("%Y-%m-%d")
+                    filter_store.add_period("unavailable_periods", date_str)
+                except Exception:
+                    logger.warning(
+                        "Failed to add gig date to unavailable periods",
+                        extra={"date": fields["date"]},
+                    )
+            return json.dumps({"result": f"Added to calendar. Event ID: {event_id}"})
+        except Exception as exc:
+            return json.dumps({"error": str(exc)})
+
+    # ── list_upcoming_gigs ──────────────────────────────────────────────────
+    if name == "list_upcoming_gigs":
+        cal = _make_calendar_client()
+        if cal is None:
+            return json.dumps({"error": "Google Calendar not configured."})
+        max_results = input_data.get("max_results", 10)
+        events = cal.list_upcoming_events(max_results=max_results)
+        _last_gig_listing[chat_id] = events
+        if not events:
+            return json.dumps({"result": "No upcoming gigs found."})
+        lines = []
+        for i, ev in enumerate(events, start=1):
+            start_dt = ev["start_dt"]
+            time_str = start_dt.strftime("%I:%M%p").lstrip("0").lower()
+            date_str = start_dt.strftime("%a %d %b %Y").replace(" 0", " ")
+            lines.append(f"{i}. {ev['summary']} · {date_str} · {time_str}")
+        return json.dumps({"result": "\n".join(lines)})
+
+    # ── delete_gig ──────────────────────────────────────────────────────────
+    if name == "delete_gig":
+        n = input_data["number"]
+        listing = _last_gig_listing.get(chat_id)
+        if not listing:
+            return json.dumps({"error": "No gig listing cached. Ask me to list your gigs first."})
+        if n < 1 or n > len(listing):
+            return json.dumps(
+                {"error": f"No gig number {n}. There are {len(listing)} gigs in the last listing."}
+            )
+        cal = _make_calendar_client()
+        if cal is None:
+            return json.dumps({"error": "Google Calendar not configured."})
+        event = listing[n - 1]
+        try:
+            cal.delete_event(event["id"])
+        except Exception as exc:
+            return json.dumps({"error": str(exc)})
+        filter_store.remove_period("unavailable_periods", event["date_str"])
+        _last_gig_listing[chat_id] = [e for i, e in enumerate(listing) if i != n - 1]
+        return json.dumps(
+            {"result": f"Deleted {event['summary']}. Date removed from unavailable if present."}
+        )
+
     return json.dumps({"error": f"Tool not implemented: {name}"})
 
 
