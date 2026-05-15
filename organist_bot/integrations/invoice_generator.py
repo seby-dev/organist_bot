@@ -7,6 +7,11 @@ from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader
 
+try:
+    from playwright.async_api import async_playwright
+except ImportError:  # pragma: no cover — playwright not installed in base env
+    async_playwright = None  # noqa: F841
+
 from organist_bot.config import settings
 
 _PKG_ROOT = Path(__file__).parent.parent  # organist_bot/
@@ -18,6 +23,19 @@ CLIENTS_FILE = _PROJ_ROOT / "clients.json"
 INVOICES_FILE = _PROJ_ROOT / "invoices.json"
 
 logger = logging.getLogger(__name__)
+
+_pw_instance = None
+_browser = None
+
+
+async def _get_browser():
+    global _pw_instance, _browser
+    if _browser is None or not _browser.is_connected():
+        if _pw_instance is not None:
+            await _pw_instance.stop()
+        _pw_instance = await async_playwright().start()
+        _browser = await _pw_instance.chromium.launch()
+    return _browser
 
 
 # ── Clients ───────────────────────────────────────────────────────────────────
@@ -165,16 +183,14 @@ async def generate_invoice(client_key: str, items: list[dict]) -> dict:
 
     pdf_path = OUTPUT_DIR / f"invoice-{safe_key}-{timestamp}.pdf"
 
-    from playwright.async_api import async_playwright  # lazy: requires browser install
-
-    async with async_playwright() as p:
-        browser = await p.chromium.launch()
-        page = await browser.new_page()
+    browser = await _get_browser()
+    page = await browser.new_page()
+    try:
         await page.goto(f"file://{html_path.resolve()}")
         await page.pdf(path=str(pdf_path), format="A4", print_background=True)
-        await browser.close()
-
-    html_path.unlink()
+    finally:
+        await page.close()
+        html_path.unlink(missing_ok=True)
 
     result = {
         "pdf_path": pdf_path,
