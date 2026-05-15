@@ -254,7 +254,8 @@ class TestDeleteGig:
             mock_factory.return_value = mock_cal
             result = await _execute_tool("delete_gig", {"number": 1}, CHAT_ID)
         mock_cal.delete_event.assert_called_once_with("evt1")
-        assert "Sunday Service 1" in result or "result" in result.lower()
+        data = json.loads(result)
+        assert "Sunday Service 1" in data["result"]
 
     @pytest.mark.asyncio
     async def test_removes_date_from_unavailable(self):
@@ -266,6 +267,18 @@ class TestDeleteGig:
             mock_factory.return_value = mock_cal
             await _execute_tool("delete_gig", {"number": 1}, CHAT_ID)
         mock_fs.remove_period.assert_called_once_with("unavailable_periods", "2026-06-01")
+
+    @pytest.mark.asyncio
+    async def test_listing_shrinks_after_delete(self):
+        with (
+            patch("organist_bot.integrations.unified_agent._make_calendar_client") as mock_factory,
+            patch("organist_bot.integrations.unified_agent.filter_store"),
+        ):
+            mock_cal = MagicMock()
+            mock_factory.return_value = mock_cal
+            await _execute_tool("delete_gig", {"number": 1}, CHAT_ID)
+        assert len(_last_gig_listing[CHAT_ID]) == 1
+        assert _last_gig_listing[CHAT_ID][0]["id"] == "evt2"
 
     @pytest.mark.asyncio
     async def test_no_listing_returns_error(self):
