@@ -10,6 +10,12 @@ from organist_bot import filter_store
 from organist_bot.config import settings
 from organist_bot.filters import normalize_to_yyyymmdd
 from organist_bot.integrations.calendar_client import GoogleCalendarClient
+from organist_bot.integrations.invoice_generator import (
+    add_client,
+    delete_client,
+    edit_client,
+    load_clients,
+)
 from organist_bot.models import Gig
 from organist_bot.scraper import Scraper
 
@@ -430,6 +436,54 @@ async def _execute_tool(name: str, input_data: dict, chat_id: int) -> str:
         return json.dumps(
             {"result": f"Deleted {event['summary']}. Date removed from unavailable if present."}
         )
+
+    # ── list_clients ────────────────────────────────────────────────────────
+    if name == "list_clients":
+        clients = load_clients()
+        if not clients:
+            return json.dumps(
+                {"result": "No clients found. Add one with a natural language request."}
+            )
+        return json.dumps(clients, indent=2)
+
+    if name == "get_client":
+        clients = load_clients()
+        key = input_data["client_key"]
+        if key not in clients:
+            return json.dumps(
+                {"error": f"Client '{key}' not found. Available: {', '.join(clients.keys())}"}
+            )
+        return json.dumps({key: clients[key]}, indent=2)
+
+    if name == "add_client":
+        add_client(
+            key=input_data["key"],
+            name=input_data["name"],
+            address=input_data["address"],
+            email=input_data.get("email", ""),
+            cc=input_data.get("cc", []),
+        )
+        return json.dumps({"result": f"Client '{input_data['key']}' added successfully."})
+
+    if name == "edit_client":
+        try:
+            edit_client(
+                key=input_data["key"],
+                name=input_data.get("name"),
+                address=input_data.get("address"),
+                email=input_data.get("email"),
+                cc=input_data.get("cc"),
+            )
+            return json.dumps({"result": f"Client '{input_data['key']}' updated successfully."})
+        except ValueError as e:
+            return json.dumps({"error": str(e)})
+
+    if name == "delete_client":
+        try:
+            delete_client(input_data["key"])
+            return json.dumps({"result": f"Client '{input_data['key']}' deleted."})
+        except ValueError as e:
+            return json.dumps({"error": str(e)})
 
     return json.dumps({"error": f"Tool not implemented: {name}"})
 

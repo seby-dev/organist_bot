@@ -301,3 +301,100 @@ class TestDeleteGig:
             result = await _execute_tool("delete_gig", {"number": 1}, CHAT_ID)
         data = json.loads(result)
         assert "error" in data
+
+
+# ── Invoice client tools ──────────────────────────────────────────────────────
+
+
+class TestInvoiceClientTools:
+    @pytest.mark.asyncio
+    async def test_list_clients_returns_all(self):
+        clients = {
+            "holy-cross": {
+                "name": "The Secretary",
+                "address": "1 Road",
+                "email": "a@b.com",
+                "cc": [],
+            }
+        }
+        with patch("organist_bot.integrations.unified_agent.load_clients", return_value=clients):
+            result = await _execute_tool("list_clients", {}, CHAT_ID)
+        assert "holy-cross" in result
+
+    @pytest.mark.asyncio
+    async def test_list_clients_empty_message(self):
+        with patch("organist_bot.integrations.unified_agent.load_clients", return_value={}):
+            result = await _execute_tool("list_clients", {}, CHAT_ID)
+        assert "no clients" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_get_client_found(self):
+        clients = {
+            "st-marys": {
+                "name": "St Mary's",
+                "address": "1 Church St",
+                "email": "c@d.com",
+                "cc": [],
+            }
+        }
+        with patch("organist_bot.integrations.unified_agent.load_clients", return_value=clients):
+            result = await _execute_tool("get_client", {"client_key": "st-marys"}, CHAT_ID)
+        assert "St Mary's" in result
+
+    @pytest.mark.asyncio
+    async def test_get_client_not_found(self):
+        with patch("organist_bot.integrations.unified_agent.load_clients", return_value={}):
+            result = await _execute_tool("get_client", {"client_key": "missing"}, CHAT_ID)
+        data = json.loads(result)
+        assert "error" in data
+
+    @pytest.mark.asyncio
+    async def test_add_client_calls_add_client(self):
+        with patch("organist_bot.integrations.unified_agent.add_client") as mock_add:
+            result = await _execute_tool(
+                "add_client",
+                {"key": "new-key", "name": "New Client", "address": "2 Road"},
+                CHAT_ID,
+            )
+        mock_add.assert_called_once_with(
+            key="new-key", name="New Client", address="2 Road", email="", cc=[]
+        )
+        assert "added" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_edit_client_calls_edit_client(self):
+        with patch("organist_bot.integrations.unified_agent.edit_client") as mock_edit:
+            result = await _execute_tool(
+                "edit_client", {"key": "st-marys", "email": "new@email.com"}, CHAT_ID
+            )
+        mock_edit.assert_called_once_with(
+            key="st-marys", name=None, address=None, email="new@email.com", cc=None
+        )
+        assert "updated" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_edit_client_not_found(self):
+        with patch(
+            "organist_bot.integrations.unified_agent.edit_client",
+            side_effect=ValueError("not found"),
+        ):
+            result = await _execute_tool("edit_client", {"key": "missing"}, CHAT_ID)
+        data = json.loads(result)
+        assert "error" in data
+
+    @pytest.mark.asyncio
+    async def test_delete_client_calls_delete_client(self):
+        with patch("organist_bot.integrations.unified_agent.delete_client") as mock_del:
+            result = await _execute_tool("delete_client", {"key": "old-key"}, CHAT_ID)
+        mock_del.assert_called_once_with("old-key")
+        assert "deleted" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_delete_client_not_found(self):
+        with patch(
+            "organist_bot.integrations.unified_agent.delete_client",
+            side_effect=ValueError("not found"),
+        ):
+            result = await _execute_tool("delete_client", {"key": "missing"}, CHAT_ID)
+        data = json.loads(result)
+        assert "error" in data
