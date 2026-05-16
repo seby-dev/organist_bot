@@ -165,6 +165,52 @@ class GoogleCalendarClient:
             extra={"event_id": event_id, "calendar_id": self.calendar_id, "elapsed_ms": elapsed_ms},
         )
 
+    def update_event(
+        self,
+        event_id: str,
+        *,
+        summary: str | None = None,
+        start_dt: datetime.datetime | None = None,
+    ) -> None:
+        """Patch a calendar event. Only provided fields are changed.
+
+        Raises on API failure.
+        """
+        body: dict = {}
+        if summary is not None:
+            body["summary"] = summary
+        if start_dt is not None:
+            end_dt = start_dt + datetime.timedelta(hours=1)
+            body["start"] = {"dateTime": start_dt.isoformat(), "timeZone": "Europe/London"}
+            body["end"] = {"dateTime": end_dt.isoformat(), "timeZone": "Europe/London"}
+        if not body:
+            return
+        t0 = time.perf_counter()
+        try:
+            self._service.events().patch(
+                calendarId=self.calendar_id, eventId=event_id, body=body
+            ).execute()
+        except Exception:
+            elapsed_ms = int((time.perf_counter() - t0) * 1000)
+            logger.exception(
+                "Failed to update calendar event",
+                extra={
+                    "event_id": event_id,
+                    "calendar_id": self.calendar_id,
+                    "elapsed_ms": elapsed_ms,
+                },
+            )
+            raise
+        elapsed_ms = int((time.perf_counter() - t0) * 1000)
+        logger.info(
+            "Calendar event updated",
+            extra={
+                "event_id": event_id,
+                "calendar_id": self.calendar_id,
+                "elapsed_ms": elapsed_ms,
+            },
+        )
+
     def add_gig(self, gig: Gig) -> str:
         """Create a timed calendar event for a confirmed gig.
 

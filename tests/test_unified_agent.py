@@ -333,6 +333,75 @@ class TestDeleteGig:
         assert "error" in data
 
 
+# ── edit_gig ──────────────────────────────────────────────────────────────────
+
+
+class TestEditGig:
+    @pytest.fixture(autouse=True)
+    def seed_listing(self):
+        from organist_bot.integrations.unified_agent import _last_gig_listing
+
+        _last_gig_listing[CHAT_ID] = [_make_event(1), _make_event(2)]
+        yield
+        _last_gig_listing.pop(CHAT_ID, None)
+
+    @pytest.mark.asyncio
+    async def test_edit_summary(self):
+        with patch("organist_bot.integrations.unified_agent._make_calendar_client") as mock_factory:
+            mock_cal = MagicMock()
+            mock_factory.return_value = mock_cal
+            result = await _execute_tool("edit_gig", {"number": 1, "summary": "New Title"}, CHAT_ID)
+        mock_cal.update_event.assert_called_once()
+        _, kwargs = mock_cal.update_event.call_args
+        assert kwargs["summary"] == "New Title"
+        assert kwargs["start_dt"] is None
+        assert "result" in json.loads(result)
+
+    @pytest.mark.asyncio
+    async def test_edit_time(self):
+        with patch("organist_bot.integrations.unified_agent._make_calendar_client") as mock_factory:
+            mock_cal = MagicMock()
+            mock_factory.return_value = mock_cal
+            result = await _execute_tool("edit_gig", {"number": 1, "time": "11:00am"}, CHAT_ID)
+        _, kwargs = mock_cal.update_event.call_args
+        assert kwargs["start_dt"] is not None
+        assert kwargs["start_dt"].hour == 11
+        assert "result" in json.loads(result)
+
+    @pytest.mark.asyncio
+    async def test_edit_date_updates_unavailable(self):
+        with (
+            patch("organist_bot.integrations.unified_agent._make_calendar_client") as mock_factory,
+            patch("organist_bot.integrations.unified_agent.filter_store") as mock_fs,
+        ):
+            mock_factory.return_value = MagicMock()
+            await _execute_tool("edit_gig", {"number": 1, "date": "Sunday 7th June 2026"}, CHAT_ID)
+        mock_fs.remove_period.assert_called_once_with("unavailable_periods", "2026-06-01")
+        mock_fs.add_period.assert_called_once_with("unavailable_periods", "2026-06-07")
+
+    @pytest.mark.asyncio
+    async def test_no_listing_returns_error(self):
+        from organist_bot.integrations.unified_agent import _last_gig_listing
+
+        _last_gig_listing.pop(CHAT_ID, None)
+        result = await _execute_tool("edit_gig", {"number": 1, "summary": "X"}, CHAT_ID)
+        assert "error" in json.loads(result)
+
+    @pytest.mark.asyncio
+    async def test_out_of_range_returns_error(self):
+        result = await _execute_tool("edit_gig", {"number": 99}, CHAT_ID)
+        assert "error" in json.loads(result)
+
+    @pytest.mark.asyncio
+    async def test_updates_cached_listing(self):
+        from organist_bot.integrations.unified_agent import _last_gig_listing
+
+        with patch("organist_bot.integrations.unified_agent._make_calendar_client") as mock_factory:
+            mock_factory.return_value = MagicMock()
+            await _execute_tool("edit_gig", {"number": 1, "summary": "Updated"}, CHAT_ID)
+        assert _last_gig_listing[CHAT_ID][0]["summary"] == "Updated"
+
+
 # ── Invoice client tools ──────────────────────────────────────────────────────
 
 

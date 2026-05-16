@@ -8,7 +8,7 @@ from typing import cast
 
 from organist_bot import filter_store
 from organist_bot.config import settings
-from organist_bot.filters import normalize_to_yyyymmdd
+from organist_bot.filters import normalize_to_yyyymmdd, parse_start_time
 from organist_bot.integrations.calendar_client import GoogleCalendarClient
 from organist_bot.integrations.email_sender import send_invoice_email
 from organist_bot.integrations.invoice_generator import (
@@ -35,6 +35,7 @@ You are an assistant for an organist. You handle three areas:
 - Always call add_gig(confirmed=false) first to show a summary; only call confirmed=true after explicit approval.
 - "Show my gigs" / "list gigs" → call list_upcoming_gigs.
 - "Delete gig 2" → call delete_gig(2). Tell the user to list gigs first if no listing is cached.
+- "Change gig 2 to 11am" / "Rename gig 1" → call edit_gig. Tell the user to list gigs first if no listing is cached.
 
 ## Invoicing
 - Confirm before calling generate_invoice, duplicate_invoice, send_invoice_email, resend_invoice, or delete_client. Present a clear summary and ask "Shall I go ahead?"
@@ -123,6 +124,36 @@ TOOLS: list[dict] = [
                     "type": "integer",
                     "description": "1-based position from the last gig listing.",
                 }
+            },
+            "required": ["number"],
+        },
+    },
+    {
+        "name": "edit_gig",
+        "description": (
+            "Edit an upcoming gig by its 1-based position from the last list_upcoming_gigs call. "
+            "Provide only the fields to change (summary, date, time). "
+            "Requires a prior list_upcoming_gigs call."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "number": {
+                    "type": "integer",
+                    "description": "1-based position from the last gig listing.",
+                },
+                "summary": {
+                    "type": "string",
+                    "description": "New event title, e.g. 'Sunday Service — St Paul's'",
+                },
+                "date": {
+                    "type": "string",
+                    "description": "New date, e.g. 'Sunday 1st June 2026'",
+                },
+                "time": {
+                    "type": "string",
+                    "description": "New start time, e.g. '11:00am'",
+                },
             },
             "required": ["number"],
         },
@@ -442,6 +473,66 @@ async def _execute_tool(name: str, input_data: dict, chat_id: int) -> str:
         return json.dumps(
             {"result": f"Deleted {event['summary']}. Date removed from unavailable if present."}
         )
+
+    # ── edit_gig ─────────────────────────────────────────────────────────────
+    if name == "edit_gig":
+        n = input_data["number"]
+        listing = _last_gig_listing.get(chat_id)
+        if not listing:
+            return json.dumps({"error": "No gig listing cached. Ask me to list your gigs first."})
+        if n < 1 or n > len(listing):
+            return json.dumps(
+                {"error": f"No gig number {n}. There are {len(listing)} gigs listed."}
+            )
+        event = listing[n - 1]
+        cal = _make_calendar_client()
+        if cal is None:
+            return json.dumps({"error": "Google Calendar not configured."})
+
+        new_summary = input_data.get("summary")
+        new_date_str = input_data.get("date")
+        new_time_str = input_data.get("time")
+
+        new_start_dt = None
+        old_date_str = event["date_str"]
+
+        if new_date_str or new_time_str:
+            if new_date_str:
+                normalized = normalize_to_yyyymmdd(new_date_str)
+                if not normalized:
+                    return json.dumps({"error": f"Cannot parse date: {new_date_str!r}"})
+                base_date = datetime.datetime.strptime(normalized, "%Y%m%d").date()
+            else:
+                base_date = event["start_dt"].date()
+
+            if new_time_str:
+                parsed_time = parse_start_time(new_time_str)
+                if not parsed_time:
+                    return json.dumps({"error": f"Cannot parse time: {new_time_str!r}"})
+            else:
+                parsed_time = event["start_dt"].time()
+
+            assert parsed_time is not None  # guarded by early return above
+            new_start_dt = datetime.datetime.combine(base_date, parsed_time, tzinfo=datetime.UTC)
+
+        try:
+            cal.update_event(event["id"], summary=new_summary, start_dt=new_start_dt)
+        except Exception as exc:
+            return json.dumps({"error": str(exc)})
+
+        if new_start_dt:
+            new_date_iso = new_start_dt.date().isoformat()
+            if new_date_iso != old_date_str:
+                filter_store.remove_period("unavailable_periods", old_date_str)
+                filter_store.add_period("unavailable_periods", new_date_iso)
+            updated = {**event, "start_dt": new_start_dt, "date_str": new_date_iso}
+        else:
+            updated = {**event}
+        if new_summary:
+            updated["summary"] = new_summary
+        listing[n - 1] = updated
+
+        return json.dumps({"result": "✓ Gig updated."})
 
     # ── list_clients ────────────────────────────────────────────────────────
     if name == "list_clients":
