@@ -34,7 +34,6 @@ You are an assistant for an organist. You handle three areas:
 - Gather any missing fields (header, organisation, locality, date, time, fee) one at a time.
 - Always call add_gig(confirmed=false) first to show a summary; only call confirmed=true after explicit approval.
 - "Show my gigs" / "list gigs" → call list_upcoming_gigs.
-- When presenting a gig listing, relay the formatted text from list_upcoming_gigs verbatim — do not reformat or paraphrase it.
 - "Delete gig 2" → call delete_gig(2). Tell the user to list gigs first if no listing is cached.
 
 ## Invoicing
@@ -325,6 +324,7 @@ _last_invoice: dict[int, dict] = {}
 _last_gig_listing: dict[int, list[dict]] = {}
 
 _PDF_RESPONSE_TOOLS = {"generate_invoice", "duplicate_invoice", "get_invoice"}
+_VERBATIM_RESPONSE_TOOLS = {"list_upcoming_gigs"}
 
 
 def _make_calendar_client() -> GoogleCalendarClient | None:
@@ -743,6 +743,15 @@ async def process_message(chat_id: int, text: str) -> list[AgentResponse]:
             except Exception as e:
                 logger.error("Tool execution failed: %s", e)
                 result = json.dumps({"error": str(e)})
+
+            if block.name in _VERBATIM_RESPONSE_TOOLS:
+                try:
+                    data = json.loads(result)
+                    if "result" in data:
+                        responses.append(AgentResponse(text=data["result"]))
+                        result = json.dumps({"result": "Listing sent to user."})
+                except (json.JSONDecodeError, KeyError):
+                    pass
 
             tool_results.append({"type": "tool_result", "tool_use_id": block.id, "content": result})
 
