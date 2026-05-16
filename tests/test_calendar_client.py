@@ -322,3 +322,39 @@ class TestDeleteEvent:
         mock_service.events().delete().execute.side_effect = Exception("Not found")
         with pytest.raises(Exception, match="Not found"):
             client.delete_event("nonexistent_id")
+
+
+# ── update_event ──────────────────────────────────────────────────────────────
+
+
+class TestUpdateEvent:
+    def test_patches_summary(self, client, mock_service):
+        mock_service.events().patch().execute.return_value = {}
+        client.update_event("evt_1", summary="New Title")
+        kwargs = mock_service.events().patch.call_args[1]
+        assert kwargs["eventId"] == "evt_1"
+        assert kwargs["body"]["summary"] == "New Title"
+
+    def test_patches_start_and_end_time(self, client, mock_service):
+        mock_service.events().patch().execute.return_value = {}
+        import datetime as dt_mod
+
+        start = dt_mod.datetime(2026, 6, 1, 11, 0, tzinfo=dt_mod.UTC)
+        client.update_event("evt_1", start_dt=start)
+        body = mock_service.events().patch.call_args[1]["body"]
+        assert "start" in body
+        assert "end" in body
+        from datetime import datetime
+
+        end_dt = datetime.fromisoformat(body["end"]["dateTime"])
+        start_dt = datetime.fromisoformat(body["start"]["dateTime"])
+        assert (end_dt - start_dt).total_seconds() == 3600
+
+    def test_no_op_when_nothing_provided(self, client, mock_service):
+        client.update_event("evt_1")
+        mock_service.events().patch.assert_not_called()
+
+    def test_raises_on_api_error(self, client, mock_service):
+        mock_service.events().patch().execute.side_effect = Exception("Forbidden")
+        with pytest.raises(Exception, match="Forbidden"):
+            client.update_event("evt_1", summary="X")
