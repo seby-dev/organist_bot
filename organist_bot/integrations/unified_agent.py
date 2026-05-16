@@ -411,13 +411,13 @@ async def _execute_tool(name: str, input_data: dict, chat_id: int) -> str:
         _last_gig_listing[chat_id] = events
         if not events:
             return json.dumps({"result": "No upcoming gigs found."})
-        lines = [f"🎵 *Upcoming Gigs* ({len(events)})\n"]
+        lines = [f"🎵 *Upcoming Gigs* ({len(events)})"]
         for i, ev in enumerate(events, start=1):
             start_dt = ev["start_dt"]
             time_str = start_dt.strftime("%I:%M%p").lstrip("0").lower()
             date_str = start_dt.strftime("%a %d %b %Y").replace(" 0", " ")
             lines.append(f"{i}. *{ev['summary']}*\n   {date_str} · {time_str}")
-        return json.dumps({"result": "\n".join(lines)})
+        return json.dumps({"result": "\n\n".join(lines)})
 
     # ── delete_gig ──────────────────────────────────────────────────────────
     if name == "delete_gig":
