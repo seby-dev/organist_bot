@@ -34,6 +34,7 @@ You are an assistant for an organist. You handle three areas:
 - Gather any missing fields (header, organisation, locality, date, time, fee) one at a time.
 - Always call add_gig(confirmed=false) first to show a summary; only call confirmed=true after explicit approval.
 - "Show my gigs" / "list gigs" → call list_upcoming_gigs.
+- When presenting a gig listing, relay the formatted text from list_upcoming_gigs verbatim — do not reformat or paraphrase it.
 - "Delete gig 2" → call delete_gig(2). Tell the user to list gigs first if no listing is cached.
 
 ## Invoicing
@@ -406,15 +407,16 @@ async def _execute_tool(name: str, input_data: dict, chat_id: int) -> str:
             return json.dumps({"error": "Google Calendar not configured."})
         max_results = input_data.get("max_results", 10)
         events = cal.list_upcoming_events(max_results=max_results)
+        events = sorted(events, key=lambda e: e["start_dt"])
         _last_gig_listing[chat_id] = events
         if not events:
             return json.dumps({"result": "No upcoming gigs found."})
-        lines = []
+        lines = [f"🎵 *Upcoming Gigs* ({len(events)})\n"]
         for i, ev in enumerate(events, start=1):
             start_dt = ev["start_dt"]
             time_str = start_dt.strftime("%I:%M%p").lstrip("0").lower()
             date_str = start_dt.strftime("%a %d %b %Y").replace(" 0", " ")
-            lines.append(f"{i}. {ev['summary']} · {date_str} · {time_str}")
+            lines.append(f"{i}. *{ev['summary']}*\n   {date_str} · {time_str}")
         return json.dumps({"result": "\n".join(lines)})
 
     # ── delete_gig ──────────────────────────────────────────────────────────
