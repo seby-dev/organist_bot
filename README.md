@@ -9,9 +9,9 @@ A personal automation bot that scrapes organ gig listings from [organistsonline.
 3. **Fetches** detail pages only for gigs that pass the pre-filter
 4. **Filters** the full gig data through a second chain: contact blacklist and travel time
 5. **Notifies** you by email with a summary of matching gigs and sends an application email to each contact
-6. **Books** confirmed gigs via Telegram — `/addgig <url>` checks your calendar for clashes then creates a timed event; `/addgig` with no arguments walks you through a step-by-step manual entry
-7. **Manages invoices** — converse in plain English with an AI agent that generates PDF invoices, manages your client list, and sends invoice emails
-8. **Manages filters** at runtime via Telegram — add/remove blacklisted emails, unavailable periods, and available-only periods without editing any files or restarting the bot
+6. **Manages your gig calendar** via Telegram in plain English — add gigs from a URL or manually, list upcoming gigs, edit or delete them
+7. **Manages invoices** — converse in plain English with an AI agent that generates PDF invoices, manages your client list, and sends invoice emails; invoices are rendered via a persistent Playwright browser to avoid cold-start latency
+8. **Manages filters** at runtime via Telegram in plain English — add/remove blacklisted emails, unavailable periods, and available-only periods without editing any files or restarting the bot
 
 ---
 
@@ -114,33 +114,35 @@ Run this in a separate terminal alongside `main.py`.
 
 ---
 
-## Telegram bot commands
+## Telegram bot
 
-All commands are restricted to `TELEGRAM_CHAT_ID`.
+All messages are restricted to `TELEGRAM_CHAT_ID`. Everything is handled in plain English — there are no slash commands. Send `/start` at any time for a reminder of what the bot can do.
 
 ### Gig calendar
 
-| Command | Description |
+| What you say | What happens |
 |---|---|
-| `/addgig <url>` | Scrape an organistsonline.org URL and add the gig to Google Calendar |
-| `/addgig` | Manually enter gig details step-by-step (title → org → locality → date → time → fee → confirm) |
-| `/cancel` | Cancel an in-progress manual entry |
+| `"Show my upcoming gigs"` | Lists gigs sorted by date |
+| `"Add this gig: https://organistsonline.org/..."` | Scrapes the URL and walks through confirmation |
+| `"I want to add a gig"` | Gathers title, organisation, locality, date, time and fee one at a time then confirms |
+| `"Delete gig 2"` | Removes gig 2 from Google Calendar and clears the date from unavailable periods |
+| `"Change gig 1 to start at 3pm"` | Updates the event start time |
+| `"Move gig 3 to Sunday 14th June"` | Changes the event date |
+| `"Rename gig 2 to Evening Recital"` | Updates the event title |
 
 ### Filter management
 
 Changes take effect on the **next polling tick** — no restart needed.
 
-| Command | Description |
+| What you say | What happens |
 |---|---|
-| `/blacklist` | List blacklisted contact emails |
-| `/blacklist add <email>` | Add an email to the blacklist |
-| `/blacklist rm <email>` | Remove an email from the blacklist |
-| `/unavailable` | List your unavailable periods |
-| `/unavailable add <period>` | Block a period (gigs on these dates are rejected) |
-| `/unavailable rm <period>` | Remove an unavailable period |
-| `/available` | List your available-only periods |
-| `/available add <period>` | Restrict to a period (gigs outside these dates are rejected) |
-| `/available rm <period>` | Remove an available-only period |
+| `"Add holy-cross@example.com to the blacklist"` | Blacklists that contact email |
+| `"Remove holy-cross@example.com from the blacklist"` | Removes it |
+| `"Show the blacklist"` | Lists all blacklisted emails |
+| `"I'm unavailable in December"` | Blocks all of December 2026 |
+| `"I'm unavailable on 25 Dec"` | Blocks that specific date |
+| `"Add an available-only period for August"` | Restricts notifications to August only |
+| `"Show my unavailable periods"` | Lists all blocked dates/ranges |
 
 Period format: `2026-12-25` (single day) · `2026-12-20:2027-01-05` (range) · `2026-12` (whole month)
 
@@ -148,17 +150,14 @@ If both unavailable and available-only periods are set, unavailable takes preced
 
 ### Invoicing
 
-Just type your request in plain English — the AI agent handles the rest:
-
-```
-"Send an invoice to Holy Cross for March Masses, £240"
-"List my clients"
-"Generate invoice for St Paul's — 3 services at £120 each"
-```
-
-| Command | Description |
+| What you say | What happens |
 |---|---|
-| `/reset` | Clear the invoice conversation history |
+| `"Send an invoice to Holy Cross for March Masses, £240"` | Generates a PDF invoice and offers to email it |
+| `"List my clients"` | Shows all saved clients |
+| `"Add a new client: St Paul's, ..."` | Creates a client record |
+| `"Duplicate invoice 42"` | Clones a past invoice with today's date |
+| `"Resend invoice 42"` | Re-emails a past invoice |
+| `"Start over"` | Clears the conversation history |
 
 ---
 
@@ -305,9 +304,9 @@ organist_bot/
 │   ├── integrations/
 │   │   ├── calendar_client.py   # Google Calendar API wrapper
 │   │   ├── sheets_logger.py     # Google Sheets run-log writer with auto tab rotation
-│   │   ├── telegram_bot.py      # Unified Telegram bot (calendar + invoicing + filters)
-│   │   ├── invoice_agent.py     # Claude AI agentic loop for invoice management
-│   │   ├── invoice_generator.py # PDF invoice generation via Playwright + Jinja2
+│   │   ├── telegram_bot.py      # Telegram bot entry point — delegates all messages to unified_agent
+│   │   ├── unified_agent.py     # Claude AI agent handling gigs, invoices, and filters via natural language
+│   │   ├── invoice_generator.py # PDF invoice generation via Playwright + Jinja2 (persistent browser)
 │   │   └── email_sender.py      # SMTP invoice email sender
 │   └── templates/
 │       ├── invoice.html         # Invoice PDF template
@@ -325,6 +324,8 @@ organist_bot/
     ├── test_scraper.py
     ├── test_storage.py
     ├── test_calendar_client.py
+    ├── test_unified_agent.py
     ├── test_telegram_integration.py
+    ├── test_invoice_generator_browser.py
     └── test_main.py
 ```
