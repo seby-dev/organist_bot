@@ -233,6 +233,36 @@ class TestListUpcomingGigs:
             result = await _execute_tool("list_upcoming_gigs", {}, CHAT_ID)
         assert "no" in result.lower() or "0" in result
 
+    @pytest.mark.asyncio
+    async def test_events_sorted_earliest_first(self):
+        late = _make_event(3)  # 3 Jun
+        early = _make_event(1)  # 1 Jun
+        mid = _make_event(2)  # 2 Jun
+        events = [late, mid, early]  # intentionally out of order
+        with patch("organist_bot.integrations.unified_agent._make_calendar_client") as mock_factory:
+            mock_cal = MagicMock()
+            mock_cal.list_upcoming_events.return_value = events
+            mock_factory.return_value = mock_cal
+            result = await _execute_tool("list_upcoming_gigs", {}, CHAT_ID)
+        pos1 = result.index("Sunday Service 1")
+        pos2 = result.index("Sunday Service 2")
+        pos3 = result.index("Sunday Service 3")
+        assert pos1 < pos2 < pos3
+
+    @pytest.mark.asyncio
+    async def test_gig_listing_includes_markdown_formatting(self):
+        events = [_make_event(1)]
+        with patch("organist_bot.integrations.unified_agent._make_calendar_client") as mock_factory:
+            mock_cal = MagicMock()
+            mock_cal.list_upcoming_events.return_value = events
+            mock_factory.return_value = mock_cal
+            result = await _execute_tool("list_upcoming_gigs", {}, CHAT_ID)
+        data = json.loads(result)
+        text = data["result"]
+        assert "🎵" in text
+        assert "*Sunday Service 1*" in text
+        assert "Jun 2026" in text
+
 
 # ── delete_gig ────────────────────────────────────────────────────────────────
 
