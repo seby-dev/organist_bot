@@ -3,9 +3,9 @@ import logging
 import time
 import uuid
 
-import requests as _requests
 import schedule
 
+import organist_bot.alert as alert
 import organist_bot.filter_store as filter_store
 from organist_bot.config import settings
 from organist_bot.filters import (
@@ -32,32 +32,6 @@ from organist_bot.storage import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-def _send_telegram_alert(message: str) -> None:
-    """Post a plain-text alert to the configured Telegram chat.
-
-    Called only on unhandled scheduler crashes — failure here must never
-    propagate, so the scheduler loop can continue.
-    """
-    if not settings.telegram_bot_token or not settings.telegram_chat_id:
-        return
-    t0 = time.perf_counter()
-    try:
-        _requests.post(
-            f"https://api.telegram.org/bot{settings.telegram_bot_token}/sendMessage",
-            json={"chat_id": settings.telegram_chat_id, "text": message},
-            timeout=10,
-        )
-        logger.info(
-            "Telegram alert sent",
-            extra={"elapsed_ms": int((time.perf_counter() - t0) * 1000)},
-        )
-    except Exception:
-        logger.warning(
-            "Telegram alert failed",
-            extra={"elapsed_ms": int((time.perf_counter() - t0) * 1000)},
-        )
 
 
 def main(scraper: Scraper, sheets_logger: SheetsLogger | None = None) -> None:
@@ -175,6 +149,12 @@ def main(scraper: Scraper, sheets_logger: SheetsLogger | None = None) -> None:
             "elapsed_ms": int((time.perf_counter() - t0) * 1000),
         },
     )
+    if gig_errors >= 2:
+        alert.send_alert(
+            f"⚠️ Parse errors in run {run_id}: {gig_errors} gig(s) failed to parse "
+            f"out of {len(gigs_div)} listed. Check logs for detail."
+        )
+
     # Emit Phase-1 pre-filter breakdown so the dashboard counts which filters
     # rejected gigs before the detail-page fetch.
     pre_filter.log_and_reset_counts(total_in=len(gigs_div), passed=pre_filter_passed)
@@ -336,7 +316,7 @@ if __name__ == "__main__":
                 schedule.run_pending()
             except Exception:
                 logger.exception("Unhandled exception in scheduled run")
-                _send_telegram_alert("❌ OrganistBot crashed — check logs.")
+                alert.send_alert("❌ OrganistBot crashed — check logs.")
             time.sleep(1)
     finally:
         scraper.session.close()
