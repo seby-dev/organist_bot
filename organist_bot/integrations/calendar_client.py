@@ -22,8 +22,10 @@ Authentication uses a Google service account JSON key file.  To set up:
   4. Download the JSON key and set GOOGLE_CALENDAR_CREDENTIALS_FILE in .env.
 """
 
+import calendar as _cal_mod
 import datetime
 import logging
+import re as _re
 import time
 
 from google.oauth2 import service_account
@@ -35,6 +37,26 @@ from organist_bot.models import Gig
 logger = logging.getLogger(__name__)
 
 _SCOPES = ["https://www.googleapis.com/auth/calendar"]
+
+
+def _parse_period_dates(period: str) -> tuple[datetime.date, datetime.date] | None:
+    """Parse a period token into an inclusive (start, end) date pair.
+
+    Accepts: YYYY-MM-DD, YYYY-MM-DD:YYYY-MM-DD, YYYY-MM.
+    Returns None on any parse failure.
+    """
+    try:
+        if ":" in period:
+            start_str, end_str = period.split(":", 1)
+            return datetime.date.fromisoformat(start_str), datetime.date.fromisoformat(end_str)
+        if _re.fullmatch(r"\d{4}-\d{2}", period):
+            year, month = int(period[:4]), int(period[5:])
+            last_day = _cal_mod.monthrange(year, month)[1]
+            return datetime.date(year, month, 1), datetime.date(year, month, last_day)
+        d = datetime.date.fromisoformat(period)
+        return d, d
+    except Exception:
+        return None
 
 
 class GoogleCalendarClient:

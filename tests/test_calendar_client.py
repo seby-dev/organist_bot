@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from organist_bot.integrations.calendar_client import GoogleCalendarClient
+from organist_bot.integrations.calendar_client import GoogleCalendarClient, _parse_period_dates
 from organist_bot.models import Gig
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -358,3 +358,30 @@ class TestUpdateEvent:
         mock_service.events().patch().execute.side_effect = Exception("Forbidden")
         with pytest.raises(Exception, match="Forbidden"):
             client.update_event("evt_1", summary="X")
+
+
+# ── _parse_period_dates ───────────────────────────────────────────────────────
+
+
+class TestParsePeriodDates:
+    def test_single_date(self):
+        result = _parse_period_dates("2026-12-25")
+        assert result == (dt.date(2026, 12, 25), dt.date(2026, 12, 25))
+
+    def test_range(self):
+        result = _parse_period_dates("2026-12-01:2026-12-31")
+        assert result == (dt.date(2026, 12, 1), dt.date(2026, 12, 31))
+
+    def test_month_december(self):
+        result = _parse_period_dates("2026-12")
+        assert result == (dt.date(2026, 12, 1), dt.date(2026, 12, 31))
+
+    def test_month_february_non_leap(self):
+        result = _parse_period_dates("2026-02")
+        assert result == (dt.date(2026, 2, 1), dt.date(2026, 2, 28))
+
+    def test_invalid_returns_none(self):
+        assert _parse_period_dates("not-a-date") is None
+
+    def test_empty_returns_none(self):
+        assert _parse_period_dates("") is None
