@@ -679,6 +679,18 @@ class TestQueryRunStats:
         assert new_title == "Logs 3"
 
 
+class TestDrainAlerts:
+    def test_sheets_api_failure_triggers_alert(self, sheets_logger, mock_service):
+        """drain() API failure calls alert.send_alert before re-raising."""
+        sheets_logger.emit(_make_record())
+        mock_service.spreadsheets().values().get().execute.side_effect = Exception("quota exceeded")
+        with patch("organist_bot.integrations.sheets_logger.alert") as mock_alert:
+            with pytest.raises(Exception, match="quota exceeded"):
+                sheets_logger.drain()
+        mock_alert.send_alert.assert_called_once()
+        assert "Sheets" in mock_alert.send_alert.call_args.args[0]
+
+
 class TestActiveSheetResolution:
     def test_resolves_active_sheet_on_first_drain(self, sheets_logger, mock_service):
         """_active_sheet is None until the first drain() queries the spreadsheet."""

@@ -8,6 +8,7 @@ from typing import Any
 
 import googlemaps
 
+from organist_bot import alert
 from organist_bot.models import Gig
 
 logger = logging.getLogger(__name__)
@@ -347,14 +348,21 @@ class PostcodeFilter:
     def _travel_times(self, postcode: str) -> dict[str, int | None]:
         """Return cached travel times (minutes) for each mode, querying if needed."""
         if postcode not in self._cache:
-            self._cache[postcode] = {mode: self._query(postcode, mode) for mode in self.MODES}
+            times: dict[str, int | None] = {}
+            alerted = False
+            for mode in self.MODES:
+                result, exc = self._query(postcode, mode)
+                if exc is not None and not alerted:
+                    alert.send_alert(f"⚠️ Google Maps API error (PostcodeFilter): {exc}")
+                    alerted = True
+                times[mode] = result
+            self._cache[postcode] = times
         return self._cache[postcode]
 
-    def _query(self, postcode: str, mode: str) -> int | None:
+    def _query(self, postcode: str, mode: str) -> tuple[int | None, Exception | None]:
         """Call the Distance Matrix API for a single mode.
 
-        Returns travel time in whole minutes, or None if the route is
-        unavailable or the request fails.
+        Returns (minutes, None) on success or non-OK status, or (None, exc) on exception.
         """
         t0 = time.perf_counter()
         try:
@@ -377,7 +385,7 @@ class PostcodeFilter:
                         "elapsed_ms": elapsed_ms,
                     },
                 )
-                return None
+                return None, None
 
             minutes = element["duration"]["value"] // 60  # seconds → whole minutes
             logger.debug(
@@ -389,7 +397,7 @@ class PostcodeFilter:
                     "elapsed_ms": elapsed_ms,
                 },
             )
-            return minutes
+            return minutes, None
 
         except Exception as exc:
             elapsed_ms = int((time.perf_counter() - t0) * 1000)
@@ -402,7 +410,7 @@ class PostcodeFilter:
                     "elapsed_ms": elapsed_ms,
                 },
             )
-            return None
+            return None, exc
 
     def __repr__(self):
         return f"PostcodeFilter(home={self.home_postcode!r}, max_minutes={self.max_minutes})"

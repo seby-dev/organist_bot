@@ -1,5 +1,5 @@
 import datetime
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from organist_bot.filters import (
     AvailabilityFilter,
@@ -1291,3 +1291,16 @@ class TestAvailabilityFilterIntegration:
         )
         # April gig: blocked by first filter (chain short-circuits)
         assert chain.is_valid(_gig("Sunday, 12 April 2026")) is False
+
+
+class TestPostcodeFilterAlert:
+    def test_maps_api_failure_triggers_alert(self):
+        """PostcodeFilter Maps API failure calls alert.send_alert."""
+        client = MagicMock()
+        client.distance_matrix.side_effect = Exception("Maps API down")
+        f = PostcodeFilter(home_postcode="SW1A 1AA", api_key="fake", _client=client)
+        with patch("organist_bot.filters.alert") as mock_alert:
+            result = f(make_gig(postcode="EC1A 1BB"))
+        assert result is True
+        mock_alert.send_alert.assert_called_once()
+        assert "Maps" in mock_alert.send_alert.call_args.args[0]

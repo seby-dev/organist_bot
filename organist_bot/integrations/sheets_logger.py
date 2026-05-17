@@ -41,6 +41,8 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
+from organist_bot import alert
+
 _SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 _SHEET_NAME = "Logs"
 
@@ -303,10 +305,11 @@ class SheetsLogger(logging.Handler):
             if last_row is not None and last_row * _NUM_COLS >= _CELL_THRESHOLD:
                 self._active_sheet = self._create_next_sheet()
 
-        except Exception:
+        except Exception as exc:
             # Restore rows to the buffer so they are retried on the next drain().
             with self._lock:
                 self._buffer = rows + self._buffer
+            alert.send_alert(f"⚠️ Google Sheets API error (batch append failed): {exc}")
             raise
 
         return len(rows)
