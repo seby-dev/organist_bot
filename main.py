@@ -23,6 +23,7 @@ from organist_bot.integrations.sheets_logger import SheetsLogger
 from organist_bot.logging_config import set_run_id, setup_logging
 from organist_bot.models import Gig
 from organist_bot.notifier import Notifier, SMTPTransport
+from organist_bot.runtime_config_store import runtime_config
 from organist_bot.scraper import Scraper
 from organist_bot.storage import (
     load_listings_hash,
@@ -69,7 +70,7 @@ def main(scraper: Scraper, sheets_logger: SheetsLogger | None = None) -> None:
     if settings.enable_seen_filter:
         pre_filter.add(SeenFilter(seen_gigs_set))
     if settings.enable_fee_filter:
-        pre_filter.add(FeeFilter(min_fee=settings.min_fee))
+        pre_filter.add(FeeFilter(min_fee=runtime_config.get("min_fee", settings.min_fee)))
     if settings.enable_sunday_time_filter:
         pre_filter.add(SundayTimeFilter())
     if (
@@ -166,7 +167,7 @@ def main(scraper: Scraper, sheets_logger: SheetsLogger | None = None) -> None:
     filter_chain = GigFilterChain()
 
     if settings.enable_fee_filter:
-        filter_chain.add(FeeFilter(min_fee=settings.min_fee))
+        filter_chain.add(FeeFilter(min_fee=runtime_config.get("min_fee", settings.min_fee)))
     else:
         logger.info("FeeFilter disabled")
 
@@ -195,7 +196,7 @@ def main(scraper: Scraper, sheets_logger: SheetsLogger | None = None) -> None:
             PostcodeFilter(
                 home_postcode=settings.home_postcode,
                 api_key=settings.google_maps_api_key,
-                max_minutes=settings.max_travel_minutes,
+                max_minutes=runtime_config.get("max_travel_minutes", settings.max_travel_minutes),
             )
         )
     elif not settings.enable_postcode_filter:
@@ -309,14 +310,29 @@ if __name__ == "__main__":
     scraper = Scraper()
     try:
         main(scraper, sheets_logger)  # run immediately on startup, then on schedule
-        schedule.every(settings.poll_minutes).minutes.do(main, scraper, sheets_logger)
+        current_poll = runtime_config.get("poll_minutes", settings.poll_minutes)
+        job = schedule.every(current_poll).minutes.do(main, scraper, sheets_logger)
 
+        _tick = 0
         while True:
             try:
                 schedule.run_pending()
             except Exception:
                 logger.exception("Unhandled exception in scheduled run")
                 alert.send_alert("❌ OrganistBot crashed — check logs.")
+
+            _tick += 1
+            if _tick % 10 == 0:
+                desired_poll = runtime_config.get("poll_minutes", settings.poll_minutes)
+                if desired_poll != current_poll:
+                    schedule.cancel_job(job)
+                    job = schedule.every(desired_poll).minutes.do(main, scraper, sheets_logger)
+                    current_poll = desired_poll
+                    logger.info(
+                        "Poll interval updated",
+                        extra={"poll_minutes": desired_poll},
+                    )
+
             time.sleep(1)
     finally:
         scraper.session.close()
