@@ -815,3 +815,100 @@ class TestSyncCalendarBlocks:
             mock_fs.unavailable_periods.return_value = ["2026-12", "2027-01"]
             sync_calendar_blocks(mock_cal)  # must not raise
         assert mock_cal.block_period.call_count == 2
+
+
+# ── get_gig_stats ─────────────────────────────────────────────────────────────
+
+
+class TestGetGigStats:
+    @pytest.mark.asyncio
+    async def test_returns_formatted_stats(self):
+        """Successful Sheets query returns formatted pipeline summary."""
+        runs = [
+            {
+                "run_id": "abc",
+                "timestamp": "2026-05-17T10:00:00.000Z",
+                "listed": 20,
+                "pre_filter_passed": 3,
+                "valid": 1,
+                "gig_errors": 0,
+                "elapsed_ms": 800,
+                "filter_breakdown": {"SeenFilter": 12, "FeeFilter": 4},
+            },
+            {
+                "run_id": "def",
+                "timestamp": "2026-05-16T10:00:00.000Z",
+                "listed": 18,
+                "pre_filter_passed": 2,
+                "valid": 0,
+                "gig_errors": 0,
+                "elapsed_ms": 600,
+                "filter_breakdown": {"SeenFilter": 10},
+            },
+        ]
+        mock_sl = MagicMock()
+        mock_sl.query_run_stats.return_value = runs
+        with patch(
+            "organist_bot.integrations.unified_agent._make_sheets_logger",
+            return_value=mock_sl,
+        ):
+            result = await _execute_tool("get_gig_stats", {"days": 7}, CHAT_ID)
+        data = json.loads(result)
+        assert "result" in data
+        text = data["result"]
+        assert "Runs: 2" in text or "Runs:   2" in text
+        assert "Listed:" in text
+        assert "Valid:" in text
+        assert "SeenFilter" in text
+
+    @pytest.mark.asyncio
+    async def test_sheets_not_configured_returns_message(self):
+        """Returns a clear message when Sheets is not configured."""
+        with patch(
+            "organist_bot.integrations.unified_agent._make_sheets_logger",
+            return_value=None,
+        ):
+            result = await _execute_tool("get_gig_stats", {}, CHAT_ID)
+        data = json.loads(result)
+        assert "result" in data
+        assert "not configured" in data["result"].lower()
+
+    @pytest.mark.asyncio
+    async def test_sheets_api_error_returns_message(self):
+        """Returns a clear message when the Sheets API call fails."""
+        mock_sl = MagicMock()
+        mock_sl.query_run_stats.side_effect = RuntimeError("network failure")
+        with patch(
+            "organist_bot.integrations.unified_agent._make_sheets_logger",
+            return_value=mock_sl,
+        ):
+            result = await _execute_tool("get_gig_stats", {"days": 7}, CHAT_ID)
+        data = json.loads(result)
+        assert "result" in data
+        assert "Google Sheets" in data["result"]
+
+    @pytest.mark.asyncio
+    async def test_no_data_in_window_returns_message(self):
+        """Returns a clear message when there are no runs in the requested window."""
+        mock_sl = MagicMock()
+        mock_sl.query_run_stats.return_value = []
+        with patch(
+            "organist_bot.integrations.unified_agent._make_sheets_logger",
+            return_value=mock_sl,
+        ):
+            result = await _execute_tool("get_gig_stats", {"days": 7}, CHAT_ID)
+        data = json.loads(result)
+        assert "result" in data
+        assert "No pipeline runs" in data["result"]
+
+    @pytest.mark.asyncio
+    async def test_days_clamped_to_range(self):
+        """days is clamped to 1–90."""
+        mock_sl = MagicMock()
+        mock_sl.query_run_stats.return_value = []
+        with patch(
+            "organist_bot.integrations.unified_agent._make_sheets_logger",
+            return_value=mock_sl,
+        ):
+            await _execute_tool("get_gig_stats", {"days": 999}, CHAT_ID)
+        mock_sl.query_run_stats.assert_called_once_with(90)

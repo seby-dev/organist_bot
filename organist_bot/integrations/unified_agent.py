@@ -54,6 +54,10 @@ You are an assistant for an organist. You handle three areas:
 - "Add an available-only period" → manage_available(action=add, period=<period>).
 - Period formats: YYYY-MM-DD, YYYY-MM-DD:YYYY-MM-DD, YYYY-MM.
 
+## Pipeline stats
+- "Show stats" / "how's the pipeline?" / "gig stats this week" → call get_gig_stats.
+- Accept an optional number of days: "stats for the last 30 days" → get_gig_stats(days=30).
+
 ## Conversation
 - If the user asks to start over, reset, or forget everything → call clear_conversation.
 
@@ -339,6 +343,25 @@ TOOLS: list[dict] = [
         "description": "Clear this chat's conversation history and all cached state.",
         "input_schema": {"type": "object", "properties": {}, "required": []},
     },
+    # ── Pipeline stats ──────────────────────────────────────────────────────
+    {
+        "name": "get_gig_stats",
+        "description": (
+            "Query the Google Sheets log and return pipeline stats. "
+            "Shows total runs, gigs listed/filtered/valid, filter rejection breakdown, "
+            "and the most recent run. Accepts optional 'days' parameter (default 7, max 90)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "days": {
+                    "type": "integer",
+                    "description": "Number of days to look back (default 7, max 90).",
+                }
+            },
+            "required": [],
+        },
+    },
 ]
 
 
@@ -355,7 +378,7 @@ _last_invoice: dict[int, dict] = {}
 _last_gig_listing: dict[int, list[dict]] = {}
 
 _PDF_RESPONSE_TOOLS = {"generate_invoice", "duplicate_invoice", "get_invoice"}
-_VERBATIM_RESPONSE_TOOLS = {"list_upcoming_gigs"}
+_VERBATIM_RESPONSE_TOOLS = {"list_upcoming_gigs", "get_gig_stats"}
 
 
 def _make_calendar_client() -> GoogleCalendarClient | None:
@@ -379,6 +402,29 @@ def sync_calendar_blocks(cal: GoogleCalendarClient) -> None:
         except Exception:
             logger.warning("sync_calendar_blocks: failed for %r", period, exc_info=True)
     logger.info("sync_calendar_blocks: synced %d period(s)", len(periods))
+
+
+def _make_sheets_logger():
+    """Return a SheetsLogger if Sheets is configured, else None."""
+    if not settings.google_sheets_id:
+        logger.debug("_make_sheets_logger: GOOGLE_SHEETS_ID not set")
+        return None
+    creds_file = (
+        settings.google_sheets_credentials_file or settings.google_calendar_credentials_file
+    )
+    if not creds_file:
+        logger.debug("_make_sheets_logger: no credentials file")
+        return None
+    try:
+        from organist_bot.integrations.sheets_logger import SheetsLogger
+
+        return SheetsLogger(
+            spreadsheet_id=settings.google_sheets_id,
+            credentials_file=creds_file,
+        )
+    except Exception as exc:
+        logger.warning("_make_sheets_logger: failed — %s", exc)
+        return None
 
 
 async def _execute_tool(name: str, input_data: dict, chat_id: int) -> str:
@@ -819,6 +865,59 @@ async def _execute_tool(name: str, input_data: dict, chat_id: int) -> str:
     if name == "clear_conversation":
         reset_conversation(chat_id)
         return json.dumps({"result": "Conversation cleared."})
+
+    # ── get_gig_stats ────────────────────────────────────────────────────────
+    if name == "get_gig_stats":
+        days = min(max(int(input_data.get("days", 7)), 1), 90)
+        sl = _make_sheets_logger()
+        if sl is None:
+            return json.dumps(
+                {"result": "Google Sheets is not configured (GOOGLE_SHEETS_ID missing)."}
+            )
+        try:
+            runs = sl.query_run_stats(days)
+        except Exception as exc:
+            return json.dumps({"result": f"Could not reach Google Sheets: {exc}"})
+
+        if not runs:
+            return json.dumps({"result": f"No pipeline runs logged in the last {days} days."})
+
+        total_runs = len(runs)
+        total_listed = sum(r.get("listed", 0) for r in runs)
+        total_valid = sum(r.get("valid", 0) for r in runs)
+        total_errors = sum(r.get("gig_errors", 0) for r in runs)
+        avg_listed = round(total_listed / total_runs, 1)
+        avg_valid = round(total_valid / total_runs, 1)
+
+        combined: dict[str, int] = {}
+        for r in runs:
+            for k, v in r.get("filter_breakdown", {}).items():
+                combined[k] = combined.get(k, 0) + v
+        sorted_filters = sorted(combined.items(), key=lambda x: x[1], reverse=True)
+
+        last = runs[0]
+        last_ts = last["timestamp"][:16].replace("T", " ")
+        last_line = (
+            f"{last_ts} — {last.get('listed', 0)} listed · "
+            f"{last.get('valid', 0)} valid · {last.get('elapsed_ms', 0)}ms"
+        )
+
+        lines = [
+            f"Pipeline stats — last {days} days",
+            "",
+            f"Runs:   {total_runs}",
+            f"Listed: {total_listed} total · {avg_listed} avg/run",
+            f"Valid:  {total_valid} total · {avg_valid} avg/run",
+            f"Errors: {total_errors}",
+        ]
+        if sorted_filters:
+            max_len = max(len(k) for k, _ in sorted_filters)
+            lines += ["", "Filter rejections:"]
+            for k, v in sorted_filters:
+                lines.append(f"  {k:<{max_len}}  {v}")
+        lines += ["", f"Last run: {last_line}"]
+
+        return json.dumps({"result": "\n".join(lines)})
 
     return json.dumps({"error": f"Tool not implemented: {name}"})
 
