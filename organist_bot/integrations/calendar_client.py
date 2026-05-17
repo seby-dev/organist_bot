@@ -403,14 +403,17 @@ class GoogleCalendarClient:
                 self._service.events().delete(
                     calendarId=self.calendar_id, eventId=ev["id"]
                 ).execute()
+            elapsed_ms = int((time.perf_counter() - t0) * 1000)
             if events:
-                elapsed_ms = int((time.perf_counter() - t0) * 1000)
                 logger.info(
                     "Calendar blocks removed",
                     extra={"period": period, "count": len(events), "elapsed_ms": elapsed_ms},
                 )
             else:
-                elapsed_ms = int((time.perf_counter() - t0) * 1000)
+                logger.debug(
+                    "unblock_period: no blocks found",
+                    extra={"period": period, "elapsed_ms": elapsed_ms},
+                )
             return bool(events)
         except Exception:
             elapsed_ms = int((time.perf_counter() - t0) * 1000)
