@@ -370,3 +370,54 @@ class GoogleCalendarClient:
                 exc_info=True,
             )
             return None
+
+    def unblock_period(self, period: str) -> bool:
+        """Delete all calendar blocking events for the given period token.
+
+        Returns True if any blocks were deleted. Returns False on parse failure,
+        no blocks found, or API error.
+        """
+        dates = _parse_period_dates(period)
+        if dates is None:
+            logger.warning("unblock_period: cannot parse period %r — skipping", period)
+            return False
+        start, end = dates
+        end_exclusive = end + datetime.timedelta(days=1)
+        time_min = datetime.datetime.combine(start, datetime.time.min).isoformat() + "Z"
+        time_max = datetime.datetime.combine(end_exclusive, datetime.time.min).isoformat() + "Z"
+        t0 = time.perf_counter()
+        try:
+            result = (
+                self._service.events()
+                .list(
+                    calendarId=self.calendar_id,
+                    timeMin=time_min,
+                    timeMax=time_max,
+                    privateExtendedProperty="organist_bot_block=1",
+                    singleEvents=True,
+                )
+                .execute()
+            )
+            events = result.get("items", [])
+            for ev in events:
+                self._service.events().delete(
+                    calendarId=self.calendar_id, eventId=ev["id"]
+                ).execute()
+            if events:
+                elapsed_ms = int((time.perf_counter() - t0) * 1000)
+                logger.info(
+                    "Calendar blocks removed",
+                    extra={"period": period, "count": len(events), "elapsed_ms": elapsed_ms},
+                )
+            else:
+                elapsed_ms = int((time.perf_counter() - t0) * 1000)
+            return bool(events)
+        except Exception:
+            elapsed_ms = int((time.perf_counter() - t0) * 1000)
+            logger.warning(
+                "unblock_period: failed for %r",
+                period,
+                extra={"elapsed_ms": elapsed_ms},
+                exc_info=True,
+            )
+            return False

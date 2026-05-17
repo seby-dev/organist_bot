@@ -256,6 +256,23 @@ class TestElapsedMsLogging:
         assert isinstance(record.elapsed_ms, int)
         assert record.elapsed_ms >= 0
 
+    def test_unblock_period_logs_elapsed_ms_on_success(self, client, mock_service, caplog):
+        """unblock_period() must include elapsed_ms in the 'Calendar blocks removed' INFO record."""
+        import logging
+
+        mock_service.events().list().execute.return_value = {"items": [{"id": "blk_123"}]}
+        mock_service.events().delete().execute.return_value = None
+        with caplog.at_level(logging.INFO, logger="organist_bot.integrations.calendar_client"):
+            client.unblock_period("2026-12-25")
+
+        record = next(
+            (r for r in caplog.records if r.message == "Calendar blocks removed"),
+            None,
+        )
+        assert record is not None, "Expected 'Calendar blocks removed' log record"
+        assert isinstance(record.elapsed_ms, int)
+        assert record.elapsed_ms >= 0
+
 
 # ── list_upcoming_events ──────────────────────────────────────────────────────
 
@@ -462,4 +479,64 @@ class TestBlockPeriod:
         result = client.block_period("not-a-period")
 
         assert result is None
+        mock_service.events().list.assert_not_called()
+
+
+# ── unblock_period ────────────────────────────────────────────────────────────
+
+
+class TestUnblockPeriod:
+    def test_deletes_existing_block(self, client, mock_service):
+        mock_service.events().list().execute.return_value = {"items": [{"id": "blk_123"}]}
+        mock_service.events().delete().execute.return_value = None
+
+        result = client.unblock_period("2026-12-25")
+
+        assert result is True
+        # Verify that delete was called with the correct arguments
+        delete_calls = [
+            call
+            for call in mock_service.events().delete.call_args_list
+            if call[1].get("eventId") == "blk_123"
+        ]
+        assert len(delete_calls) == 1
+
+    def test_deletes_multiple_blocks(self, client, mock_service):
+        mock_service.events().list().execute.return_value = {
+            "items": [{"id": "blk_1"}, {"id": "blk_2"}]
+        }
+        mock_service.events().delete().execute.return_value = None
+
+        result = client.unblock_period("2026-12")
+
+        assert result is True
+        # Count delete calls with eventId argument
+        delete_calls = [
+            call for call in mock_service.events().delete.call_args_list if "eventId" in call[1]
+        ]
+        assert len(delete_calls) == 2
+
+    def test_returns_false_when_no_blocks_exist(self, client, mock_service):
+        mock_service.events().list().execute.return_value = {"items": []}
+
+        result = client.unblock_period("2026-12-25")
+
+        assert result is False
+        # Delete should not be called with eventId
+        delete_calls = [
+            call for call in mock_service.events().delete.call_args_list if "eventId" in call[1]
+        ]
+        assert len(delete_calls) == 0
+
+    def test_returns_false_on_api_error(self, client, mock_service):
+        mock_service.events().list().execute.side_effect = Exception("API error")
+
+        result = client.unblock_period("2026-12-25")
+
+        assert result is False
+
+    def test_returns_false_for_invalid_period(self, client, mock_service):
+        result = client.unblock_period("not-a-period")
+
+        assert result is False
         mock_service.events().list.assert_not_called()
