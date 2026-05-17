@@ -9,6 +9,7 @@ import pytest
 from organist_bot.integrations.unified_agent import (
     _execute_tool,
     _last_gig_listing,
+    sync_calendar_blocks,
 )
 
 CHAT_ID = 42
@@ -785,3 +786,32 @@ class TestClearConversation:
         assert CHAT_ID not in _last_invoice
         assert CHAT_ID not in _last_gig_listing
         assert "cleared" in result.lower()
+
+
+# ── sync_calendar_blocks ──────────────────────────────────────────────────────
+
+
+class TestSyncCalendarBlocks:
+    def test_calls_block_period_for_each_unavailable_period(self):
+        mock_cal = MagicMock()
+        with patch("organist_bot.integrations.unified_agent.filter_store") as mock_fs:
+            mock_fs.unavailable_periods.return_value = ["2026-12", "2027-01-15"]
+            sync_calendar_blocks(mock_cal)
+        assert mock_cal.block_period.call_count == 2
+        mock_cal.block_period.assert_any_call("2026-12")
+        mock_cal.block_period.assert_any_call("2027-01-15")
+
+    def test_no_periods_makes_no_calls(self):
+        mock_cal = MagicMock()
+        with patch("organist_bot.integrations.unified_agent.filter_store") as mock_fs:
+            mock_fs.unavailable_periods.return_value = []
+            sync_calendar_blocks(mock_cal)
+        mock_cal.block_period.assert_not_called()
+
+    def test_api_failure_on_one_period_does_not_abort_others(self):
+        mock_cal = MagicMock()
+        mock_cal.block_period.side_effect = [Exception("API error"), "evt_ok"]
+        with patch("organist_bot.integrations.unified_agent.filter_store") as mock_fs:
+            mock_fs.unavailable_periods.return_value = ["2026-12", "2027-01"]
+            sync_calendar_blocks(mock_cal)  # must not raise
+        assert mock_cal.block_period.call_count == 2

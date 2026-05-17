@@ -367,6 +367,20 @@ def _make_calendar_client() -> GoogleCalendarClient | None:
     return None
 
 
+def sync_calendar_blocks(cal: GoogleCalendarClient) -> None:
+    """Create calendar blocks for all current unavailable periods not already blocked.
+
+    Idempotent — safe to call at every startup.
+    """
+    periods = filter_store.unavailable_periods()
+    for period in periods:
+        try:
+            cal.block_period(period)
+        except Exception:
+            logger.warning("sync_calendar_blocks: failed for %r", period, exc_info=True)
+    logger.info("sync_calendar_blocks: synced %d period(s)", len(periods))
+
+
 async def _execute_tool(name: str, input_data: dict, chat_id: int) -> str:
     # ── fetch_gig_details ───────────────────────────────────────────────────
     if name == "fetch_gig_details":
