@@ -100,5 +100,9 @@ def run(token: str) -> None:
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(tg_filters.TEXT & ~tg_filters.COMMAND, handle_message))
 
+    cal = unified_agent._make_calendar_client()
+    if cal:
+        unified_agent.sync_calendar_blocks(cal)
+
     logger.info("Telegram bot polling", extra={"chat_id": settings.telegram_chat_id})
     app.run_polling()

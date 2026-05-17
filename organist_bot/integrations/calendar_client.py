@@ -3,7 +3,7 @@ organist_bot/calendar_client.py
 ────────────────────────────────
 Google Calendar integration for OrganistBot.
 
-GoogleCalendarClient wraps the Google Calendar API with two operations:
+GoogleCalendarClient wraps the Google Calendar API with the following operations:
 
   has_event_on_date(date_str)
     Returns True if the calendar already has at least one event on the given
@@ -12,8 +12,18 @@ GoogleCalendarClient wraps the Google Calendar API with two operations:
     silently dropped.
 
   add_gig(gig)
-    Creates an all-day event for a confirmed gig and returns the event ID.
+    Creates a timed calendar event for a confirmed gig and returns the event ID.
     Used by add_booking.py after the user has manually secured a booking.
+
+  block_period(period)
+    Creates an all-day 'Unavailable' blocking event for the given period token
+    (YYYY-MM-DD, YYYY-MM-DD:YYYY-MM-DD, or YYYY-MM). Idempotent: returns the
+    existing event ID if a block already exists. Returns None on parse failure
+    or API error.
+
+  unblock_period(period)
+    Deletes the blocking event for the given period token if one exists.
+    Returns True on success, False if no block found or API error.
 
 Authentication uses a Google service account JSON key file.  To set up:
   1. Create a service account in Google Cloud Console.
@@ -22,8 +32,10 @@ Authentication uses a Google service account JSON key file.  To set up:
   4. Download the JSON key and set GOOGLE_CALENDAR_CREDENTIALS_FILE in .env.
 """
 
+import calendar as _cal_mod
 import datetime
 import logging
+import re as _re
 import time
 
 from google.oauth2 import service_account
@@ -35,6 +47,26 @@ from organist_bot.models import Gig
 logger = logging.getLogger(__name__)
 
 _SCOPES = ["https://www.googleapis.com/auth/calendar"]
+
+
+def _parse_period_dates(period: str) -> tuple[datetime.date, datetime.date] | None:
+    """Parse a period token into an inclusive (start, end) date pair.
+
+    Accepts: YYYY-MM-DD, YYYY-MM-DD:YYYY-MM-DD, YYYY-MM.
+    Returns None on any parse failure.
+    """
+    try:
+        if ":" in period:
+            start_str, end_str = period.split(":", 1)
+            return datetime.date.fromisoformat(start_str), datetime.date.fromisoformat(end_str)
+        if _re.fullmatch(r"\d{4}-\d{2}", period):
+            year, month = int(period[:4]), int(period[5:])
+            last_day = _cal_mod.monthrange(year, month)[1]
+            return datetime.date(year, month, 1), datetime.date(year, month, last_day)
+        d = datetime.date.fromisoformat(period)
+        return d, d
+    except Exception:
+        return None
 
 
 class GoogleCalendarClient:
@@ -283,3 +315,112 @@ class GoogleCalendarClient:
             },
         )
         return event_id
+
+    def block_period(self, period: str) -> str | None:
+        """Create an all-day 'Unavailable' blocking event for the given period token.
+
+        Idempotent: returns the existing event ID if a block already exists.
+        Returns None on parse failure or API error.
+        """
+        dates = _parse_period_dates(period)
+        if dates is None:
+            logger.warning("block_period: cannot parse period %r — skipping", period)
+            return None
+        start, end = dates
+        end_exclusive = end + datetime.timedelta(days=1)
+        time_min = datetime.datetime.combine(start, datetime.time.min).isoformat() + "Z"
+        time_max = datetime.datetime.combine(end_exclusive, datetime.time.min).isoformat() + "Z"
+        t0 = time.perf_counter()
+        try:
+            existing = (
+                self._service.events()
+                .list(
+                    calendarId=self.calendar_id,
+                    timeMin=time_min,
+                    timeMax=time_max,
+                    privateExtendedProperty="organist_bot_block=1",
+                    singleEvents=True,
+                )
+                .execute()
+            )
+            if existing.get("items"):
+                return existing["items"][0]["id"]
+            event = {
+                "summary": "Unavailable",
+                "start": {"date": start.isoformat()},
+                "end": {"date": end_exclusive.isoformat()},
+                "extendedProperties": {"private": {"organist_bot_block": "1"}},
+            }
+            created = (
+                self._service.events().insert(calendarId=self.calendar_id, body=event).execute()
+            )
+            event_id = created["id"]
+            elapsed_ms = int((time.perf_counter() - t0) * 1000)
+            logger.info(
+                "Calendar block created",
+                extra={"period": period, "event_id": event_id, "elapsed_ms": elapsed_ms},
+            )
+            return event_id
+        except Exception:
+            elapsed_ms = int((time.perf_counter() - t0) * 1000)
+            logger.warning(
+                "block_period: failed for %r",
+                period,
+                extra={"elapsed_ms": elapsed_ms},
+                exc_info=True,
+            )
+            return None
+
+    def unblock_period(self, period: str) -> bool:
+        """Delete all calendar blocking events for the given period token.
+
+        Returns True if any blocks were deleted. Returns False on parse failure,
+        no blocks found, or API error.
+        """
+        dates = _parse_period_dates(period)
+        if dates is None:
+            logger.warning("unblock_period: cannot parse period %r — skipping", period)
+            return False
+        start, end = dates
+        end_exclusive = end + datetime.timedelta(days=1)
+        time_min = datetime.datetime.combine(start, datetime.time.min).isoformat() + "Z"
+        time_max = datetime.datetime.combine(end_exclusive, datetime.time.min).isoformat() + "Z"
+        t0 = time.perf_counter()
+        try:
+            result = (
+                self._service.events()
+                .list(
+                    calendarId=self.calendar_id,
+                    timeMin=time_min,
+                    timeMax=time_max,
+                    privateExtendedProperty="organist_bot_block=1",
+                    singleEvents=True,
+                )
+                .execute()
+            )
+            events = result.get("items", [])
+            for ev in events:
+                self._service.events().delete(
+                    calendarId=self.calendar_id, eventId=ev["id"]
+                ).execute()
+            elapsed_ms = int((time.perf_counter() - t0) * 1000)
+            if events:
+                logger.info(
+                    "Calendar blocks removed",
+                    extra={"period": period, "count": len(events), "elapsed_ms": elapsed_ms},
+                )
+            else:
+                logger.debug(
+                    "unblock_period: no blocks found",
+                    extra={"period": period, "elapsed_ms": elapsed_ms},
+                )
+            return bool(events)
+        except Exception:
+            elapsed_ms = int((time.perf_counter() - t0) * 1000)
+            logger.warning(
+                "unblock_period: failed for %r",
+                period,
+                extra={"elapsed_ms": elapsed_ms},
+                exc_info=True,
+            )
+            return False

@@ -367,6 +367,20 @@ def _make_calendar_client() -> GoogleCalendarClient | None:
     return None
 
 
+def sync_calendar_blocks(cal: GoogleCalendarClient) -> None:
+    """Create calendar blocks for all current unavailable periods not already blocked.
+
+    Idempotent — safe to call at every startup.
+    """
+    periods = filter_store.unavailable_periods()
+    for period in periods:
+        try:
+            cal.block_period(period)
+        except Exception:
+            logger.warning("sync_calendar_blocks: failed for %r", period, exc_info=True)
+    logger.info("sync_calendar_blocks: synced %d period(s)", len(periods))
+
+
 async def _execute_tool(name: str, input_data: dict, chat_id: int) -> str:
     # ── fetch_gig_details ───────────────────────────────────────────────────
     if name == "fetch_gig_details":
@@ -743,6 +757,14 @@ async def _execute_tool(name: str, input_data: dict, chat_id: int) -> str:
                 if added
                 else f"'{period}' already in unavailable list."
             )
+            cal = _make_calendar_client()
+            if cal:
+                try:
+                    cal.block_period(period)
+                except Exception:
+                    logger.warning(
+                        "manage_unavailable: failed to block calendar for %r", period, exc_info=True
+                    )
             return json.dumps({"result": msg})
         if action == "remove":
             removed = filter_store.remove_period("unavailable_periods", period)
@@ -751,6 +773,16 @@ async def _execute_tool(name: str, input_data: dict, chat_id: int) -> str:
                 if removed
                 else f"'{period}' not found."
             )
+            cal = _make_calendar_client()
+            if cal:
+                try:
+                    cal.unblock_period(period)
+                except Exception:
+                    logger.warning(
+                        "manage_unavailable: failed to unblock calendar for %r",
+                        period,
+                        exc_info=True,
+                    )
             return json.dumps({"result": msg})
         return json.dumps({"error": f"Unknown action: {action}"})
 

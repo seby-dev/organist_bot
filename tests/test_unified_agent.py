@@ -9,6 +9,7 @@ import pytest
 from organist_bot.integrations.unified_agent import (
     _execute_tool,
     _last_gig_listing,
+    sync_calendar_blocks,
 )
 
 CHAT_ID = 42
@@ -678,6 +679,90 @@ class TestFilterTools:
         data = json.loads(result)
         assert "2026-08" in data.get("result", "")
 
+    @pytest.mark.asyncio
+    async def test_manage_unavailable_add_blocks_calendar(self):
+        mock_cal = MagicMock()
+        with (
+            patch("organist_bot.integrations.unified_agent.filter_store") as mock_fs,
+            patch(
+                "organist_bot.integrations.unified_agent._make_calendar_client",
+                return_value=mock_cal,
+            ),
+        ):
+            mock_fs.add_period.return_value = True
+            await _execute_tool(
+                "manage_unavailable", {"action": "add", "period": "2026-12"}, CHAT_ID
+            )
+        mock_cal.block_period.assert_called_once_with("2026-12")
+
+    @pytest.mark.asyncio
+    async def test_manage_unavailable_add_calendar_failure_does_not_raise(self):
+        mock_cal = MagicMock()
+        mock_cal.block_period.side_effect = Exception("API down")
+        with (
+            patch("organist_bot.integrations.unified_agent.filter_store") as mock_fs,
+            patch(
+                "organist_bot.integrations.unified_agent._make_calendar_client",
+                return_value=mock_cal,
+            ),
+        ):
+            mock_fs.add_period.return_value = True
+            result = await _execute_tool(
+                "manage_unavailable", {"action": "add", "period": "2026-12"}, CHAT_ID
+            )
+        data = json.loads(result)
+        assert "result" in data
+
+    @pytest.mark.asyncio
+    async def test_manage_unavailable_add_skips_calendar_when_none(self):
+        with (
+            patch("organist_bot.integrations.unified_agent.filter_store") as mock_fs,
+            patch(
+                "organist_bot.integrations.unified_agent._make_calendar_client",
+                return_value=None,
+            ),
+        ):
+            mock_fs.add_period.return_value = True
+            result = await _execute_tool(
+                "manage_unavailable", {"action": "add", "period": "2026-12"}, CHAT_ID
+            )
+        data = json.loads(result)
+        assert "result" in data
+
+    @pytest.mark.asyncio
+    async def test_manage_unavailable_remove_unblocks_calendar(self):
+        mock_cal = MagicMock()
+        with (
+            patch("organist_bot.integrations.unified_agent.filter_store") as mock_fs,
+            patch(
+                "organist_bot.integrations.unified_agent._make_calendar_client",
+                return_value=mock_cal,
+            ),
+        ):
+            mock_fs.remove_period.return_value = True
+            await _execute_tool(
+                "manage_unavailable", {"action": "remove", "period": "2026-12"}, CHAT_ID
+            )
+        mock_cal.unblock_period.assert_called_once_with("2026-12")
+
+    @pytest.mark.asyncio
+    async def test_manage_unavailable_remove_calendar_failure_does_not_raise(self):
+        mock_cal = MagicMock()
+        mock_cal.unblock_period.side_effect = Exception("API down")
+        with (
+            patch("organist_bot.integrations.unified_agent.filter_store") as mock_fs,
+            patch(
+                "organist_bot.integrations.unified_agent._make_calendar_client",
+                return_value=mock_cal,
+            ),
+        ):
+            mock_fs.remove_period.return_value = True
+            result = await _execute_tool(
+                "manage_unavailable", {"action": "remove", "period": "2026-12"}, CHAT_ID
+            )
+        data = json.loads(result)
+        assert "result" in data
+
 
 # ── clear_conversation ────────────────────────────────────────────────────────
 
@@ -701,3 +786,32 @@ class TestClearConversation:
         assert CHAT_ID not in _last_invoice
         assert CHAT_ID not in _last_gig_listing
         assert "cleared" in result.lower()
+
+
+# ── sync_calendar_blocks ──────────────────────────────────────────────────────
+
+
+class TestSyncCalendarBlocks:
+    def test_calls_block_period_for_each_unavailable_period(self):
+        mock_cal = MagicMock()
+        with patch("organist_bot.integrations.unified_agent.filter_store") as mock_fs:
+            mock_fs.unavailable_periods.return_value = ["2026-12", "2027-01-15"]
+            sync_calendar_blocks(mock_cal)
+        assert mock_cal.block_period.call_count == 2
+        mock_cal.block_period.assert_any_call("2026-12")
+        mock_cal.block_period.assert_any_call("2027-01-15")
+
+    def test_no_periods_makes_no_calls(self):
+        mock_cal = MagicMock()
+        with patch("organist_bot.integrations.unified_agent.filter_store") as mock_fs:
+            mock_fs.unavailable_periods.return_value = []
+            sync_calendar_blocks(mock_cal)
+        mock_cal.block_period.assert_not_called()
+
+    def test_api_failure_on_one_period_does_not_abort_others(self):
+        mock_cal = MagicMock()
+        mock_cal.block_period.side_effect = [Exception("API error"), "evt_ok"]
+        with patch("organist_bot.integrations.unified_agent.filter_store") as mock_fs:
+            mock_fs.unavailable_periods.return_value = ["2026-12", "2027-01"]
+            sync_calendar_blocks(mock_cal)  # must not raise
+        assert mock_cal.block_period.call_count == 2
