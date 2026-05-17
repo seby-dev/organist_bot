@@ -239,6 +239,23 @@ class TestElapsedMsLogging:
         assert record is not None
         assert isinstance(record.elapsed_ms, int)
 
+    def test_block_period_logs_elapsed_ms_on_success(self, client, mock_service, caplog):
+        """block_period() must include elapsed_ms in the 'Calendar block created' INFO record."""
+        import logging
+
+        mock_service.events().list().execute.return_value = {"items": []}
+        mock_service.events().insert().execute.return_value = {"id": "blk_123"}
+        with caplog.at_level(logging.INFO, logger="organist_bot.integrations.calendar_client"):
+            client.block_period("2026-12-25")
+
+        record = next(
+            (r for r in caplog.records if r.message == "Calendar block created"),
+            None,
+        )
+        assert record is not None, "Expected 'Calendar block created' log record"
+        assert isinstance(record.elapsed_ms, int)
+        assert record.elapsed_ms >= 0
+
 
 # ── list_upcoming_events ──────────────────────────────────────────────────────
 

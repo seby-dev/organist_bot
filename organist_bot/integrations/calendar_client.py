@@ -3,7 +3,7 @@ organist_bot/calendar_client.py
 ────────────────────────────────
 Google Calendar integration for OrganistBot.
 
-GoogleCalendarClient wraps the Google Calendar API with two operations:
+GoogleCalendarClient wraps the Google Calendar API with the following operations:
 
   has_event_on_date(date_str)
     Returns True if the calendar already has at least one event on the given
@@ -12,8 +12,18 @@ GoogleCalendarClient wraps the Google Calendar API with two operations:
     silently dropped.
 
   add_gig(gig)
-    Creates an all-day event for a confirmed gig and returns the event ID.
+    Creates a timed calendar event for a confirmed gig and returns the event ID.
     Used by add_booking.py after the user has manually secured a booking.
+
+  block_period(period)
+    Creates an all-day 'Unavailable' blocking event for the given period token
+    (YYYY-MM-DD, YYYY-MM-DD:YYYY-MM-DD, or YYYY-MM). Idempotent: returns the
+    existing event ID if a block already exists. Returns None on parse failure
+    or API error.
+
+  unblock_period(period)
+    Deletes the blocking event for the given period token if one exists.
+    Returns True on success, False if no block found or API error.
 
 Authentication uses a Google service account JSON key file.  To set up:
   1. Create a service account in Google Cloud Console.
@@ -320,6 +330,7 @@ class GoogleCalendarClient:
         end_exclusive = end + datetime.timedelta(days=1)
         time_min = datetime.datetime.combine(start, datetime.time.min).isoformat() + "Z"
         time_max = datetime.datetime.combine(end_exclusive, datetime.time.min).isoformat() + "Z"
+        t0 = time.perf_counter()
         try:
             existing = (
                 self._service.events()
@@ -344,8 +355,18 @@ class GoogleCalendarClient:
                 self._service.events().insert(calendarId=self.calendar_id, body=event).execute()
             )
             event_id = created["id"]
-            logger.info("Calendar block created", extra={"period": period, "event_id": event_id})
+            elapsed_ms = int((time.perf_counter() - t0) * 1000)
+            logger.info(
+                "Calendar block created",
+                extra={"period": period, "event_id": event_id, "elapsed_ms": elapsed_ms},
+            )
             return event_id
         except Exception:
-            logger.warning("block_period: failed for %r", period, exc_info=True)
+            elapsed_ms = int((time.perf_counter() - t0) * 1000)
+            logger.warning(
+                "block_period: failed for %r",
+                period,
+                extra={"elapsed_ms": elapsed_ms},
+                exc_info=True,
+            )
             return None
