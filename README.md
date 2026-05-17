@@ -11,7 +11,7 @@ A personal automation bot that scrapes organ gig listings from [organistsonline.
 5. **Notifies** you by email with a summary of matching gigs and sends an application email to each contact
 6. **Books** confirmed gigs via Telegram — `/addgig <url>` checks your calendar for clashes then creates a timed event; `/addgig` with no arguments walks you through a step-by-step manual entry
 7. **Manages invoices** — converse in plain English with an AI agent that generates PDF invoices, manages your client list, and sends invoice emails
-8. **Manages filters** at runtime via Telegram — add/remove blacklisted emails, unavailable periods, and available-only periods without editing any files or restarting the bot
+8. **Manages filters** at runtime via Telegram — add/remove blacklisted emails, unavailable periods, and available-only periods without editing any files or restarting the bot; marking yourself unavailable also blocks the corresponding dates on Google Calendar automatically
 
 ---
 
@@ -136,8 +136,8 @@ Changes take effect on the **next polling tick** — no restart needed.
 | `/blacklist add <email>` | Add an email to the blacklist |
 | `/blacklist rm <email>` | Remove an email from the blacklist |
 | `/unavailable` | List your unavailable periods |
-| `/unavailable add <period>` | Block a period (gigs on these dates are rejected) |
-| `/unavailable rm <period>` | Remove an unavailable period |
+| `/unavailable add <period>` | Block a period (gigs on these dates are rejected; an all-day "Unavailable" event is also created on Google Calendar) |
+| `/unavailable rm <period>` | Remove an unavailable period (deletes the corresponding Google Calendar block) |
 | `/available` | List your available-only periods |
 | `/available add <period>` | Restrict to a period (gigs outside these dates are rejected) |
 | `/available rm <period>` | Remove an available-only period |
@@ -191,6 +191,8 @@ Applied only to gigs that passed Phase 1 and have had their detail page fetched.
 ### Filter configuration
 
 The blacklist and availability periods are stored in `data/filter_config.json` and managed entirely via the Telegram bot commands above. The file is read fresh on every polling tick, so changes apply immediately without a restart.
+
+When an unavailable period is added, an all-day **"Unavailable"** event is created on Google Calendar for the same date range. When a period is removed, the event is deleted. On every bot startup, any periods in `filter_config.json` that don't already have a calendar block are synced automatically.
 
 ### Filter toggles
 
