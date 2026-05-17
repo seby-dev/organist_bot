@@ -743,6 +743,14 @@ async def _execute_tool(name: str, input_data: dict, chat_id: int) -> str:
                 if added
                 else f"'{period}' already in unavailable list."
             )
+            cal = _make_calendar_client()
+            if cal:
+                try:
+                    cal.block_period(period)
+                except Exception:
+                    logger.warning(
+                        "manage_unavailable: failed to block calendar for %r", period, exc_info=True
+                    )
             return json.dumps({"result": msg})
         if action == "remove":
             removed = filter_store.remove_period("unavailable_periods", period)

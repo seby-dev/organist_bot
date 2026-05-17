@@ -678,6 +678,56 @@ class TestFilterTools:
         data = json.loads(result)
         assert "2026-08" in data.get("result", "")
 
+    @pytest.mark.asyncio
+    async def test_manage_unavailable_add_blocks_calendar(self):
+        mock_cal = MagicMock()
+        with (
+            patch("organist_bot.integrations.unified_agent.filter_store") as mock_fs,
+            patch(
+                "organist_bot.integrations.unified_agent._make_calendar_client",
+                return_value=mock_cal,
+            ),
+        ):
+            mock_fs.add_period.return_value = True
+            await _execute_tool(
+                "manage_unavailable", {"action": "add", "period": "2026-12"}, CHAT_ID
+            )
+        mock_cal.block_period.assert_called_once_with("2026-12")
+
+    @pytest.mark.asyncio
+    async def test_manage_unavailable_add_calendar_failure_does_not_raise(self):
+        mock_cal = MagicMock()
+        mock_cal.block_period.side_effect = Exception("API down")
+        with (
+            patch("organist_bot.integrations.unified_agent.filter_store") as mock_fs,
+            patch(
+                "organist_bot.integrations.unified_agent._make_calendar_client",
+                return_value=mock_cal,
+            ),
+        ):
+            mock_fs.add_period.return_value = True
+            result = await _execute_tool(
+                "manage_unavailable", {"action": "add", "period": "2026-12"}, CHAT_ID
+            )
+        data = json.loads(result)
+        assert "result" in data
+
+    @pytest.mark.asyncio
+    async def test_manage_unavailable_add_skips_calendar_when_none(self):
+        with (
+            patch("organist_bot.integrations.unified_agent.filter_store") as mock_fs,
+            patch(
+                "organist_bot.integrations.unified_agent._make_calendar_client",
+                return_value=None,
+            ),
+        ):
+            mock_fs.add_period.return_value = True
+            result = await _execute_tool(
+                "manage_unavailable", {"action": "add", "period": "2026-12"}, CHAT_ID
+            )
+        data = json.loads(result)
+        assert "result" in data
+
 
 # ── clear_conversation ────────────────────────────────────────────────────────
 
