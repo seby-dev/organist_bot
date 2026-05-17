@@ -372,6 +372,292 @@ class TestSheetRotation:
         second_call_kwargs = mock_service.spreadsheets().values().append.call_args_list[-1][1]
         assert second_call_kwargs["range"].startswith("Logs 2!")
 
+
+# ── query_run_stats ───────────────────────────────────────────────────────────
+
+
+def _make_sheets_logger_for_query(mock_service) -> SheetsLogger:
+    """Construct a SheetsLogger pointing at mock_service for query tests."""
+    with (
+        patch(
+            "organist_bot.integrations.sheets_logger"
+            ".service_account.Credentials.from_service_account_file"
+        ),
+        patch(
+            "organist_bot.integrations.sheets_logger.build",
+            return_value=mock_service,
+        ),
+    ):
+        return SheetsLogger(spreadsheet_id="sid", credentials_file="fake.json")
+
+
+class TestQueryRunStats:
+    def _mock_service_with_rows(self, rows: list[list[str]]) -> MagicMock:
+        svc = MagicMock()
+        svc.spreadsheets().get().execute.return_value = {
+            "sheets": [{"properties": {"title": "Logs"}}]
+        }
+        svc.spreadsheets().values().get().execute.return_value = {"values": rows}
+        return svc
+
+    def test_returns_empty_when_no_rows(self):
+        svc = self._mock_service_with_rows([])
+        sl = _make_sheets_logger_for_query(svc)
+        assert sl.query_run_stats(7) == []
+
+    def test_returns_empty_when_only_header(self):
+        header = [
+            [
+                "timestamp",
+                "run_id",
+                "level",
+                "logger",
+                "message",
+                "module",
+                "function",
+                "line",
+                "details",
+            ]
+        ]
+        svc = self._mock_service_with_rows(header)
+        sl = _make_sheets_logger_for_query(svc)
+        assert sl.query_run_stats(7) == []
+
+    def test_aggregates_run_from_two_messages(self):
+        import json as _json
+
+        now = datetime.datetime.now(datetime.UTC)
+        ts = now.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        header = [
+            [
+                "timestamp",
+                "run_id",
+                "level",
+                "logger",
+                "message",
+                "module",
+                "function",
+                "line",
+                "details",
+            ]
+        ]
+        scrape_row = [
+            ts,
+            "abc12345",
+            "INFO",
+            "m",
+            "Scraping complete",
+            "m",
+            "f",
+            "1",
+            _json.dumps(
+                {
+                    "listed": 20,
+                    "pre_filter_passed": 3,
+                    "scraped": 3,
+                    "gig_errors": 0,
+                    "elapsed_ms": 500,
+                }
+            ),
+        ]
+        summary_row = [
+            ts,
+            "abc12345",
+            "INFO",
+            "m",
+            "Run summary",
+            "m",
+            "f",
+            "2",
+            _json.dumps(
+                {"scraped": 3, "valid": 1, "notified": 1, "gig_errors": 0, "elapsed_ms": 800}
+            ),
+        ]
+        svc = self._mock_service_with_rows([header[0], scrape_row, summary_row])
+        sl = _make_sheets_logger_for_query(svc)
+        runs = sl.query_run_stats(7)
+        assert len(runs) == 1
+        r = runs[0]
+        assert r["run_id"] == "abc12345"
+        assert r["listed"] == 20
+        assert r["valid"] == 1
+        assert r["gig_errors"] == 0
+
+    def test_includes_filter_breakdown(self):
+        import json as _json
+
+        now = datetime.datetime.now(datetime.UTC)
+        ts = now.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        header = [
+            [
+                "timestamp",
+                "run_id",
+                "level",
+                "logger",
+                "message",
+                "module",
+                "function",
+                "line",
+                "details",
+            ]
+        ]
+        summary_row = [
+            ts,
+            "run1",
+            "INFO",
+            "m",
+            "Run summary",
+            "m",
+            "f",
+            "1",
+            _json.dumps(
+                {"scraped": 5, "valid": 0, "notified": 0, "gig_errors": 0, "elapsed_ms": 300}
+            ),
+        ]
+        filter_row = [
+            ts,
+            "run1",
+            "INFO",
+            "m",
+            "Filter chain applied",
+            "m",
+            "f",
+            "2",
+            _json.dumps({"filter_breakdown": {"SeenFilter": 10, "FeeFilter": 3}}),
+        ]
+        svc = self._mock_service_with_rows([header[0], summary_row, filter_row])
+        sl = _make_sheets_logger_for_query(svc)
+        runs = sl.query_run_stats(7)
+        assert runs[0]["filter_breakdown"] == {"SeenFilter": 10, "FeeFilter": 3}
+
+    def test_excludes_incomplete_runs(self):
+        import json as _json
+
+        now = datetime.datetime.now(datetime.UTC)
+        ts = now.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        header = [
+            [
+                "timestamp",
+                "run_id",
+                "level",
+                "logger",
+                "message",
+                "module",
+                "function",
+                "line",
+                "details",
+            ]
+        ]
+        scrape_row = [
+            ts,
+            "incomplete",
+            "INFO",
+            "m",
+            "Scraping complete",
+            "m",
+            "f",
+            "1",
+            _json.dumps(
+                {
+                    "listed": 5,
+                    "pre_filter_passed": 1,
+                    "scraped": 1,
+                    "gig_errors": 0,
+                    "elapsed_ms": 200,
+                }
+            ),
+        ]
+        svc = self._mock_service_with_rows([header[0], scrape_row])
+        sl = _make_sheets_logger_for_query(svc)
+        assert sl.query_run_stats(7) == []
+
+    def test_filters_old_rows_by_days(self):
+        import json as _json
+
+        old_ts = (datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=10)).strftime(
+            "%Y-%m-%dT%H:%M:%S.000Z"
+        )
+        header = [
+            [
+                "timestamp",
+                "run_id",
+                "level",
+                "logger",
+                "message",
+                "module",
+                "function",
+                "line",
+                "details",
+            ]
+        ]
+        summary_row = [
+            old_ts,
+            "old_run",
+            "INFO",
+            "m",
+            "Run summary",
+            "m",
+            "f",
+            "1",
+            _json.dumps(
+                {"scraped": 1, "valid": 0, "notified": 0, "gig_errors": 0, "elapsed_ms": 200}
+            ),
+        ]
+        svc = self._mock_service_with_rows([header[0], summary_row])
+        sl = _make_sheets_logger_for_query(svc)
+        assert sl.query_run_stats(7) == []
+
+    def test_results_sorted_newest_first(self):
+        import json as _json
+
+        now = datetime.datetime.now(datetime.UTC)
+        ts1 = (now - datetime.timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        ts2 = now.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        header = [
+            [
+                "timestamp",
+                "run_id",
+                "level",
+                "logger",
+                "message",
+                "module",
+                "function",
+                "line",
+                "details",
+            ]
+        ]
+        row1 = [
+            ts1,
+            "run_old",
+            "INFO",
+            "m",
+            "Run summary",
+            "m",
+            "f",
+            "1",
+            _json.dumps(
+                {"scraped": 1, "valid": 0, "notified": 0, "gig_errors": 0, "elapsed_ms": 100}
+            ),
+        ]
+        row2 = [
+            ts2,
+            "run_new",
+            "INFO",
+            "m",
+            "Run summary",
+            "m",
+            "f",
+            "2",
+            _json.dumps(
+                {"scraped": 2, "valid": 1, "notified": 1, "gig_errors": 0, "elapsed_ms": 200}
+            ),
+        ]
+        svc = self._mock_service_with_rows([header[0], row1, row2])
+        sl = _make_sheets_logger_for_query(svc)
+        runs = sl.query_run_stats(7)
+        assert runs[0]["run_id"] == "run_new"
+        assert runs[1]["run_id"] == "run_old"
+
     def test_sequential_rotation_creates_logs_3(self, sheets_logger, mock_service):
         """When 'Logs 2' already exists, next rotation creates 'Logs 3'."""
         rows_at_threshold = _CELL_THRESHOLD // _NUM_COLS
