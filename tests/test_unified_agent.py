@@ -728,6 +728,40 @@ class TestFilterTools:
         data = json.loads(result)
         assert "result" in data
 
+    @pytest.mark.asyncio
+    async def test_manage_unavailable_remove_unblocks_calendar(self):
+        mock_cal = MagicMock()
+        with (
+            patch("organist_bot.integrations.unified_agent.filter_store") as mock_fs,
+            patch(
+                "organist_bot.integrations.unified_agent._make_calendar_client",
+                return_value=mock_cal,
+            ),
+        ):
+            mock_fs.remove_period.return_value = True
+            await _execute_tool(
+                "manage_unavailable", {"action": "remove", "period": "2026-12"}, CHAT_ID
+            )
+        mock_cal.unblock_period.assert_called_once_with("2026-12")
+
+    @pytest.mark.asyncio
+    async def test_manage_unavailable_remove_calendar_failure_does_not_raise(self):
+        mock_cal = MagicMock()
+        mock_cal.unblock_period.side_effect = Exception("API down")
+        with (
+            patch("organist_bot.integrations.unified_agent.filter_store") as mock_fs,
+            patch(
+                "organist_bot.integrations.unified_agent._make_calendar_client",
+                return_value=mock_cal,
+            ),
+        ):
+            mock_fs.remove_period.return_value = True
+            result = await _execute_tool(
+                "manage_unavailable", {"action": "remove", "period": "2026-12"}, CHAT_ID
+            )
+        data = json.loads(result)
+        assert "result" in data
+
 
 # ── clear_conversation ────────────────────────────────────────────────────────
 
