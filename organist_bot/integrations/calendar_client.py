@@ -305,3 +305,47 @@ class GoogleCalendarClient:
             },
         )
         return event_id
+
+    def block_period(self, period: str) -> str | None:
+        """Create an all-day 'Unavailable' blocking event for the given period token.
+
+        Idempotent: returns the existing event ID if a block already exists.
+        Returns None on parse failure or API error.
+        """
+        dates = _parse_period_dates(period)
+        if dates is None:
+            logger.warning("block_period: cannot parse period %r — skipping", period)
+            return None
+        start, end = dates
+        end_exclusive = end + datetime.timedelta(days=1)
+        time_min = datetime.datetime.combine(start, datetime.time.min).isoformat() + "Z"
+        time_max = datetime.datetime.combine(end_exclusive, datetime.time.min).isoformat() + "Z"
+        try:
+            existing = (
+                self._service.events()
+                .list(
+                    calendarId=self.calendar_id,
+                    timeMin=time_min,
+                    timeMax=time_max,
+                    privateExtendedProperty="organist_bot_block=1",
+                    singleEvents=True,
+                )
+                .execute()
+            )
+            if existing.get("items"):
+                return existing["items"][0]["id"]
+            event = {
+                "summary": "Unavailable",
+                "start": {"date": start.isoformat()},
+                "end": {"date": end_exclusive.isoformat()},
+                "extendedProperties": {"private": {"organist_bot_block": "1"}},
+            }
+            created = (
+                self._service.events().insert(calendarId=self.calendar_id, body=event).execute()
+            )
+            event_id = created["id"]
+            logger.info("Calendar block created", extra={"period": period, "event_id": event_id})
+            return event_id
+        except Exception:
+            logger.warning("block_period: failed for %r", period, exc_info=True)
+            return None

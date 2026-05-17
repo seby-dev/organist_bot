@@ -385,3 +385,64 @@ class TestParsePeriodDates:
 
     def test_empty_returns_none(self):
         assert _parse_period_dates("") is None
+
+
+# ── block_period ──────────────────────────────────────────────────────────────
+
+
+class TestBlockPeriod:
+    def test_creates_all_day_event_for_single_date(self, client, mock_service):
+        mock_service.events().list().execute.return_value = {"items": []}
+        mock_service.events().insert().execute.return_value = {"id": "blk_123"}
+
+        result = client.block_period("2026-12-25")
+
+        assert result == "blk_123"
+        body = mock_service.events().insert.call_args[1]["body"]
+        assert body["summary"] == "Unavailable"
+        assert body["start"] == {"date": "2026-12-25"}
+        assert body["end"] == {"date": "2026-12-26"}  # exclusive end
+        assert body["extendedProperties"]["private"]["organist_bot_block"] == "1"
+
+    def test_creates_event_for_range(self, client, mock_service):
+        mock_service.events().list().execute.return_value = {"items": []}
+        mock_service.events().insert().execute.return_value = {"id": "blk_456"}
+
+        result = client.block_period("2026-12-01:2026-12-31")
+
+        assert result == "blk_456"
+        body = mock_service.events().insert.call_args[1]["body"]
+        assert body["start"] == {"date": "2026-12-01"}
+        assert body["end"] == {"date": "2027-01-01"}  # exclusive end
+
+    def test_creates_event_for_month(self, client, mock_service):
+        mock_service.events().list().execute.return_value = {"items": []}
+        mock_service.events().insert().execute.return_value = {"id": "blk_789"}
+
+        result = client.block_period("2026-12")
+
+        assert result == "blk_789"
+        body = mock_service.events().insert.call_args[1]["body"]
+        assert body["start"] == {"date": "2026-12-01"}
+        assert body["end"] == {"date": "2027-01-01"}  # exclusive end
+
+    def test_idempotent_returns_existing_id_without_insert(self, client, mock_service):
+        mock_service.events().list().execute.return_value = {"items": [{"id": "existing_blk"}]}
+
+        result = client.block_period("2026-12-25")
+
+        assert result == "existing_blk"
+        mock_service.events().insert.assert_not_called()
+
+    def test_returns_none_on_api_error(self, client, mock_service):
+        mock_service.events().list().execute.side_effect = Exception("API error")
+
+        result = client.block_period("2026-12-25")
+
+        assert result is None
+
+    def test_returns_none_for_invalid_period(self, client, mock_service):
+        result = client.block_period("not-a-period")
+
+        assert result is None
+        mock_service.events().list.assert_not_called()
