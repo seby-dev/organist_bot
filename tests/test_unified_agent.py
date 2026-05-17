@@ -912,3 +912,203 @@ class TestGetGigStats:
         ):
             await _execute_tool("get_gig_stats", {"days": 999}, CHAT_ID)
         mock_sl.query_run_stats.assert_called_once_with(90)
+
+
+# ── _resolve_period ───────────────────────────────────────────────────────────
+
+
+class TestResolvePeriod:
+    def test_today(self):
+        import datetime
+
+        from organist_bot.integrations.unified_agent import _resolve_period
+
+        today = datetime.date.today().isoformat()
+        assert _resolve_period("today") == today
+        assert _resolve_period("Today") == today
+
+    def test_tomorrow(self):
+        import datetime
+
+        from organist_bot.integrations.unified_agent import _resolve_period
+
+        tomorrow = (datetime.date.today() + datetime.timedelta(days=1)).isoformat()
+        assert _resolve_period("tomorrow") == tomorrow
+
+    def test_this_month(self):
+        import datetime
+
+        from organist_bot.integrations.unified_agent import _resolve_period
+
+        expected = datetime.date.today().strftime("%Y-%m")
+        assert _resolve_period("this month") == expected
+
+    def test_next_month(self):
+        import datetime
+
+        from organist_bot.integrations.unified_agent import _resolve_period
+
+        today = datetime.date.today()
+        if today.month == 12:
+            expected = f"{today.year + 1}-01"
+        else:
+            expected = f"{today.year}-{today.month + 1:02d}"
+        assert _resolve_period("next month") == expected
+
+    def test_next_week_is_monday_to_sunday(self):
+        import datetime
+
+        from organist_bot.integrations.unified_agent import _resolve_period
+
+        result = _resolve_period("next week")
+        assert ":" in result
+        start_str, end_str = result.split(":")
+        start = datetime.date.fromisoformat(start_str)
+        end = datetime.date.fromisoformat(end_str)
+        assert start.weekday() == 0  # Monday
+        assert end.weekday() == 6  # Sunday
+        assert (end - start).days == 6
+
+    def test_this_weekend_is_sat_and_sun(self):
+        import datetime
+
+        from organist_bot.integrations.unified_agent import _resolve_period
+
+        result = _resolve_period("this weekend")
+        today = datetime.date.today()
+        if today.weekday() == 6:
+            assert result == today.isoformat()
+        elif today.weekday() == 5:
+            assert (
+                result == f"{today.isoformat()}:{(today + datetime.timedelta(days=1)).isoformat()}"
+            )
+        else:
+            assert ":" in result
+            start, end = result.split(":")
+            start_d = datetime.date.fromisoformat(start)
+            end_d = datetime.date.fromisoformat(end)
+            assert start_d.weekday() == 5  # Saturday
+            assert end_d.weekday() == 6  # Sunday
+
+    def test_this_weekday(self):
+        import datetime
+
+        from organist_bot.integrations.unified_agent import _resolve_period
+
+        result = _resolve_period("this Sunday")
+        d = datetime.date.fromisoformat(result)
+        assert d.weekday() == 6  # Sunday
+        assert d > datetime.date.today()  # always in the future
+
+    def test_next_weekday(self):
+        import datetime
+
+        from organist_bot.integrations.unified_agent import _resolve_period
+
+        result = _resolve_period("next Monday")
+        d = datetime.date.fromisoformat(result)
+        assert d.weekday() == 0  # Monday
+
+    def test_this_weekend_on_saturday(self):
+        """When today is Saturday, 'this weekend' returns today and tomorrow."""
+        import datetime
+        from unittest.mock import patch as _patch
+
+        from organist_bot.integrations.unified_agent import _resolve_period
+
+        saturday = datetime.date(2026, 5, 16)  # a Saturday
+        with _patch("datetime.date") as mock_date:
+            mock_date.today.return_value = saturday
+            mock_date.side_effect = lambda *a, **kw: datetime.date(*a, **kw)
+            result = _resolve_period("this weekend")
+        assert result == "2026-05-16:2026-05-17"
+
+    def test_this_weekend_on_sunday(self):
+        """When today is Sunday, 'this weekend' returns today only."""
+        import datetime
+        from unittest.mock import patch as _patch
+
+        from organist_bot.integrations.unified_agent import _resolve_period
+
+        sunday = datetime.date(2026, 5, 17)  # a Sunday
+        with _patch("datetime.date") as mock_date:
+            mock_date.today.return_value = sunday
+            mock_date.side_effect = lambda *a, **kw: datetime.date(*a, **kw)
+            result = _resolve_period("this weekend")
+        assert result == "2026-05-17"
+
+    def test_unknown_expression_passthrough(self):
+        from organist_bot.integrations.unified_agent import _resolve_period
+
+        assert _resolve_period("2026-12-25") == "2026-12-25"
+        assert _resolve_period("gibberish") == "gibberish"
+        assert _resolve_period("2026-12") == "2026-12"
+
+
+# ── manage_config ─────────────────────────────────────────────────────────────
+
+
+class TestManageConfig:
+    @pytest.mark.asyncio
+    async def test_get_shows_all_three_keys(self):
+        mock_store = MagicMock()
+        mock_store.all.return_value = {"min_fee": 150}
+        with patch("organist_bot.integrations.unified_agent.runtime_config", mock_store):
+            result = await _execute_tool("manage_config", {"action": "get"}, CHAT_ID)
+        data = json.loads(result)
+        assert "result" in data
+        assert "min_fee" in data["result"]
+        assert "max_travel_minutes" in data["result"]
+        assert "poll_minutes" in data["result"]
+
+    @pytest.mark.asyncio
+    async def test_set_valid_value(self):
+        mock_store = MagicMock()
+        with patch("organist_bot.integrations.unified_agent.runtime_config", mock_store):
+            result = await _execute_tool(
+                "manage_config", {"action": "set", "key": "min_fee", "value": 150}, CHAT_ID
+            )
+        mock_store.set.assert_called_once_with("min_fee", 150)
+        data = json.loads(result)
+        assert "result" in data
+        assert "150" in data["result"]
+
+    @pytest.mark.asyncio
+    async def test_set_invalid_range_returns_error(self):
+        mock_store = MagicMock()
+        with patch("organist_bot.integrations.unified_agent.runtime_config", mock_store):
+            result = await _execute_tool(
+                "manage_config",
+                {"action": "set", "key": "poll_minutes", "value": 999},
+                CHAT_ID,
+            )
+        mock_store.set.assert_not_called()
+        data = json.loads(result)
+        assert "error" in data or (
+            "result" in data
+            and ("invalid" in data["result"].lower() or "range" in data["result"].lower())
+        )
+
+    @pytest.mark.asyncio
+    async def test_reset_calls_store_reset(self):
+        mock_store = MagicMock()
+        mock_store.reset.return_value = True
+        with patch("organist_bot.integrations.unified_agent.runtime_config", mock_store):
+            result = await _execute_tool(
+                "manage_config", {"action": "reset", "key": "min_fee"}, CHAT_ID
+            )
+        mock_store.reset.assert_called_once_with("min_fee")
+        data = json.loads(result)
+        assert "result" in data
+
+    @pytest.mark.asyncio
+    async def test_reset_not_set_returns_message(self):
+        mock_store = MagicMock()
+        mock_store.reset.return_value = False
+        with patch("organist_bot.integrations.unified_agent.runtime_config", mock_store):
+            result = await _execute_tool(
+                "manage_config", {"action": "reset", "key": "min_fee"}, CHAT_ID
+            )
+        data = json.loads(result)
+        assert "result" in data
+        assert "default" in data["result"].lower()
