@@ -71,6 +71,15 @@ class TestHasEventOnDate:
         mock_service.events().list().execute.side_effect = ValueError("bad date")
         assert client.has_event_on_date("not-a-date") is False
 
+    def test_api_failure_triggers_alert(self, client, mock_service):
+        """CalendarFilter query failure calls alert.send_alert."""
+        mock_service.events().list().execute.side_effect = Exception("API down")
+        with patch("organist_bot.integrations.calendar_client.alert") as mock_alert:
+            result = client.has_event_on_date("20260301")
+        assert result is False
+        mock_alert.send_alert.assert_called_once()
+        assert "Calendar" in mock_alert.send_alert.call_args.args[0]
+
     def test_multiple_events_still_returns_true(self, client, mock_service):
         mock_service.events().list().execute.return_value = {
             "items": [{"id": "e1"}, {"id": "e2"}, {"id": "e3"}]

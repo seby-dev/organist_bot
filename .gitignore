@@ -46,3 +46,6 @@ htmlcov/
 *.swo
 .DS_Store
 .worktrees/
+
+# ── supervisord / launchd (generated with absolute paths — not portable) ────────
+*.plist

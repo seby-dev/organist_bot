@@ -41,6 +41,8 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
+from organist_bot import alert
+
 _SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 _SHEET_NAME = "Logs"
 
@@ -303,13 +305,105 @@ class SheetsLogger(logging.Handler):
             if last_row is not None and last_row * _NUM_COLS >= _CELL_THRESHOLD:
                 self._active_sheet = self._create_next_sheet()
 
-        except Exception:
+        except Exception as exc:
             # Restore rows to the buffer so they are retried on the next drain().
             with self._lock:
                 self._buffer = rows + self._buffer
+            alert.send_alert(f"⚠️ Google Sheets API error (batch append failed): {exc}")
             raise
 
         return len(rows)
+
+    def query_run_stats(self, days: int = 7) -> list[dict]:
+        """Fetch per-run pipeline stats from the active log tab.
+
+        Reads all rows from the active Sheets tab, filters to the last ``days``
+        days, groups by run_id, and returns one dict per complete run (i.e. runs
+        that have a "Run summary" log row).
+
+        Returns:
+            List of run dicts sorted by timestamp descending.  Each dict has:
+            run_id, timestamp, listed, pre_filter_passed, valid, gig_errors,
+            elapsed_ms, filter_breakdown (dict, may be empty).
+
+        Raises:
+            Any exception from the Sheets API propagates — the caller is
+            responsible for catching and surfacing it to the user.
+        """
+        cutoff = datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=days)
+
+        sheet = self._resolve_active_sheet()
+        result = (
+            self._service.spreadsheets()
+            .values()
+            .get(spreadsheetId=self._spreadsheet_id, range=f"{sheet}!A:I")
+            .execute()
+        )
+
+        all_rows = result.get("values", [])
+        if not all_rows:
+            return []
+
+        headers = all_rows[0]
+        data_rows = all_rows[1:]
+
+        runs: dict[str, dict] = {}
+
+        for row in data_rows:
+            padded = row + [""] * (len(headers) - len(row))
+            record = dict(zip(headers, padded, strict=False))
+
+            ts_str = record.get("timestamp", "")
+            if not ts_str:
+                continue
+            try:
+                ts = datetime.datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+            except ValueError:
+                continue
+
+            if ts < cutoff.replace(tzinfo=datetime.UTC):
+                continue
+
+            run_id = record.get("run_id", "")
+            if not run_id:
+                continue
+
+            message = record.get("message", "")
+            details_str = record.get("details", "")
+            try:
+                details: dict = json.loads(details_str) if details_str else {}
+            except json.JSONDecodeError:
+                details = {}
+
+            if run_id not in runs:
+                runs[run_id] = {
+                    "run_id": run_id,
+                    "timestamp": ts_str,
+                    "listed": 0,
+                    "pre_filter_passed": 0,
+                    "valid": 0,
+                    "gig_errors": 0,
+                    "elapsed_ms": 0,
+                    "filter_breakdown": {},
+                }
+
+            if message == "Scraping complete":
+                runs[run_id]["listed"] = details.get("listed", 0)
+                runs[run_id]["pre_filter_passed"] = details.get("pre_filter_passed", 0)
+            elif message == "Run summary":
+                runs[run_id]["valid"] = details.get("valid", 0)
+                runs[run_id]["gig_errors"] = details.get("gig_errors", 0)
+                runs[run_id]["elapsed_ms"] = details.get("elapsed_ms", 0)
+                runs[run_id]["_complete"] = True
+            elif message == "Filter chain applied":
+                fb = details.get("filter_breakdown", {})
+                for k, v in fb.items():
+                    runs[run_id]["filter_breakdown"][k] = (
+                        runs[run_id]["filter_breakdown"].get(k, 0) + v
+                    )
+
+        complete = [r for r in runs.values() if r.pop("_complete", False)]
+        return sorted(complete, key=lambda r: r["timestamp"], reverse=True)
 
     # ── Sheet management ──────────────────────────────────────────────────────
 

@@ -1201,7 +1201,7 @@ save_seen_gigs(seen=seen_gigs_set | {gig.link <span class="kw">for</span> gig <s
   <div class="module-card" id="mod-calendar">
     <div class="module-path">organist_bot/integrations/calendar_client.py</div>
     <h3>Google Calendar Client</h3>
-    <p>A thin wrapper around the Google Calendar REST API v3. Provides two operations: checking if a date is busy, and inserting a new timed event. Both use <strong>fail-open</strong> error handling.</p>
+    <p>A thin wrapper around the Google Calendar REST API v3. Provides four operations: checking if a date is busy, inserting a timed gig event, and creating/deleting all-day availability-blocking events. All use <strong>fail-open</strong> error handling — a calendar API failure never crashes the pipeline or the Telegram agent.</p>
     <pre><code><span class="kw">def</span> <span class="fn">has_event_on_date</span>(self, date_str: str) -> bool:
     <span class="kw">try</span>:
         <span class="cm"># Query events between midnight and 23:59:59 on the given date</span>
@@ -1213,8 +1213,24 @@ save_seen_gigs(seen=seen_gigs_set | {gig.link <span class="kw">for</span> gig <s
         <span class="kw">return</span> <span class="fn">len</span>(result.get(<span class="st">"items"</span>, [])) > <span class="nu">0</span>
     <span class="kw">except</span> Exception <span class="kw">as</span> exc:
         logger.warning(<span class="st">"Calendar check failed — failing open"</span>, ...)
-        <span class="kw">return</span> False   <span class="cm"># don't block the gig on API failure</span></code></pre>
-    <p>The choice to <code>return False</code> on error is deliberate. If the Calendar API is down, the alternative — raising the exception — would cause the entire pipeline run to fail, silently dropping potentially suitable gigs. Failing open (allowing the gig through) is the safer choice for a notification system where false negatives (missed gigs) are worse than false positives (a duplicate notification).</p>
+        <span class="kw">return</span> False   <span class="cm"># don't block the gig on API failure</span>
+
+<span class="kw">def</span> <span class="fn">block_period</span>(self, period: str) -> str | None:
+    <span class="cm"># Idempotent: checks for existing block before inserting</span>
+    existing = self._service.events().list(
+        calendarId=self.calendar_id,
+        timeMin=time_min, timeMax=time_max,
+        privateExtendedProperty=<span class="st">"organist_bot_block=1"</span>,
+        singleEvents=<span class="kw">True</span>,
+    ).execute()
+    <span class="kw">if</span> existing.get(<span class="st">"items"</span>):
+        <span class="kw">return</span> existing[<span class="st">"items"</span>][<span class="nu">0</span>][<span class="st">"id"</span>]   <span class="cm"># already blocked</span>
+    event = {<span class="st">"summary"</span>: <span class="st">"Unavailable"</span>, <span class="st">"start"</span>: {<span class="st">"date"</span>: start_iso},
+             <span class="st">"end"</span>: {<span class="st">"date"</span>: end_exclusive_iso},
+             <span class="st">"extendedProperties"</span>: {<span class="st">"private"</span>: {<span class="st">"organist_bot_block"</span>: <span class="st">"1"</span>}}}
+    <span class="kw">return</span> self._service.events().insert(...).execute()[<span class="st">"id"</span>]</code></pre>
+    <p>The choice to <code>return False</code> on error in <code>has_event_on_date</code> is deliberate — a down Calendar API should not silently drop gigs. The same principle applies to <code>block_period</code> and <code>unblock_period</code>: they return <code>None</code>/<code>False</code> on failure so the Telegram agent can still confirm the filter-store write succeeded.</p>
+    <p>Blocking events are tagged with <code>extendedProperties.private["organist_bot_block"] = "1"</code>. This private metadata is invisible in the Calendar UI but queryable via the API's <code>privateExtendedProperty</code> filter, so <code>unblock_period</code> can delete only the machine-managed events — never a real gig booking. A shared <code>_parse_period_dates(period)</code> helper converts all three period-token formats (<code>YYYY-MM-DD</code>, <code>YYYY-MM-DD:YYYY-MM-DD</code>, <code>YYYY-MM</code>) into inclusive <code>(start, end)</code> date pairs, used by both methods.</p>
   </div>
 
   <!-- integrations/telegram_bot.py -->
@@ -1243,7 +1259,7 @@ app.add_handler(MessageHandler(filters.TEXT, handle_invoice))   <span class="cm"
     response = <span class="kw">await</span> gig_agent.process_message(chat_id, initial)
     <span class="kw">await</span> update.message.reply_text(response.text, parse_mode=<span class="st">"Markdown"</span>)
     <span class="kw">return</span> ConversationHandler.END <span class="kw">if</span> response.done <span class="kw">else</span> CHATTING</code></pre>
-    <p><strong>Filter management:</strong> Three commands read from and write to <code>data/filter_config.json</code> via <code>filter_store</code>. Changes take effect on the next scheduler tick — no restart needed.</p>
+    <p><strong>Filter management:</strong> Three commands read from and write to <code>data/filter_config.json</code> via <code>filter_store</code>. Changes take effect on the next scheduler tick — no restart needed. When an unavailable period is added or removed, the agent also calls <code>block_period</code> / <code>unblock_period</code> on the calendar client (fire-and-forget — a calendar API failure never prevents the filter-store write).</p>
     <p><strong>Invoice AI agent:</strong> All free text not captured by the <code>ConversationHandler</code> is routed to <code>invoice_agent.process_message()</code>.</p>
     <div class="callout callout-fp">
       <div class="callout-title">💡 First Principles: Why register handlers in order?</div>
@@ -1304,7 +1320,7 @@ _DEFAULTS: dict[str, list[str]] = {
     _CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
     <span class="kw">with</span> _CONFIG_FILE.open(<span class="st">"w"</span>) <span class="kw">as</span> f:
         json.dump(data, f, indent=<span class="nu">2</span>)</code></pre>
-    <p>The public API exposes six functions: <code>blacklist_emails()</code>, <code>unavailable_periods()</code>, <code>available_only_periods()</code> (readers), and <code>add_blacklist_email()</code>, <code>remove_blacklist_email()</code>, <code>add_period(key, period)</code>, <code>remove_period(key, period)</code> (writers). Writers return a boolean indicating whether the store actually changed — the Telegram bot uses this to reply "Already listed" vs "Added ✓".</p>
+    <p>The public API exposes six functions: <code>blacklist_emails()</code>, <code>unavailable_periods()</code>, <code>available_only_periods()</code> (readers), and <code>add_blacklist_email()</code>, <code>remove_blacklist_email()</code>, <code>add_period(key, period)</code>, <code>remove_period(key, period)</code> (writers). Writers return a boolean indicating whether the store actually changed — the Telegram bot uses this to reply "Already listed" vs "Added ✓". The store is not responsible for calendar side-effects; the unified agent layer calls <code>GoogleCalendarClient.block_period</code> / <code>unblock_period</code> after a successful write.</p>
     <div class="callout callout-fp">
       <div class="callout-title">💡 First Principles: Why read fresh on every call?</div>
       <p>The scheduler and the Telegram bot run as separate OS processes. Sharing state via an in-memory singleton would require inter-process communication (a socket, a queue, a database). Reading the JSON file fresh on every scheduler tick is simpler: the file system is the IPC channel. The cost — a few microseconds per read — is negligible compared to the HTTP requests in the same tick. This is the Unix philosophy: use the file system when it's sufficient.</p>
@@ -1354,15 +1370,16 @@ _DEFAULTS: dict[str, list[str]] = {
   <!-- Tests -->
   <div class="module-card" id="mod-tests">
     <div class="module-path">tests/</div>
-    <h3>Test Suite — 327 Tests</h3>
+    <h3>Test Suite — 442 Tests</h3>
     <table>
       <tr><th>Test file</th><th>Covers</th><th>Key techniques</th></tr>
       <tr><td><code>test_filters.py</code></td><td>All 4 parsing helpers + 7 filter classes + GigFilterChain</td><td>Parametrised tests, mock Google Maps client</td></tr>
       <tr><td><code>test_scraper.py</code></td><td>Scraper.fetch, parse_gig_listings, extract_*</td><td>Mock HTTP responses, fake HTML fixtures</td></tr>
       <tr><td><code>test_storage.py</code></td><td>load_seen_gigs, save_seen_gigs, round-trip</td><td>tmp_path fixture, CSV round-trips</td></tr>
-      <tr><td><code>test_calendar_client.py</code></td><td>has_event_on_date, add_gig</td><td>Mock Google API service object</td></tr>
+      <tr><td><code>test_calendar_client.py</code></td><td>has_event_on_date, add_gig, block_period, unblock_period, _parse_period_dates, elapsed_ms logging on all paths</td><td>Mock Google API service object, privateExtendedProperty query verification</td></tr>
       <tr><td><code>test_telegram_integration.py</code></td><td>Unified bot: /addgig agentic entry (URL + manual), gig agent done/not-done routing, filter commands, _is_authorised, invoice handler</td><td>pytest-asyncio, mock Update objects, AsyncMock gig_agent.process_message</td></tr>
       <tr><td><code>test_main.py</code></td><td>Three-phase orchestration, pre-filter, filter_store integration</td><td>FakeTransport, monkeypatching schedule</td></tr>
+      <tr><td><code>test_unified_agent.py</code></td><td>manage_unavailable add/remove calendar wiring, sync_calendar_blocks (empty periods, multi-period, failure resilience)</td><td>pytest-asyncio, patch _make_calendar_client, MagicMock calendar client</td></tr>
     </table>
     <div class="callout callout-fp">
       <div class="callout-title">💡 First Principles: What is mocking?</div>

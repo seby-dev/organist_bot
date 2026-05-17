@@ -21,6 +21,7 @@ from organist_bot.integrations.invoice_generator import (
     mark_invoice_emailed,
 )
 from organist_bot.models import Gig
+from organist_bot.runtime_config_store import runtime_config
 from organist_bot.scraper import Scraper
 
 logger = logging.getLogger(__name__)
@@ -52,7 +53,17 @@ You are an assistant for an organist. You handle three areas:
 - "I'm unavailable in December" → manage_unavailable(action=add, period=2026-12).
 - "I'm unavailable on 25 Dec" → manage_unavailable(action=add, period=2026-12-25).
 - "Add an available-only period" → manage_available(action=add, period=<period>).
-- Period formats: YYYY-MM-DD, YYYY-MM-DD:YYYY-MM-DD, YYYY-MM.
+- Period formats: YYYY-MM-DD, YYYY-MM-DD:YYYY-MM-DD, YYYY-MM. Also: today, tomorrow, this/next <weekday>, this weekend, next week, this/next month.
+
+## Pipeline stats
+- "Show stats" / "how's the pipeline?" / "gig stats this week" → call get_gig_stats.
+- Accept an optional number of days: "stats for the last 30 days" → get_gig_stats(days=30).
+
+## Runtime config
+- "What's the current config?" / "show config" → manage_config(action=get).
+- "Set min fee to 150" → manage_config(action=set, key=min_fee, value=150).
+- "Reset min fee to default" → manage_config(action=reset, key=min_fee).
+- Editable keys: min_fee, max_travel_minutes, poll_minutes.
 
 ## Conversation
 - If the user asks to start over, reset, or forget everything → call clear_conversation.
@@ -311,7 +322,7 @@ TOOLS: list[dict] = [
     },
     {
         "name": "manage_unavailable",
-        "description": "Manage unavailable periods. action: list, add, or remove. period formats: YYYY-MM-DD, YYYY-MM-DD:YYYY-MM-DD, YYYY-MM.",
+        "description": "Manage unavailable periods. action: list, add, or remove. period formats: YYYY-MM-DD, YYYY-MM-DD:YYYY-MM-DD, YYYY-MM. Also accepts: today, tomorrow, this/next <weekday>, this weekend, next week, this/next month.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -339,6 +350,58 @@ TOOLS: list[dict] = [
         "description": "Clear this chat's conversation history and all cached state.",
         "input_schema": {"type": "object", "properties": {}, "required": []},
     },
+    # ── Pipeline stats ──────────────────────────────────────────────────────
+    {
+        "name": "get_gig_stats",
+        "description": (
+            "Query the Google Sheets log and return pipeline stats. "
+            "Shows total runs, gigs listed/filtered/valid, filter rejection breakdown, "
+            "and the most recent run. Accepts optional 'days' parameter (default 7, max 90)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "days": {
+                    "type": "integer",
+                    "description": "Number of days to look back (default 7, max 90).",
+                }
+            },
+            "required": [],
+        },
+    },
+    # ── Runtime config ──────────────────────────────────────────────────────
+    {
+        "name": "manage_config",
+        "description": (
+            "Read or update runtime pipeline configuration. "
+            "Editable keys: min_fee (int, ≥0), max_travel_minutes (int, 1–300), "
+            "poll_minutes (int, 1–60). Changes take effect on the next polling tick. "
+            "Use action='reset' to restore the .env default for a key."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["get", "set", "reset"],
+                    "description": (
+                        "get=show all values, set=update one value, "
+                        "reset=restore .env default for one key"
+                    ),
+                },
+                "key": {
+                    "type": "string",
+                    "enum": ["min_fee", "max_travel_minutes", "poll_minutes"],
+                    "description": "Required for set and reset actions.",
+                },
+                "value": {
+                    "type": "integer",
+                    "description": "New value. Required for set.",
+                },
+            },
+            "required": ["action"],
+        },
+    },
 ]
 
 
@@ -355,7 +418,7 @@ _last_invoice: dict[int, dict] = {}
 _last_gig_listing: dict[int, list[dict]] = {}
 
 _PDF_RESPONSE_TOOLS = {"generate_invoice", "duplicate_invoice", "get_invoice"}
-_VERBATIM_RESPONSE_TOOLS = {"list_upcoming_gigs"}
+_VERBATIM_RESPONSE_TOOLS = {"list_upcoming_gigs", "get_gig_stats", "manage_config"}
 
 
 def _make_calendar_client() -> GoogleCalendarClient | None:
@@ -379,6 +442,96 @@ def sync_calendar_blocks(cal: GoogleCalendarClient) -> None:
         except Exception:
             logger.warning("sync_calendar_blocks: failed for %r", period, exc_info=True)
     logger.info("sync_calendar_blocks: synced %d period(s)", len(periods))
+
+
+def _make_sheets_logger():
+    """Return a SheetsLogger if Sheets is configured, else None."""
+    if not settings.google_sheets_id:
+        logger.debug("_make_sheets_logger: GOOGLE_SHEETS_ID not set")
+        return None
+    creds_file = (
+        settings.google_sheets_credentials_file or settings.google_calendar_credentials_file
+    )
+    if not creds_file:
+        logger.debug("_make_sheets_logger: no credentials file")
+        return None
+    try:
+        from organist_bot.integrations.sheets_logger import SheetsLogger
+
+        return SheetsLogger(
+            spreadsheet_id=settings.google_sheets_id,
+            credentials_file=creds_file,
+        )
+    except Exception as exc:
+        logger.warning("_make_sheets_logger: failed — %s", exc)
+        return None
+
+
+def _resolve_period(text: str) -> str:
+    """Resolve relative date expressions to period token format.
+
+    Handles: today, tomorrow, this/next month, next week, this weekend,
+    this/next <weekday>. Unrecognised text is returned unchanged.
+    """
+    import datetime as _dt
+
+    t = text.strip().lower()
+    today = _dt.date.today()
+
+    if t == "today":
+        return today.isoformat()
+
+    if t == "tomorrow":
+        return (today + _dt.timedelta(days=1)).isoformat()
+
+    if t in ("this month", "this-month"):
+        return today.strftime("%Y-%m")
+
+    if t in ("next month", "next-month"):
+        if today.month == 12:
+            return f"{today.year + 1}-01"
+        return f"{today.year}-{today.month + 1:02d}"
+
+    if t in ("next week", "next-week"):
+        days_until_monday = (7 - today.weekday()) % 7
+        if days_until_monday == 0:
+            days_until_monday = 7
+        next_mon = today + _dt.timedelta(days=days_until_monday)
+        next_sun = next_mon + _dt.timedelta(days=6)
+        return f"{next_mon.isoformat()}:{next_sun.isoformat()}"
+
+    if t in ("this weekend", "this-weekend", "next weekend", "next-weekend"):
+        if today.weekday() == 6:  # Sunday — today is already the weekend
+            return today.isoformat()
+        if today.weekday() == 5:  # Saturday — today and tomorrow
+            return f"{today.isoformat()}:{(today + _dt.timedelta(days=1)).isoformat()}"
+        days_until_sat = (5 - today.weekday()) % 7
+        if days_until_sat == 0:
+            days_until_sat = 7
+        sat = today + _dt.timedelta(days=days_until_sat)
+        sun = sat + _dt.timedelta(days=1)
+        return f"{sat.isoformat()}:{sun.isoformat()}"
+
+    _WEEKDAYS = {
+        "monday": 0,
+        "tuesday": 1,
+        "wednesday": 2,
+        "thursday": 3,
+        "friday": 4,
+        "saturday": 5,
+        "sunday": 6,
+    }
+    for prefix in ("this ", "next "):
+        if t.startswith(prefix):
+            day_name = t[len(prefix) :]
+            if day_name in _WEEKDAYS:
+                target = _WEEKDAYS[day_name]
+                days_ahead = (target - today.weekday()) % 7
+                if days_ahead == 0:
+                    days_ahead = 7
+                return (today + _dt.timedelta(days=days_ahead)).isoformat()
+
+    return text
 
 
 async def _execute_tool(name: str, input_data: dict, chat_id: int) -> str:
@@ -749,7 +902,7 @@ async def _execute_tool(name: str, input_data: dict, chat_id: int) -> str:
                 if periods
                 else json.dumps({"result": "No unavailable periods set."})
             )
-        period = input_data.get("period", "")
+        period = _resolve_period(input_data.get("period", ""))
         if action == "add":
             added = filter_store.add_period("unavailable_periods", period)
             msg = (
@@ -819,6 +972,118 @@ async def _execute_tool(name: str, input_data: dict, chat_id: int) -> str:
     if name == "clear_conversation":
         reset_conversation(chat_id)
         return json.dumps({"result": "Conversation cleared."})
+
+    # ── get_gig_stats ────────────────────────────────────────────────────────
+    if name == "get_gig_stats":
+        days = min(max(int(input_data.get("days", 7)), 1), 90)
+        sl = _make_sheets_logger()
+        if sl is None:
+            return json.dumps(
+                {"result": "Google Sheets is not configured (GOOGLE_SHEETS_ID missing)."}
+            )
+        try:
+            runs = sl.query_run_stats(days)
+        except Exception as exc:
+            return json.dumps({"result": f"Could not reach Google Sheets: {exc}"})
+
+        if not runs:
+            return json.dumps({"result": f"No pipeline runs logged in the last {days} days."})
+
+        total_runs = len(runs)
+        total_listed = sum(r.get("listed", 0) for r in runs)
+        total_valid = sum(r.get("valid", 0) for r in runs)
+        total_errors = sum(r.get("gig_errors", 0) for r in runs)
+        avg_listed = round(total_listed / total_runs, 1)
+        avg_valid = round(total_valid / total_runs, 1)
+
+        combined: dict[str, int] = {}
+        for r in runs:
+            for k, v in r.get("filter_breakdown", {}).items():
+                combined[k] = combined.get(k, 0) + v
+        sorted_filters = sorted(combined.items(), key=lambda x: x[1], reverse=True)
+
+        last = runs[0]
+        last_ts = last["timestamp"][:16].replace("T", " ")
+        last_line = (
+            f"{last_ts} — {last.get('listed', 0)} listed · "
+            f"{last.get('valid', 0)} valid · {last.get('elapsed_ms', 0)}ms"
+        )
+
+        lines = [
+            f"Pipeline stats — last {days} days",
+            "",
+            f"Runs:   {total_runs}",
+            f"Listed: {total_listed} total · {avg_listed} avg/run",
+            f"Valid:  {total_valid} total · {avg_valid} avg/run",
+            f"Errors: {total_errors}",
+        ]
+        if sorted_filters:
+            max_len = max(len(k) for k, _ in sorted_filters)
+            lines += ["", "Filter rejections:"]
+            for k, v in sorted_filters:
+                lines.append(f"  {k:<{max_len}}  {v}")
+        lines += ["", f"Last run: {last_line}"]
+
+        return json.dumps({"result": "\n".join(lines)})
+
+    # ── manage_config ────────────────────────────────────────────────────────
+    if name == "manage_config":
+        action = input_data["action"]
+
+        _RANGES: dict[str, tuple[int, int]] = {
+            "min_fee": (0, 100_000),
+            "max_travel_minutes": (1, 300),
+            "poll_minutes": (1, 60),
+        }
+        _DEFAULTS = {
+            "min_fee": settings.min_fee,
+            "max_travel_minutes": settings.max_travel_minutes,
+            "poll_minutes": settings.poll_minutes,
+        }
+
+        if action == "get":
+            overrides = runtime_config.all()
+            lines = []
+            for key, default in _DEFAULTS.items():
+                if key in overrides:
+                    lines.append(f"{key:<20} {overrides[key]}  (override, default: {default})")
+                else:
+                    lines.append(f"{key:<20} {default}  (default)")
+            return json.dumps({"result": "\n".join(lines)})
+
+        if action == "set":
+            key = input_data.get("key", "")
+            value = input_data.get("value")
+            if key not in _RANGES:
+                return json.dumps(
+                    {"result": f"Unknown key '{key}'. Valid keys: {', '.join(_RANGES)}."}
+                )
+            if value is None:
+                return json.dumps({"result": "value is required for set."})
+            lo, hi = _RANGES[key]
+            if not (lo <= int(value) <= hi):
+                return json.dumps(
+                    {"result": f"Invalid value {value} for {key}. Must be between {lo} and {hi}."}
+                )
+            runtime_config.set(key, int(value))
+            return json.dumps(
+                {"result": f"{key} set to {value}. Takes effect on the next polling tick."}
+            )
+
+        if action == "reset":
+            key = input_data.get("key", "")
+            if key not in _DEFAULTS:
+                return json.dumps(
+                    {"result": f"Unknown key '{key}'. Valid keys: {', '.join(_DEFAULTS)}."}
+                )
+            existed = runtime_config.reset(key)
+            if existed:
+                return json.dumps({"result": f"{key} reset to default ({_DEFAULTS[key]})."})
+            return json.dumps(
+                {"result": f"{key} was already using the default ({_DEFAULTS[key]})."}
+            )
+
+        return json.dumps({"error": f"Unknown action: {action}"})
 
     return json.dumps({"error": f"Tool not implemented: {name}"})
 

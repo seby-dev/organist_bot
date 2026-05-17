@@ -6,100 +6,117 @@ import logging
 from unittest.mock import MagicMock, patch
 
 import main as main_module
-from main import _send_telegram_alert
 
-# ── _send_telegram_alert ──────────────────────────────────────────────────────
+# ── parse error alert ─────────────────────────────────────────────────────────
 
 
-class TestSendTelegramAlert:
-    def test_sends_message_when_token_and_chat_id_set(self):
-        mock_settings = MagicMock()
-        mock_settings.telegram_bot_token = "fake_token"
-        mock_settings.telegram_chat_id = "12345"
+class TestParseErrorAlert:
+    """Tests for the gig parse error rate alert in main()."""
 
-        with patch("main.settings", mock_settings), patch("main._requests.post") as mock_post:
-            _send_telegram_alert("Test crash message")
-            mock_post.assert_called_once()
-            call_kwargs = mock_post.call_args
-            assert "fake_token" in call_kwargs[0][0]
-            assert call_kwargs[1]["json"]["text"] == "Test crash message"
-            assert call_kwargs[1]["json"]["chat_id"] == "12345"
+    def _make_minimal_settings(self):
+        s = MagicMock()
+        s.target_url = "https://organistsonline.org/required/"
+        s.min_fee = 100
+        s.poll_minutes = 2
+        s.enable_seen_filter = False
+        s.enable_fee_filter = False
+        s.enable_sunday_time_filter = False
+        s.enable_blacklist_filter = False
+        s.enable_booked_date_filter = False
+        s.enable_postcode_filter = False
+        s.enable_calendar_filter = False
+        s.enable_availability_filter = False
+        s.email_password = "pass"
+        return s
 
-    def test_does_nothing_when_token_missing(self):
-        mock_settings = MagicMock()
-        mock_settings.telegram_bot_token = ""
-        mock_settings.telegram_chat_id = "12345"
+    def test_alert_sent_when_gig_errors_ge_2(self):
+        """send_alert is called when gig_errors >= 2 after scraping."""
+        mock_settings = self._make_minimal_settings()
+        mock_scraper = MagicMock()
+        mock_scraper.fetch.return_value = "<html/>"
+        mock_scraper.parse_gig_listings.return_value = [MagicMock()] * 3
 
-        with patch("main.settings", mock_settings), patch("main._requests.post") as mock_post:
-            _send_telegram_alert("crash")
-            mock_post.assert_not_called()
+        call_count = 0
 
-    def test_does_nothing_when_chat_id_missing(self):
-        mock_settings = MagicMock()
-        mock_settings.telegram_bot_token = "token"
-        mock_settings.telegram_chat_id = ""
+        def fake_extract(el):
+            nonlocal call_count
+            call_count += 1
+            if call_count <= 2:
+                raise Exception("parse failure")
+            return {
+                "header": "Test",
+                "organisation": "Church",
+                "locality": "London",
+                "date": "Sunday 1st June 2025",
+                "time": "10:00 AM",
+                "link": "https://example.com/1",
+                "fee": "£100",
+            }
 
-        with patch("main.settings", mock_settings), patch("main._requests.post") as mock_post:
-            _send_telegram_alert("crash")
-            mock_post.assert_not_called()
-
-    def test_silently_swallows_network_error(self):
-        """Alert failures must never propagate — the scheduler depends on this."""
-        mock_settings = MagicMock()
-        mock_settings.telegram_bot_token = "token"
-        mock_settings.telegram_chat_id = "12345"
-
-        with (
-            patch("main.settings", mock_settings),
-            patch("main._requests.post", side_effect=ConnectionError("unreachable")),
-        ):
-            # Should not raise
-            _send_telegram_alert("crash")
-
-    def test_logs_info_on_successful_send(self, caplog):
-        """A successful Telegram POST must emit an INFO 'Telegram alert sent' record."""
-
-        mock_settings = MagicMock()
-        mock_settings.telegram_bot_token = "token"
-        mock_settings.telegram_chat_id = "12345"
-
-        # When main.py is imported as a module its __name__ is "main", not "__main__".
-        with (
-            patch("main.settings", mock_settings),
-            patch("main._requests.post"),
-            caplog.at_level(logging.INFO, logger="main"),
-        ):
-            _send_telegram_alert("crash message")
-
-        record = next(
-            (r for r in caplog.records if r.message == "Telegram alert sent"),
-            None,
-        )
-        assert record is not None, "Expected 'Telegram alert sent' INFO log record"
-        assert isinstance(record.elapsed_ms, int)
-        assert record.elapsed_ms >= 0
-
-    def test_logs_warning_on_network_error(self, caplog):
-        """A failing Telegram POST must emit a WARNING 'Telegram alert failed' record."""
-
-        mock_settings = MagicMock()
-        mock_settings.telegram_bot_token = "token"
-        mock_settings.telegram_chat_id = "12345"
+        mock_scraper.extract_basic_details.side_effect = fake_extract
+        mock_scraper.extract_full_details.return_value = {}
 
         with (
+            patch("main.alert") as mock_alert,
             patch("main.settings", mock_settings),
-            patch("main._requests.post", side_effect=ConnectionError("unreachable")),
-            caplog.at_level(logging.WARNING, logger="main"),
+            patch("main.load_seen_gigs", return_value=set()),
+            patch("main.load_listings_hash", return_value="old_hash"),
+            patch("main.save_listings_hash"),
+            patch("main.save_seen_gigs"),
+            patch("main.filter_store"),
+            patch("main.Notifier"),
+            patch("main.SMTPTransport"),
+            patch("main.set_run_id"),
         ):
-            _send_telegram_alert("crash message")
+            main_module.main(mock_scraper)
 
-        record = next(
-            (r for r in caplog.records if r.message == "Telegram alert failed"),
-            None,
-        )
-        assert record is not None, "Expected 'Telegram alert failed' WARNING log record"
-        assert isinstance(record.elapsed_ms, int)
-        assert record.elapsed_ms >= 0
+        mock_alert.send_alert.assert_called_once()
+        alert_msg = mock_alert.send_alert.call_args.args[0]
+        assert "⚠️" in alert_msg
+        assert "2" in alert_msg
+
+    def test_no_alert_when_gig_errors_lt_2(self):
+        """send_alert is NOT called when gig_errors < 2."""
+        mock_settings = self._make_minimal_settings()
+        mock_scraper = MagicMock()
+        mock_scraper.fetch.return_value = "<html/>"
+        mock_scraper.parse_gig_listings.return_value = [MagicMock(), MagicMock()]
+
+        call_count = 0
+
+        def fake_extract(el):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise Exception("one error")
+            return {
+                "header": "Test",
+                "organisation": "Church",
+                "locality": "London",
+                "date": "Sunday 1st June 2025",
+                "time": "10:00 AM",
+                "link": "https://example.com/1",
+                "fee": "£100",
+            }
+
+        mock_scraper.extract_basic_details.side_effect = fake_extract
+        mock_scraper.extract_full_details.return_value = {}
+
+        with (
+            patch("main.alert") as mock_alert,
+            patch("main.settings", mock_settings),
+            patch("main.load_seen_gigs", return_value=set()),
+            patch("main.load_listings_hash", return_value="old_hash"),
+            patch("main.save_listings_hash"),
+            patch("main.save_seen_gigs"),
+            patch("main.filter_store"),
+            patch("main.Notifier"),
+            patch("main.SMTPTransport"),
+            patch("main.set_run_id"),
+        ):
+            main_module.main(mock_scraper)
+
+        mock_alert.send_alert.assert_not_called()
 
 
 # ── main() orchestration ──────────────────────────────────────────────────────
@@ -133,6 +150,7 @@ class TestMain:
         s.enable_seen_filter = False
         s.enable_postcode_filter = False
         s.enable_calendar_filter = False
+        s.enable_availability_filter = False
         return s
 
     def test_main_runs_with_no_gigs(self):

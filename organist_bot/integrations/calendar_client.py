@@ -41,6 +41,7 @@ import time
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
+from organist_bot import alert
 from organist_bot.filters import normalize_to_yyyymmdd, parse_start_time
 from organist_bot.models import Gig
 
@@ -116,6 +117,7 @@ class GoogleCalendarClient:
                 "Calendar check failed — failing open",
                 extra={"date": date_str, "error": str(exc), "elapsed_ms": elapsed_ms},
             )
+            alert.send_alert(f"⚠️ Google Calendar API error (CalendarFilter query): {exc}")
             return False
 
     def list_upcoming_events(self, max_results: int = 10) -> list[dict]:

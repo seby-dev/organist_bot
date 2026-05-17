@@ -12,3 +12,4 @@ google-api-python-client>=2.0
 google-auth>=2.0
 python-telegram-bot>=20.0
 anthropic==0.97.0
+supervisor>=4.2
