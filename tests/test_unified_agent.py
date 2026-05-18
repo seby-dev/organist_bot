@@ -856,7 +856,7 @@ class TestGetGigStats:
         data = json.loads(result)
         assert "result" in data
         text = data["result"]
-        assert "Runs: 2" in text or "Runs:   2" in text
+        assert "Runs:* 2" in text
         assert "Listed:" in text
         assert "Valid:" in text
         assert "SeenFilter" in text
