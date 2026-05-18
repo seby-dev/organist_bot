@@ -1000,29 +1000,40 @@ async def _execute_tool(name: str, input_data: dict, chat_id: int) -> str:
         for r in runs:
             for k, v in r.get("filter_breakdown", {}).items():
                 combined[k] = combined.get(k, 0) + v
-        sorted_filters = sorted(combined.items(), key=lambda x: x[1], reverse=True)
+
+        # Strip repr params — "FeeFilter(min_fee=100)" → "FeeFilter"
+        def _filter_name(key: str) -> str:
+            return key.split("(")[0]
+
+        sorted_filters = sorted(
+            [(_filter_name(k), v) for k, v in combined.items()],
+            key=lambda x: x[1],
+            reverse=True,
+        )
 
         last = runs[0]
         last_ts = last["timestamp"][:16].replace("T", " ")
-        last_line = (
-            f"{last_ts} — {last.get('listed', 0)} listed · "
-            f"{last.get('valid', 0)} valid · {last.get('elapsed_ms', 0)}ms"
-        )
+        elapsed_ms = last.get("elapsed_ms", 0)
+        elapsed = f"{elapsed_ms / 1000:.1f}s" if elapsed_ms >= 1000 else f"{elapsed_ms}ms"
 
         lines = [
-            f"Pipeline stats — last {days} days",
+            f"📊 *Pipeline stats — last {days} days*",
             "",
-            f"Runs:   {total_runs}",
-            f"Listed: {total_listed} total · {avg_listed} avg/run",
-            f"Valid:  {total_valid} total · {avg_valid} avg/run",
-            f"Errors: {total_errors}",
+            f"*Runs:* {total_runs}",
+            f"*Listed:* {total_listed} total ({avg_listed} avg/run)",
+            f"*Valid:* {total_valid} total ({avg_valid} avg/run)",
+            f"*Errors:* {total_errors}",
         ]
         if sorted_filters:
             max_len = max(len(k) for k, _ in sorted_filters)
-            lines += ["", "Filter rejections:"]
+            lines += ["", "*🔍 Filter rejections:*"]
             for k, v in sorted_filters:
-                lines.append(f"  {k:<{max_len}}  {v}")
-        lines += ["", f"Last run: {last_line}"]
+                lines.append(f"`{k:<{max_len}}  {v}`")
+        lines += [
+            "",
+            f"*⏱ Last run:* {last_ts}",
+            f"{last.get('listed', 0)} listed · {last.get('valid', 0)} valid · {elapsed}",
+        ]
 
         return json.dumps({"result": "\n".join(lines)})
 
