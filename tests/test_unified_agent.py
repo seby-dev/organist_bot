@@ -858,8 +858,10 @@ class TestGetGigStats:
         text = data["result"]
         assert "Runs:* 2" in text
         assert "Listed:" in text
+        assert "Pre-filter:" in text
         assert "Valid:" in text
         assert "SeenFilter" in text
+        assert "Recent runs" in text
 
     @pytest.mark.asyncio
     async def test_sheets_not_configured_returns_message(self):
