@@ -991,49 +991,54 @@ async def _execute_tool(name: str, input_data: dict, chat_id: int) -> str:
 
         total_runs = len(runs)
         total_listed = sum(r.get("listed", 0) for r in runs)
+        total_pre = sum(r.get("pre_filter_passed", 0) for r in runs)
         total_valid = sum(r.get("valid", 0) for r in runs)
         total_errors = sum(r.get("gig_errors", 0) for r in runs)
         avg_listed = round(total_listed / total_runs, 1)
+        avg_pre = round(total_pre / total_runs, 1)
         avg_valid = round(total_valid / total_runs, 1)
 
-        combined: dict[str, int] = {}
+        # Aggregate filter breakdown, stripping repr params and deduplicating.
+        # e.g. "AvailabilityFilter(mode='block', periods=7)" → "AvailabilityFilter"
+        name_totals: dict[str, int] = {}
         for r in runs:
             for k, v in r.get("filter_breakdown", {}).items():
-                combined[k] = combined.get(k, 0) + v
+                name = k.split("(")[0]
+                name_totals[name] = name_totals.get(name, 0) + v
+        active_filters = [
+            (k, v)
+            for k, v in sorted(name_totals.items(), key=lambda x: x[1], reverse=True)
+            if v > 0
+        ]
 
-        # Strip repr params — "FeeFilter(min_fee=100)" → "FeeFilter"
-        def _filter_name(key: str) -> str:
-            return key.split("(")[0]
-
-        sorted_filters = sorted(
-            [(_filter_name(k), v) for k, v in combined.items()],
-            key=lambda x: x[1],
-            reverse=True,
-        )
-
-        last = runs[0]
-        last_ts = last["timestamp"][:16].replace("T", " ")
-        elapsed_ms = last.get("elapsed_ms", 0)
-        elapsed = f"{elapsed_ms / 1000:.1f}s" if elapsed_ms >= 1000 else f"{elapsed_ms}ms"
+        def _fmt_elapsed(ms: int) -> str:
+            return f"{ms / 1000:.1f}s" if ms >= 1000 else f"{ms}ms"
 
         lines = [
             f"📊 *Pipeline stats — last {days} days*",
             "",
             f"*Runs:* {total_runs}",
-            f"*Listed:* {total_listed} total ({avg_listed} avg/run)",
-            f"*Valid:* {total_valid} total ({avg_valid} avg/run)",
+            f"*Listed:*      {total_listed:>5}  ({avg_listed}/run)",
+            f"*Pre-filter:*  {total_pre:>5}  ({avg_pre}/run)",
+            f"*Valid:*       {total_valid:>5}  ({avg_valid}/run)",
             f"*Errors:* {total_errors}",
         ]
-        if sorted_filters:
-            max_len = max(len(k) for k, _ in sorted_filters)
+
+        if active_filters:
+            max_len = max(len(k) for k, _ in active_filters)
             lines += ["", "*🔍 Filter rejections:*"]
-            for k, v in sorted_filters:
-                lines.append(f"`{k:<{max_len}}  {v}`")
-        lines += [
-            "",
-            f"*⏱ Last run:* {last_ts}",
-            f"{last.get('listed', 0)} listed · {last.get('valid', 0)} valid · {elapsed}",
-        ]
+            for k, v in active_filters:
+                pct = round(v / total_listed * 100) if total_listed else 0
+                lines.append(f"`{k:<{max_len}}  {v:>4}  ({pct}%)`")
+
+        lines += ["", "*📅 Recent runs:*"]
+        for r in runs[:5]:
+            ts = r["timestamp"][:16].replace("T", " ")
+            listed = r.get("listed", 0)
+            pre = r.get("pre_filter_passed", 0)
+            valid = r.get("valid", 0)
+            t = _fmt_elapsed(r.get("elapsed_ms", 0))
+            lines.append(f"`{ts}  {listed}→{pre}→{valid}  {t}`")
 
         return json.dumps({"result": "\n".join(lines)})
 
