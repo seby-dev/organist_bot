@@ -1,3 +1,4 @@
+import fcntl
 import hashlib
 import logging
 import time
@@ -35,7 +36,26 @@ from organist_bot.storage import (
 logger = logging.getLogger(__name__)
 
 
+_LOCK_FILE = "/tmp/organistbot_scheduler.lock"
+
+
 def main(scraper: Scraper, sheets_logger: SheetsLogger | None = None) -> None:
+    lock = open(_LOCK_FILE, "w")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        logger.warning("Previous run still in progress — skipping this tick")
+        lock.close()
+        return
+
+    try:
+        _run(scraper, sheets_logger)
+    finally:
+        fcntl.flock(lock, fcntl.LOCK_UN)
+        lock.close()
+
+
+def _run(scraper: Scraper, sheets_logger: SheetsLogger | None = None) -> None:
     run_id = uuid.uuid4().hex[:8]
     set_run_id(run_id)
 
