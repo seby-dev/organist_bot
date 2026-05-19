@@ -7,6 +7,26 @@ from unittest.mock import MagicMock, patch
 
 import main as main_module
 
+# ── overlapping run protection ────────────────────────────────────────────────
+
+
+class TestRunLock:
+    def test_skips_when_lock_held(self, caplog):
+        """main() returns early without calling _run when the lock is already held."""
+        with patch("fcntl.flock", side_effect=BlockingIOError):
+            with caplog.at_level(logging.WARNING, logger="__main__"):
+                main_module.main(MagicMock(), None)
+
+        assert any("skipping this tick" in r.message for r in caplog.records)
+
+    def test_runs_when_lock_free(self):
+        """main() calls _run when no lock is held."""
+        with patch("main._run") as mock_run:
+            main_module.main(MagicMock(), None)
+
+        mock_run.assert_called_once()
+
+
 # ── parse error alert ─────────────────────────────────────────────────────────
 
 
