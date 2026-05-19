@@ -285,6 +285,7 @@ if __name__ == "__main__":
         "Scheduler starting",
         extra={"poll_minutes": settings.poll_minutes},
     )
+    alert.send_alert(f"🔄 Scheduler started (polling every {settings.poll_minutes} min)")
 
     # ── Google Sheets logger (optional) ───────────────────────────────────────
     sheets_logger: SheetsLogger | None = None

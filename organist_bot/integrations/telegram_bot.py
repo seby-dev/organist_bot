@@ -22,6 +22,7 @@ from telegram.ext import (
     filters as tg_filters,
 )
 
+import organist_bot.alert as alert
 from organist_bot.config import settings
 from organist_bot.integrations import unified_agent
 
@@ -105,4 +106,5 @@ def run(token: str) -> None:
         unified_agent.sync_calendar_blocks(cal)
 
     logger.info("Telegram bot polling", extra={"chat_id": settings.telegram_chat_id})
+    alert.send_alert("🤖 Telegram bot started")
     app.run_polling()
