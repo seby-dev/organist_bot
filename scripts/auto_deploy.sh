@@ -16,7 +16,8 @@ REMOTE=$(git -C "$REPO" rev-parse origin/main 2>/dev/null)
 
 echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] New commits on main — deploying"
 
-git -C "$REPO" pull origin main || { echo "git pull failed"; exit 1; }
+git -C "$REPO" checkout main --quiet 2>/dev/null || true
+git -C "$REPO" reset --hard origin/main || { echo "git reset failed"; exit 1; }
 
 UV_PROJECT_ENVIRONMENT="$VENV" "$UV" sync --project "$REPO"
 
