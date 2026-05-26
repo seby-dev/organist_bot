@@ -2,7 +2,7 @@
 """Tests for Notifier._dispatch() — success log and elapsed_ms."""
 
 import logging
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -146,3 +146,19 @@ class TestDispatchLogging:
         assert record is not None, "Expected 'Email dispatch failed' log record"
         assert isinstance(record.elapsed_ms, int)
         assert record.elapsed_ms >= 0
+
+
+# ── apply_to_gig records application ─────────────────────────────────────────
+
+
+class TestApplyToGigRecordsApplication:
+    def test_apply_to_gig_records_application(self):
+        """apply_to_gig must call record_application once with the gig."""
+        settings = _make_settings()
+        transport = FakeTransport()
+        notifier = Notifier(settings, transport)
+        gig = _make_gig(email="test@church.com")
+        with patch("organist_bot.notifier.application_store") as mock_store:
+            mock_store.record_application.return_value = True
+            notifier.apply_to_gig(gig)
+        mock_store.record_application.assert_called_once_with(gig)
