@@ -7,6 +7,7 @@ import uuid
 import schedule
 
 import organist_bot.alert as alert
+import organist_bot.application_store as application_store
 import organist_bot.filter_store as filter_store
 from organist_bot.config import settings
 from organist_bot.filters import (
@@ -270,6 +271,13 @@ def _run(scraper: Scraper, sheets_logger: SheetsLogger | None = None) -> None:
         save_seen_gigs(seen=seen_gigs_set | set(gig.link for gig in valid_gigs))
     else:
         logger.info("No new gigs passed the filters — notifications skipped")
+
+    try:
+        expired = application_store.expire_past_applied()
+        if expired > 0:
+            logger.info("Expired past applications as no_response", extra={"count": expired})
+    except Exception:
+        logger.warning("application_store: expire_past_applied failed", exc_info=True)
 
     # ── Run summary ───────────────────────────────────────────────────────────
     logger.info(

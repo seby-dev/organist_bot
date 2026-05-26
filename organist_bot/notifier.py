@@ -7,6 +7,7 @@ from typing import Protocol, runtime_checkable
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
+import organist_bot.application_store as application_store
 from organist_bot.config import Settings
 from organist_bot.models import Gig
 
@@ -191,3 +192,11 @@ class Notifier:
             recipient=gig.email,
             cc=cc,
         )
+        try:
+            application_store.record_application(gig)
+        except Exception:
+            logger.warning(
+                "application_store: record_application failed",
+                extra={"link": gig.link},
+                exc_info=True,
+            )
