@@ -59,9 +59,9 @@ def record_application(gig: Gig) -> bool:
     records.append(
         {
             "url": gig.link,
-            "header": gig.header,
+            "header": gig.header or "",
             "organisation": gig.organisation or "",
-            "date": gig.date,
+            "date": gig.date or "",
             "fee": gig.fee or "",
             "email": gig.email or "",
             "status": "applied",

@@ -165,6 +165,19 @@ class TestExpirePastApplied:
 
 
 class TestListApplications:
+    def test_list_applications_newest_first(self):
+        store.record_application(_make_gig(link="https://organistsonline.org/gig/old"))
+        store.record_application(_make_gig(link="https://organistsonline.org/gig/new"))
+        # Back-date the first record to make it older
+        data = json.loads(store._PATH.read_text())
+        data[0]["applied_at"] = "2026-01-01T10:00:00Z"
+        data[1]["applied_at"] = "2026-06-01T10:00:00Z"
+        store._PATH.write_text(json.dumps(data, indent=2) + "\n")
+        result = store.list_applications(days=365)
+        assert len(result) == 2
+        assert result[0]["url"] == "https://organistsonline.org/gig/new"
+        assert result[1]["url"] == "https://organistsonline.org/gig/old"
+
     def test_list_applications_filters_by_days(self):
         gig = _make_gig()
         store.record_application(gig)
