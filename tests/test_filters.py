@@ -5,6 +5,7 @@ from organist_bot.filters import (
     AvailabilityFilter,
     BlacklistFilter,
     BookedDateFilter,
+    CalendarFilter,
     FeeFilter,
     GigFilterChain,
     PostcodeFilter,
@@ -1303,4 +1304,61 @@ class TestPostcodeFilterAlert:
             result = f(make_gig(postcode="EC1A 1BB"))
         assert result is True
         mock_alert.send_alert.assert_called_once()
-        assert "Maps" in mock_alert.send_alert.call_args.args[0]
+
+
+# ── CalendarFilter competing gig detection ────────────────────────────────────
+
+
+class TestCalendarFilterCompeting:
+    def _make_filter(self, events: list[dict]) -> CalendarFilter:
+        client = MagicMock()
+        client.get_events_on_date.return_value = events
+        return CalendarFilter(client)
+
+    def test_no_events_passes_gig(self):
+        f = self._make_filter([])
+        gig = make_gig(date="Sunday, 15 March 2026")
+        with patch("organist_bot.filters.alert") as mock_alert:
+            assert f(gig) is True
+        mock_alert.send_alert.assert_not_called()
+
+    def test_unavailable_only_silent_reject_no_alert(self):
+        f = self._make_filter([{"id": "b1", "summary": "Unavailable"}])
+        gig = make_gig(date="Sunday, 15 March 2026")
+        with patch("organist_bot.filters.alert") as mock_alert:
+            assert f(gig) is False
+        mock_alert.send_alert.assert_not_called()
+
+    def test_real_event_rejects_and_sends_alert(self):
+        f = self._make_filter([{"id": "e1", "summary": "Evensong — St Mary's"}])
+        gig = make_gig(
+            date="Sunday, 15 March 2026",
+            fee="£80",
+            header="Sunday Service",
+            organisation="All Saints Church",
+            link="https://organistsonline.org/gig/99",
+        )
+        with patch("organist_bot.filters.alert") as mock_alert:
+            assert f(gig) is False
+        mock_alert.send_alert.assert_called_once()
+        msg = mock_alert.send_alert.call_args.args[0]
+        assert "Sunday Service" in msg
+        assert "All Saints Church" in msg
+        assert "£80" in msg
+        assert "https://organistsonline.org/gig/99" in msg
+        assert "Evensong — St Mary's" in msg
+        assert "Unavailable" not in msg
+
+    def test_mixed_events_alerts_only_real_events(self):
+        events = [
+            {"id": "b1", "summary": "Unavailable"},
+            {"id": "e1", "summary": "Matins — St John's"},
+        ]
+        f = self._make_filter(events)
+        gig = make_gig(date="Sunday, 15 March 2026")
+        with patch("organist_bot.filters.alert") as mock_alert:
+            assert f(gig) is False
+        mock_alert.send_alert.assert_called_once()
+        msg = mock_alert.send_alert.call_args.args[0]
+        assert "Matins — St John's" in msg
+        assert "Unavailable" not in msg

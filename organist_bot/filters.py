@@ -432,8 +432,10 @@ class SeenFilter:
 class CalendarFilter:
     """Reject gigs whose date already has an event in Google Calendar.
 
-    Uses a GoogleCalendarClient to check whether the calendar contains any
-    event on the gig's date.  Fails open in two cases:
+    Distinguishes between 'Unavailable' blocking events (silent reject) and
+    real confirmed gigs (reject + Telegram alert with competing gig details).
+
+    Fails open in two cases:
       - The gig date cannot be parsed  → pass (can't judge)
       - The calendar API call fails    → pass (don't silently drop gigs)
 
@@ -449,13 +451,41 @@ class CalendarFilter:
         if normalized is None:
             return True  # Can't determine date — allow through
 
-        busy = self._client.has_event_on_date(normalized)
-        if busy:
+        events = self._client.get_events_on_date(normalized)
+        if not events:
+            return True
+
+        competing = [e for e in events if e["summary"] != "Unavailable"]
+        if competing:
+            self._alert_competing(gig, competing)
+        else:
             logger.debug(
                 "CalendarFilter: date already busy — rejecting",
                 extra={"header": gig.header, "date": gig.date},
             )
-        return not busy
+        return False
+
+    def _alert_competing(self, gig: Gig, competing: list[dict]) -> None:
+        org_part = f" — {gig.organisation}" if gig.organisation else ""
+        fee_part = f"\nFee:      {gig.fee}" if gig.fee else ""
+        conflicts = "\n".join(f"  • {e['summary']}" for e in competing)
+        msg = (
+            "⚠️ Competing gig — date already booked\n\n"
+            f"New gig:  {gig.header}{org_part}\n"
+            f"Date:     {gig.date}"
+            f"{fee_part}\n"
+            f"URL:      {gig.link}\n\n"
+            f"Conflicts with:\n{conflicts}"
+        )
+        logger.info(
+            "CalendarFilter: competing gig detected — alerting",
+            extra={
+                "header": gig.header,
+                "date": gig.date,
+                "competing": [e["summary"] for e in competing],
+            },
+        )
+        alert.send_alert(msg)
 
     def __repr__(self):
         return "CalendarFilter()"
