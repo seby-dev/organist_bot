@@ -29,6 +29,4 @@ for PLIST in \
     launchctl bootstrap "gui/$UID_VAL" "$PLIST"
 done
 
-echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] Deploy complete (v2)"
-# autodeploy test 2
-# Wed May 20 23:33:48 UTC 2026
+echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] Deploy complete"

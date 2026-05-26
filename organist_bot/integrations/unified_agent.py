@@ -605,6 +605,7 @@ async def _execute_tool(name: str, input_data: dict, chat_id: int) -> str:
             return json.dumps({"error": "Google Calendar not configured."})
         max_results = input_data.get("max_results", 10)
         events = cal.list_upcoming_events(max_results=max_results)
+        events = [e for e in events if e["summary"] != "Unavailable"]
         events = sorted(events, key=lambda e: e["start_dt"])
         _last_gig_listing[chat_id] = events
         if not events:

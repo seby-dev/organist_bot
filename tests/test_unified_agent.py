@@ -251,6 +251,24 @@ class TestListUpcomingGigs:
         assert pos1 < pos2 < pos3
 
     @pytest.mark.asyncio
+    async def test_unavailable_blocks_excluded(self):
+        unavailable = {
+            "id": "block1",
+            "summary": "Unavailable",
+            "start_dt": datetime.datetime(2026, 6, 2, 0, 0, tzinfo=datetime.UTC),
+            "date_str": "2026-06-02",
+        }
+        events = [_make_event(1), unavailable, _make_event(3)]
+        with patch("organist_bot.integrations.unified_agent._make_calendar_client") as mock_factory:
+            mock_cal = MagicMock()
+            mock_cal.list_upcoming_events.return_value = events
+            mock_factory.return_value = mock_cal
+            result = await _execute_tool("list_upcoming_gigs", {}, CHAT_ID)
+        assert "Unavailable" not in result
+        assert "Sunday Service 1" in result
+        assert "Sunday Service 3" in result
+
+    @pytest.mark.asyncio
     async def test_gig_listing_includes_markdown_formatting(self):
         events = [_make_event(1)]
         with patch("organist_bot.integrations.unified_agent._make_calendar_client") as mock_factory:
