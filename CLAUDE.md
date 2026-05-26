@@ -120,3 +120,42 @@ When given an implementation task:
 - "Implement modules X, Y, Z" → spawn 3 implementer subagents simultaneously if they don't share files
 - "Review these 5 files" → spawn 5 reviewer subagents in parallel
 - The signal: any time you find yourself writing "check A, then check B, then check C" — stop and parallelize it
+
+## Security & Review Workflow
+
+After implementation and before shipping, run these in parallel:
+
+- **`pr-review-toolkit:silent-failure-hunter`** — hunt for swallowed exceptions, silent fallbacks, and inadequate error handling
+- **`pr-review-toolkit:code-reviewer`** — bugs, security vulnerabilities, convention violations
+- **`coderabbit:code-reviewer`** — deep CodeRabbit-powered diff analysis
+- **`semgrep`** — static analysis for known vulnerability patterns (SQL injection, hardcoded secrets, insecure API usage); requires `/setup-semgrep-plugin` first run
+
+Passive (always on, no invocation needed):
+- **`security-guidance`** — injects OWASP-style security reminders automatically each session
+
+When to invoke each:
+- Any error handling or fallback code → always run `silent-failure-hunter`
+- Before every PR → run `code-reviewer` + `coderabbit:code-reviewer` in parallel
+- New external integrations or auth flows → also run `semgrep`
+
+## Git & PR Workflow
+
+When an implementation task is complete:
+
+1. Stage and commit all changes with a descriptive commit message following conventional commits format
+2. Push the branch to origin: `git push -u origin HEAD`
+3. Create a PR using gh CLI:
+
+```
+gh pr create --title "<title>" --body "<summary of changes, what was done and why>" --draft=false
+```
+
+4. If all CI checks pass, merge the PR:
+
+```
+gh pr merge --squash --auto --delete-branch
+```
+
+5. Report the PR URL to the user.
+
+Use `--auto` on the merge so it only merges once checks pass. Never force-push or merge if CI is failing.
