@@ -65,6 +65,12 @@ You are an assistant for an organist. You handle three areas:
 - "Reset min fee to default" → manage_config(action=reset, key=min_fee).
 - Editable keys: min_fee, max_travel_minutes, poll_minutes.
 
+## Application tracking
+- "What applications are pending?" / "show my applications" → manage_applications(action=list).
+- "Application summary" / "how many gigs have I applied to?" → manage_applications(action=summary).
+- "Mark application 2 as declined" → manage_applications(action=update, number=2, status=declined).
+- Valid statuses for update: applied, accepted, no_response, declined.
+
 ## Conversation
 - If the user asks to start over, reset, or forget everything → call clear_conversation.
 
@@ -406,6 +412,41 @@ TOOLS: list[dict] = [
             "required": ["action"],
         },
     },
+    # ── Application tracking ────────────────────────────────────────────────
+    {
+        "name": "manage_applications",
+        "description": (
+            "Query or update gig application tracking. "
+            "'summary' returns status counts for the last N days. "
+            "'list' returns a numbered listing (most recent first). "
+            "'update' changes the status of an application by its number from the last list call. "
+            "Valid statuses: applied, accepted, no_response, declined."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["summary", "list", "update"],
+                    "description": "summary=status counts, list=numbered listing, update=change status",
+                },
+                "days": {
+                    "type": "integer",
+                    "description": "Lookback window in days for summary/list (default 30).",
+                },
+                "number": {
+                    "type": "integer",
+                    "description": "1-based position from the last list call. Required for update.",
+                },
+                "status": {
+                    "type": "string",
+                    "enum": ["applied", "accepted", "no_response", "declined"],
+                    "description": "New status. Required for update.",
+                },
+            },
+            "required": ["action"],
+        },
+    },
 ]
 
 
@@ -420,9 +461,15 @@ class AgentResponse:
 _histories: dict[int, list[dict]] = {}
 _last_invoice: dict[int, dict] = {}
 _last_gig_listing: dict[int, list[dict]] = {}
+_last_application_listing: dict[int, list[dict]] = {}
 
 _PDF_RESPONSE_TOOLS = {"generate_invoice", "duplicate_invoice", "get_invoice"}
-_VERBATIM_RESPONSE_TOOLS = {"list_upcoming_gigs", "get_gig_stats", "manage_config"}
+_VERBATIM_RESPONSE_TOOLS = {
+    "list_upcoming_gigs",
+    "get_gig_stats",
+    "manage_config",
+    "manage_applications",
+}
 
 
 def _make_calendar_client() -> GoogleCalendarClient | None:
@@ -536,6 +583,18 @@ def _resolve_period(text: str) -> str:
                 return (today + _dt.timedelta(days=days_ahead)).isoformat()
 
     return text
+
+
+def _fmt_application_date(date_str: str) -> str:
+    """Format a gig date string as 'D Mon' (e.g. '15 Jun') for application listings."""
+    yyyymmdd = normalize_to_yyyymmdd(date_str)
+    if yyyymmdd:
+        try:
+            dt = datetime.datetime.strptime(yyyymmdd, "%Y%m%d")
+            return f"{dt.day} {dt.strftime('%b')}"
+        except ValueError:
+            pass
+    return date_str
 
 
 async def _execute_tool(name: str, input_data: dict, chat_id: int) -> str:
@@ -988,6 +1047,72 @@ async def _execute_tool(name: str, input_data: dict, chat_id: int) -> str:
             return json.dumps({"result": msg})
         return json.dumps({"error": f"Unknown action: {action}"})
 
+    # ── manage_applications ──────────────────────────────────────────────────
+    if name == "manage_applications":
+        action = input_data.get("action", "summary")
+        days = input_data.get("days", 30)
+        records = application_store.list_applications(days)
+
+        if action == "summary":
+            counts = {
+                "accepted": sum(1 for r in records if r["status"] == "accepted"),
+                "applied": sum(1 for r in records if r["status"] == "applied"),
+                "no_response": sum(1 for r in records if r["status"] == "no_response"),
+                "declined": sum(1 for r in records if r["status"] == "declined"),
+            }
+            total = len(records)
+            lines = [
+                f"📋 Applications — last {days} days",
+                "",
+                f"Applied:      {total}",
+                f"Accepted:     {counts['accepted']}",
+                f"No response:  {counts['no_response']}",
+                f"Declined:     {counts['declined']}",
+                f"Pending:      {counts['applied']}",
+            ]
+            return json.dumps({"result": "\n".join(lines)})
+
+        if action == "list":
+            if not records:
+                return json.dumps({"result": f"No applications in the last {days} days."})
+            _last_application_listing[chat_id] = records
+            _status_emoji = {
+                "accepted": "✅",
+                "applied": "⏳",
+                "no_response": "🔕",
+                "declined": "❌",
+            }
+            lines = [f"📋 Applications — last {days} days", ""]
+            for i, r in enumerate(records, start=1):
+                emoji = _status_emoji.get(r["status"], "❓")
+                org_part = f" — {r['organisation']}" if r.get("organisation") else ""
+                date_part = _fmt_application_date(r.get("date", ""))
+                fee_part = f"  {r['fee']}" if r.get("fee") else ""
+                lines.append(f"{i}. {emoji} {r['header']}{org_part}  ({date_part}){fee_part}")
+            return json.dumps({"result": "\n".join(lines)}, ensure_ascii=False)
+
+        if action == "update":
+            n = input_data.get("number")
+            status: str = input_data.get("status") or ""
+            listing = _last_application_listing.get(chat_id)
+            if not listing:
+                return json.dumps(
+                    {"error": "No application listing cached. Ask to list applications first."}
+                )
+            if n is None or n < 1 or n > len(listing):
+                return json.dumps({"error": f"No application number {n}."})
+            record = listing[n - 1]
+            url = record.get("url", "")
+            if not url:
+                return json.dumps({"error": "Cannot update a manual entry with no URL."})
+            ok = application_store.update_status(url, status)
+            if ok:
+                listing[n - 1]["status"] = status
+                return json.dumps({"result": f"Updated application {n} to '{status}'."})
+            return json.dumps({"error": "Application not found in store."})
+
+        return json.dumps({"error": f"Unknown action: {action}"})
+
     # ── clear_conversation ──────────────────────────────────────────────────
     if name == "clear_conversation":
         reset_conversation(chat_id)
@@ -1202,3 +1327,4 @@ def reset_conversation(chat_id: int) -> None:
     _histories.pop(chat_id, None)
     _last_invoice.pop(chat_id, None)
     _last_gig_listing.pop(chat_id, None)
+    _last_application_listing.pop(chat_id, None)
