@@ -81,10 +81,10 @@ class GoogleCalendarClient:
         self._service = build("calendar", "v3", credentials=creds, cache_discovery=False)
         logger.debug("GoogleCalendarClient initialised", extra={"calendar_id": calendar_id})
 
-    def has_event_on_date(self, date_str: str) -> bool:
-        """Return True if there is at least one event on the given date (YYYYMMDD).
+    def get_events_on_date(self, date_str: str) -> list[dict]:
+        """Return events on the given date (YYYYMMDD) as [{id, summary}] dicts.
 
-        Fails open — returns False (don't block the gig) if the API call fails.
+        Returns [] on any API error (fail-open — don't silently drop gigs).
         """
         t0 = time.perf_counter()
         try:
@@ -103,13 +103,16 @@ class GoogleCalendarClient:
                 .execute()
             )
 
-            events = result.get("items", [])
+            events = [
+                {"id": item.get("id", ""), "summary": item.get("summary", "(No title)")}
+                for item in result.get("items", [])
+            ]
             elapsed_ms = int((time.perf_counter() - t0) * 1000)
             logger.debug(
                 "Calendar check complete",
                 extra={"date": date_str, "event_count": len(events), "elapsed_ms": elapsed_ms},
             )
-            return len(events) > 0
+            return events
 
         except Exception as exc:
             elapsed_ms = int((time.perf_counter() - t0) * 1000)
@@ -118,7 +121,14 @@ class GoogleCalendarClient:
                 extra={"date": date_str, "error": str(exc), "elapsed_ms": elapsed_ms},
             )
             alert.send_alert(f"⚠️ Google Calendar API error (CalendarFilter query): {exc}")
-            return False
+            return []
+
+    def has_event_on_date(self, date_str: str) -> bool:
+        """Return True if there is at least one event on the given date (YYYYMMDD).
+
+        Fails open — returns False (don't block the gig) if the API call fails.
+        """
+        return bool(self.get_events_on_date(date_str))
 
     def list_upcoming_events(self, max_results: int = 10) -> list[dict]:
         """Return upcoming events from now, ordered by start time ascending.

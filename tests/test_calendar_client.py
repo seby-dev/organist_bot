@@ -87,6 +87,55 @@ class TestHasEventOnDate:
         assert client.has_event_on_date("20260301") is True
 
 
+# ── get_events_on_date ────────────────────────────────────────────────────────
+
+
+class TestGetEventsOnDate:
+    def test_returns_events_on_matching_date(self, client, mock_service):
+        mock_service.events().list().execute.return_value = {
+            "items": [{"id": "e1", "summary": "Evensong — St Mary's"}]
+        }
+        events = client.get_events_on_date("20260301")
+        assert events == [{"id": "e1", "summary": "Evensong — St Mary's"}]
+
+    def test_returns_multiple_events(self, client, mock_service):
+        mock_service.events().list().execute.return_value = {
+            "items": [
+                {"id": "e1", "summary": "Matins"},
+                {"id": "e2", "summary": "Evensong"},
+            ]
+        }
+        events = client.get_events_on_date("20260301")
+        assert len(events) == 2
+        assert events[0] == {"id": "e1", "summary": "Matins"}
+        assert events[1] == {"id": "e2", "summary": "Evensong"}
+
+    def test_returns_empty_when_no_events(self, client, mock_service):
+        mock_service.events().list().execute.return_value = {"items": []}
+        assert client.get_events_on_date("20260301") == []
+
+    def test_returns_empty_on_api_error(self, client, mock_service):
+        mock_service.events().list().execute.side_effect = Exception("API down")
+        assert client.get_events_on_date("20260301") == []
+
+    def test_has_event_on_date_returns_true_when_events_exist(self, client, mock_service):
+        mock_service.events().list().execute.return_value = {
+            "items": [{"id": "e1", "summary": "Test Event"}]
+        }
+        assert client.has_event_on_date("20260301") is True
+
+    def test_has_event_on_date_returns_false_when_no_events(self, client, mock_service):
+        mock_service.events().list().execute.return_value = {"items": []}
+        assert client.has_event_on_date("20260301") is False
+
+    def test_summary_defaults_to_no_title_when_missing(self, client, mock_service):
+        mock_service.events().list().execute.return_value = {
+            "items": [{"id": "e1"}]  # no "summary" key
+        }
+        events = client.get_events_on_date("20260301")
+        assert events == [{"id": "e1", "summary": "(No title)"}]
+
+
 # ── add_gig ───────────────────────────────────────────────────────────────────
 
 

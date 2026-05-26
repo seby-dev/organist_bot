@@ -364,7 +364,7 @@ class TestMain:
         mock_scraper.extract_full_details.return_value = {}
 
         mock_cal_client = MagicMock()
-        mock_cal_client.has_event_on_date.return_value = True  # date is booked
+        mock_cal_client.get_events_on_date.return_value = [{"id": "b1", "summary": "Unavailable"}]
 
         with (
             patch("main.settings", mock_settings),
