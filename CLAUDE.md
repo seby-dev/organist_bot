@@ -101,6 +101,13 @@ Filter toggles (`ENABLE_FEE_FILTER`, `ENABLE_CALENDAR_FILTER`, etc.) all default
 - Use background agents for long-running tasks (test runs, log analysis) so the main session stays responsive.
 - Up to 10 subagents can run in parallel — use this capacity for large implementations.
 
+## Full Feature Workflow
+When given a new feature request:
+1. **Brainstorm** (`superpowers:brainstorming`) — explore context, ask clarifying questions, propose approaches, write and commit a spec to `docs/superpowers/specs/`
+2. **Plan** (`superpowers:writing-plans`) — convert the approved spec into a step-by-step implementation plan saved to `docs/superpowers/plans/`
+3. **Implement** (`superpowers:subagent-driven-development`) — dispatch fresh subagents per task with spec + code quality review after each
+4. **Ship** — commit, push, create PR, and merge automatically per the Git & PR Workflow below
+
 ## Decomposition Pattern
 When given an implementation task:
 1. Spawn an Explore subagent to map the relevant codebase
