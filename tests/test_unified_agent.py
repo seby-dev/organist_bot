@@ -182,6 +182,79 @@ class TestAddGigAutoUnavailable:
         mock_fs.add_period.assert_not_called()
 
 
+# ── add_gig → application_store.upsert_accepted ───────────────────────────────
+
+
+class TestAddGigApplicationStore:
+    @pytest.mark.asyncio
+    async def test_add_gig_url_match_updates_to_accepted(self):
+        """When url is provided, upsert_accepted is called with that url."""
+        input_data = {
+            **_GIG_INPUT_BASE,
+            "confirmed": True,
+            "url": "https://organistsonline.org/gig/1",
+        }
+        with (
+            patch("organist_bot.integrations.unified_agent._make_calendar_client") as mock_factory,
+            patch("organist_bot.integrations.unified_agent.application_store") as mock_store,
+        ):
+            mock_cal = MagicMock()
+            mock_cal.add_gig.return_value = "evt_abc"
+            mock_factory.return_value = mock_cal
+            await _execute_tool("add_gig", input_data, CHAT_ID)
+        mock_store.upsert_accepted.assert_called_once_with(
+            url="https://organistsonline.org/gig/1",
+            header="Sunday Service",
+            organisation="St Mary's",
+            date="Sunday 1st June 2025",
+            fee="£150",
+        )
+
+    @pytest.mark.asyncio
+    async def test_add_gig_url_no_match_creates_accepted(self):
+        """upsert_accepted is called with url even when no prior record exists."""
+        input_data = {
+            **_GIG_INPUT_BASE,
+            "confirmed": True,
+            "url": "https://organistsonline.org/gig/99",
+        }
+        with (
+            patch("organist_bot.integrations.unified_agent._make_calendar_client") as mock_factory,
+            patch("organist_bot.integrations.unified_agent.application_store") as mock_store,
+        ):
+            mock_cal = MagicMock()
+            mock_cal.add_gig.return_value = "evt_abc"
+            mock_factory.return_value = mock_cal
+            await _execute_tool("add_gig", input_data, CHAT_ID)
+        mock_store.upsert_accepted.assert_called_once_with(
+            url="https://organistsonline.org/gig/99",
+            header="Sunday Service",
+            organisation="St Mary's",
+            date="Sunday 1st June 2025",
+            fee="£150",
+        )
+
+    @pytest.mark.asyncio
+    async def test_add_gig_manual_entry_creates_accepted(self):
+        """When no url is provided (manual entry), upsert_accepted is called with url=None."""
+        input_data = {**_GIG_INPUT_BASE, "confirmed": True}  # no "url" key
+        with (
+            patch("organist_bot.integrations.unified_agent._make_calendar_client") as mock_factory,
+            patch("organist_bot.integrations.unified_agent.application_store") as mock_store,
+        ):
+            mock_cal = MagicMock()
+            mock_cal.add_gig.return_value = "evt_abc"
+            mock_factory.return_value = mock_cal
+            await _execute_tool("add_gig", input_data, CHAT_ID)
+        mock_store.upsert_accepted.assert_called_once_with(
+            url=None,
+            header="Sunday Service",
+            organisation="St Mary's",
+            date="Sunday 1st June 2025",
+            fee="£150",
+        )
+
+
 # ── list_upcoming_gigs ────────────────────────────────────────────────────────
 
 

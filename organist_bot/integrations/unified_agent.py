@@ -6,7 +6,7 @@ import logging
 from dataclasses import dataclass
 from typing import cast
 
-from organist_bot import filter_store
+from organist_bot import application_store, filter_store
 from organist_bot.config import settings
 from organist_bot.filters import normalize_to_yyyymmdd, parse_start_time
 from organist_bot.integrations.calendar_client import GoogleCalendarClient
@@ -103,6 +103,10 @@ TOOLS: list[dict] = [
                 "date": {"type": "string", "description": "e.g. 'Sunday 1st June 2025'"},
                 "time": {"type": "string", "description": "e.g. '10:30am'"},
                 "fee": {"type": "string", "description": "e.g. '£150'"},
+                "url": {
+                    "type": "string",
+                    "description": "Source gig URL from fetch_gig_details. Omit for manual entries.",
+                },
             },
             "required": ["confirmed", "header", "date", "time"],
         },
@@ -594,6 +598,21 @@ async def _execute_tool(name: str, input_data: dict, chat_id: int) -> str:
                         "Failed to add gig date to unavailable periods",
                         extra={"date": fields["date"]},
                     )
+            url = input_data.get("url") or None
+            try:
+                application_store.upsert_accepted(
+                    url=url,
+                    header=fields["header"],
+                    organisation=fields.get("organisation", ""),
+                    date=fields["date"],
+                    fee=fields["fee"] if fields["fee"] != "not specified" else "",
+                )
+            except Exception:
+                logger.warning(
+                    "add_gig: upsert_accepted failed",
+                    extra={"url": url},
+                    exc_info=True,
+                )
             return json.dumps({"result": f"Added to calendar. Event ID: {event_id}"})
         except Exception as exc:
             return json.dumps({"error": str(exc)})
