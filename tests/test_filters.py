@@ -1362,3 +1362,10 @@ class TestCalendarFilterCompeting:
         msg = mock_alert.send_alert.call_args.args[0]
         assert "Matins — St John's" in msg
         assert "Unavailable" not in msg
+
+    def test_event_without_summary_treated_as_competing(self):
+        f = self._make_filter([{"id": "e1"}])  # no "summary" key
+        gig = make_gig(date="Sunday, 15 March 2026")
+        with patch("organist_bot.filters.alert") as mock_alert:
+            assert f(gig) is False
+        mock_alert.send_alert.assert_called_once()

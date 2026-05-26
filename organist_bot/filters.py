@@ -455,7 +455,7 @@ class CalendarFilter:
         if not events:
             return True
 
-        competing = [e for e in events if e["summary"] != "Unavailable"]
+        competing = [e for e in events if e.get("summary", "").strip() != "Unavailable"]
         if competing:
             self._alert_competing(gig, competing)
         else:
@@ -468,7 +468,7 @@ class CalendarFilter:
     def _alert_competing(self, gig: Gig, competing: list[dict]) -> None:
         org_part = f" — {gig.organisation}" if gig.organisation else ""
         fee_part = f"\nFee:      {gig.fee}" if gig.fee else ""
-        conflicts = "\n".join(f"  • {e['summary']}" for e in competing)
+        conflicts = "\n".join(f"  • {e.get('summary', '(untitled)')}" for e in competing)
         msg = (
             "⚠️ Competing gig — date already booked\n\n"
             f"New gig:  {gig.header}{org_part}\n"
@@ -482,7 +482,7 @@ class CalendarFilter:
             extra={
                 "header": gig.header,
                 "date": gig.date,
-                "competing": [e["summary"] for e in competing],
+                "competing": [e.get("summary", "(untitled)") for e in competing],
             },
         )
         alert.send_alert(msg)
