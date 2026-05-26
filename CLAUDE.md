@@ -90,3 +90,20 @@ Filter toggles (`ENABLE_FEE_FILTER`, `ENABLE_CALENDAR_FILTER`, etc.) all default
 - **Full filter** (after detail-page fetch): all of the above plus `BlacklistFilter` (requires contact email) and `PostcodeFilter` (requires postcode + Google Maps API)
 
 `PostcodeFilter` requires `HOME_POSTCODE` and `GOOGLE_MAPS_API_KEY` to activate. `CalendarFilter` requires `GOOGLE_CALENDAR_ID` and `GOOGLE_CALENDAR_CREDENTIALS_FILE`.
+
+# Development Workflow
+
+## Agent Strategy
+- For any task that can be decomposed into independent subtasks, always use subagents.
+- Prefer parallel execution over sequential where tasks don't have data dependencies.
+- Delegate exploratory/read-only work (finding files, analysing schemas) to an Explore subagent.
+- Delegate planning and design to a Plan subagent before implementation begins.
+- Use background agents for long-running tasks (test runs, log analysis) so the main session stays responsive.
+- Up to 10 subagents can run in parallel — use this capacity for large implementations.
+
+## Decomposition Pattern
+When given an implementation task:
+1. Spawn an Explore subagent to map the relevant codebase
+2. Spawn a Plan subagent to design the approach
+3. Decompose implementation into independent modules and run them in parallel
+4. Spawn a review subagent to validate output before committing
