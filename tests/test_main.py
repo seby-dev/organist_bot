@@ -460,3 +460,47 @@ class TestHashChangeDetection:
 
         mock_scraper.parse_gig_listings.assert_called_once()
         mock_save.assert_called_once_with(new_hash)
+
+
+# ── expire_past_applied called each tick ──────────────────────────────────────
+
+
+class TestExpirePastApplied:
+    def _make_minimal_settings(self):
+        s = MagicMock()
+        s.target_url = "https://organistsonline.org/required/"
+        s.min_fee = 100
+        s.poll_minutes = 2
+        s.enable_seen_filter = False
+        s.enable_fee_filter = False
+        s.enable_sunday_time_filter = False
+        s.enable_blacklist_filter = False
+        s.enable_booked_date_filter = False
+        s.enable_postcode_filter = False
+        s.enable_calendar_filter = False
+        s.enable_availability_filter = False
+        s.email_password = "pass"
+        return s
+
+    def test_expire_past_applied_called_each_tick(self):
+        """expire_past_applied must be called once per _run, even when no gigs are found."""
+        mock_settings = self._make_minimal_settings()
+        mock_scraper = MagicMock()
+        mock_scraper.fetch.return_value = "<html></html>"
+        mock_scraper.parse_gig_listings.return_value = []
+
+        with (
+            patch("main.settings", mock_settings),
+            patch("main.Notifier"),
+            patch("main.SMTPTransport"),
+            patch("main.load_seen_gigs", return_value=set()),
+            patch("main.save_seen_gigs"),
+            patch("main.load_listings_hash", return_value=None),
+            patch("main.save_listings_hash"),
+            patch("main.set_run_id"),
+            patch("main.application_store") as mock_store,
+        ):
+            mock_store.expire_past_applied.return_value = 0
+            main_module.main(mock_scraper)
+
+        mock_store.expire_past_applied.assert_called_once()
