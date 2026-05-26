@@ -95,7 +95,7 @@ Filter toggles (`ENABLE_FEE_FILTER`, `ENABLE_CALENDAR_FILTER`, etc.) all default
 
 ## Agent Strategy
 - For any task that can be decomposed into independent subtasks, always use subagents.
-- Prefer parallel execution over sequential where tasks don't have data dependencies.
+- **Parallel by default**: if N items can be checked/implemented independently, spawn N subagents simultaneously — never check them one by one in a single agent.
 - Delegate exploratory/read-only work (finding files, analysing schemas) to an Explore subagent.
 - Delegate planning and design to a Plan subagent before implementation begins.
 - Use background agents for long-running tasks (test runs, log analysis) so the main session stays responsive.
@@ -107,3 +107,9 @@ When given an implementation task:
 2. Spawn a Plan subagent to design the approach
 3. Decompose implementation into independent modules and run them in parallel
 4. Spawn a review subagent to validate output before committing
+
+## Parallelism Examples
+- "Check whether features A, B, C, D are implemented" → spawn 4 Explore subagents in one message, one per feature
+- "Implement modules X, Y, Z" → spawn 3 implementer subagents simultaneously if they don't share files
+- "Review these 5 files" → spawn 5 reviewer subagents in parallel
+- The signal: any time you find yourself writing "check A, then check B, then check C" — stop and parallelize it
