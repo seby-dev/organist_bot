@@ -7,7 +7,9 @@ import logging
 import anthropic
 
 import organist_bot.application_store as application_store
+from organist_bot import travel
 from organist_bot.config import settings
+from organist_bot.integrations.calendar_client import GoogleCalendarClient
 from organist_bot.integrations.gmail_client import GmailClient
 
 logger = logging.getLogger(__name__)
@@ -94,11 +96,16 @@ def _send_telegram_notification(text: str) -> None:
 
 
 def _create_calendar_event(record: dict) -> bool:
-    """Create a Google Calendar event for an accepted booking. Returns True on success."""
+    """Create a Google Calendar event and travel buffers for an accepted booking.
+
+    Returns True if the gig event was created successfully (buffer failure is non-fatal).
+    """
     if not settings.google_calendar_id or not settings.google_calendar_credentials_file:
         return False
     try:
-        from organist_bot.integrations.calendar_client import GoogleCalendarClient
+        import datetime as _dt
+
+        from organist_bot.filters import normalize_to_yyyymmdd, parse_start_time
         from organist_bot.models import Gig
 
         cal = GoogleCalendarClient(
@@ -111,14 +118,47 @@ def _create_calendar_event(record: dict) -> bool:
             organisation=record.get("organisation", ""),
             locality="",
             date=record.get("date", ""),
-            time="",
+            time=record.get("time", ""),
             fee=record.get("fee", ""),
         )
         cal.add_gig(gig)
+
+        # Travel buffers (non-fatal — gig event is already created)
+        try:
+            date_str = normalize_to_yyyymmdd(gig.date)
+            start_time = parse_start_time(gig.time)
+            if date_str and start_time:
+                date = _dt.datetime.strptime(date_str, "%Y%m%d").date()
+                start_dt = _dt.datetime.combine(date, start_time)
+                end_dt = start_dt + _dt.timedelta(hours=1)
+                postcode = record.get("postcode", "")
+                travel_mins = travel.get_travel_minutes(postcode) or settings.max_travel_minutes
+                before_id, after_id = cal.add_travel_buffers(
+                    gig_summary=f"{gig.header} — {gig.organisation}",
+                    start_dt=start_dt,
+                    end_dt=end_dt,
+                    travel_minutes=travel_mins,
+                )
+                url = record.get("url", "")
+                if url:
+                    application_store.update_travel_buffer_ids(url, before_id, after_id)
+        except Exception as buf_exc:
+            logger.warning("reply_monitor: travel buffer creation failed: %s", buf_exc)
+
         return True
     except Exception as exc:
         logger.warning("reply_monitor: calendar event creation failed: %s", exc)
         return False
+
+
+def _make_calendar_client():
+    """Return a GoogleCalendarClient if configured, else None."""
+    if not settings.google_calendar_id or not settings.google_calendar_credentials_file:
+        return None
+    return GoogleCalendarClient(
+        credentials_file=settings.google_calendar_credentials_file,
+        calendar_id=settings.google_calendar_id,
+    )
 
 
 def _extract_email_address(header: str) -> str:
@@ -255,6 +295,20 @@ def check_replies() -> None:
                     f'"{msg.get("body", "")[:200]}"\n\n'
                     "Delete calendar event or ignore?"
                 )
+                # Delete travel buffer events automatically
+                cal = _make_calendar_client()
+                if cal:
+                    for field in ("travel_before_event_id", "travel_after_event_id"):
+                        evt_id = record.get(field)
+                        if evt_id:
+                            try:
+                                cal.delete_event(evt_id)
+                            except Exception as del_exc:
+                                logger.warning(
+                                    "reply_monitor: failed to delete travel buffer %s: %s",
+                                    evt_id,
+                                    del_exc,
+                                )
 
             elif classification == "unclear":
                 _send_telegram_notification(
