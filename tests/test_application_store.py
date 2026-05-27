@@ -380,6 +380,38 @@ class TestUpsertAcceptedPostcode:
         records = json.loads(store._PATH.read_text())
         assert records[0]["postcode"] == ""
 
+    def test_upsert_accepted_updates_postcode_on_existing_record(self):
+        # First record the application
+        gig = _make_gig()
+        store.record_application(gig)
+        # Then accept it with a postcode
+        store.upsert_accepted(
+            url="https://organistsonline.org/gig/123",
+            header="Wedding",
+            organisation="St Mary's",
+            date="2026-07-01",
+            fee="£200",
+            postcode="CM1 1AA",
+        )
+        records = json.loads(store._PATH.read_text())
+        assert records[0]["postcode"] == "CM1 1AA"
+
+    def test_upsert_accepted_preserves_existing_postcode_when_blank(self):
+        # Record application with a postcode
+        gig = _make_gig(postcode="CM1 1AA")
+        store.record_application(gig)
+        # Accept without providing a postcode
+        store.upsert_accepted(
+            url="https://organistsonline.org/gig/123",
+            header="Wedding",
+            organisation="St Mary's",
+            date="2026-07-01",
+            fee="£200",
+        )
+        records = json.loads(store._PATH.read_text())
+        # Original postcode should be preserved (not overwritten with "")
+        assert records[0]["postcode"] == "CM1 1AA"
+
 
 class TestUpdateTravelBufferIds:
     def test_sets_buffer_ids_on_existing_record(self):

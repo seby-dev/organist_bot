@@ -108,6 +108,7 @@ def upsert_accepted(
     email: str = "",
     *,
     postcode: str = "",
+    time: str = "",
 ) -> None:
     """Create or update a record to 'accepted'.
 
@@ -123,6 +124,8 @@ def upsert_accepted(
                 r["updated_at"] = now
                 if postcode:
                     r["postcode"] = postcode
+                if time:
+                    r["time"] = time
                 _write(records)
                 return
     records.append(
@@ -131,7 +134,7 @@ def upsert_accepted(
             "header": header,
             "organisation": organisation,
             "date": date,
-            "time": "",
+            "time": time,
             "fee": fee,
             "email": email,
             "postcode": postcode,
