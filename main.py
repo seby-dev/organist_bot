@@ -279,6 +279,14 @@ def _run(scraper: Scraper, sheets_logger: SheetsLogger | None = None) -> None:
     except Exception:
         logger.warning("application_store: expire_past_applied failed", exc_info=True)
 
+    try:
+        import organist_bot.reply_monitor as reply_monitor
+
+        reply_monitor.check_replies()
+    except Exception:
+        alert.send_alert("⚠️ reply_monitor: check_replies failed — check logs.")
+        logger.warning("reply_monitor: check_replies failed", exc_info=True)
+
     # ── Run summary ───────────────────────────────────────────────────────────
     logger.info(
         "Run summary",

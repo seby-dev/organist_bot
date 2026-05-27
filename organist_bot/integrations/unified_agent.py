@@ -1190,10 +1190,19 @@ async def _execute_tool(name: str, input_data: dict, chat_id: int) -> str:
             url = record.get("url", "")
             if not url:
                 return json.dumps({"error": "Cannot update a manual entry with no URL."})
+            original_status = record.get("status", "")
             ok = application_store.update_status(url, status)
             if ok:
                 listing[n - 1]["status"] = status
-                return json.dumps({"result": f"Updated application {n} to '{status}'."})
+                msg = f"Updated application {n} to '{status}'."
+                if original_status == "accepted" and status == "declined":
+                    org = record.get("organisation") or record.get("header", "")
+                    date = record.get("date", "")
+                    msg += (
+                        f"\n\nThis was a confirmed booking ({org} on {date}). "
+                        "Do you want to delete the calendar event?"
+                    )
+                return json.dumps({"result": msg})
             return json.dumps({"error": "Application not found in store."})
 
         return json.dumps({"error": f"Unknown action: {action}"})
