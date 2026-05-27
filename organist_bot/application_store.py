@@ -85,12 +85,25 @@ def update_status(url: str, status: str) -> bool:
     return False
 
 
+def update_reply_message_id(url: str, message_id: str) -> bool:
+    """Set reply_message_id on the record with the given URL. Returns False if not found."""
+    records = _read()
+    for r in records:
+        if r["url"] == url:
+            r["reply_message_id"] = message_id
+            r["updated_at"] = _now_iso()
+            _write(records)
+            return True
+    return False
+
+
 def upsert_accepted(
     url: str | None,
     header: str,
     organisation: str,
     date: str,
     fee: str,
+    email: str = "",
 ) -> None:
     """Create or update a record to 'accepted'.
 
@@ -113,7 +126,7 @@ def upsert_accepted(
             "organisation": organisation,
             "date": date,
             "fee": fee,
-            "email": "",
+            "email": email,
             "status": "accepted",
             "applied_at": now,
             "updated_at": now,
@@ -147,6 +160,58 @@ def expire_past_applied() -> int:
     if changed:
         _write(records)
     return changed
+
+
+def _parse_fee(fee_str: str) -> float | None:
+    """Extract first numeric value from a fee string. Returns None if empty or no number found."""
+    import re
+
+    if not fee_str or not fee_str.strip():
+        return None
+    m = re.search(r"[\d,]+(?:\.\d+)?", fee_str.replace("£", "").replace("$", ""))
+    if not m:
+        return None
+    try:
+        return float(m.group().replace(",", ""))
+    except ValueError:
+        return None
+
+
+def get_income(from_date: str, to_date: str) -> dict:
+    """Return income summary for accepted records where gig date falls in [from_date, to_date] inclusive."""
+    _empty: dict = {"total": 0.0, "count": 0, "no_fee_count": 0, "records": []}
+    try:
+        start = datetime.date.fromisoformat(from_date)
+        end = datetime.date.fromisoformat(to_date)
+        records = _read()
+        matched = []
+        for r in records:
+            if r.get("status") != "accepted":
+                continue
+            try:
+                gig_date = datetime.date.fromisoformat(r.get("date", ""))
+            except ValueError:
+                continue
+            if start <= gig_date <= end:
+                matched.append(r)
+        matched.sort(key=lambda r: r.get("date", ""))
+        total = 0.0
+        no_fee_count = 0
+        for r in matched:
+            fee = _parse_fee(r.get("fee", ""))
+            if fee is None:
+                no_fee_count += 1
+            else:
+                total += fee
+        return {
+            "total": total,
+            "count": len(matched),
+            "no_fee_count": no_fee_count,
+            "records": matched,
+        }
+    except Exception:
+        logger.exception("application_store: get_income failed")
+        return _empty
 
 
 def list_applications(days: int = 30) -> list[dict]:

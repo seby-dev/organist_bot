@@ -191,3 +191,143 @@ class TestListApplications:
 
         assert store.list_applications(days=30) == []
         assert len(store.list_applications(days=61)) == 1
+
+
+# ── get_income ────────────────────────────────────────────────────────────────
+
+
+class TestGetIncome:
+    def _make_accepted(self, date, fee, url="http://example.com/1"):
+        return {
+            "url": url,
+            "header": "Test",
+            "organisation": "St John",
+            "date": date,
+            "fee": fee,
+            "email": "",
+            "status": "accepted",
+            "applied_at": "2026-06-01T10:00:00Z",
+            "updated_at": "2026-06-01T10:00:00Z",
+        }
+
+    def test_sums_accepted_fees_in_range(self, tmp_path, monkeypatch):
+        import organist_bot.application_store as store
+
+        monkeypatch.setattr(store, "_PATH", tmp_path / "applications.json")
+        records = [
+            self._make_accepted("2026-06-10", "£140.00", "http://a.com/1"),
+            self._make_accepted("2026-06-15", "£150.00", "http://a.com/2"),
+        ]
+        (tmp_path / "applications.json").write_text(json.dumps(records))
+        result = store.get_income("2026-06-01", "2026-06-30")
+        assert result["total"] == pytest.approx(290.0)
+        assert result["count"] == 2
+        assert result["no_fee_count"] == 0
+
+    def test_excludes_non_accepted_statuses(self, tmp_path, monkeypatch):
+        import organist_bot.application_store as store
+
+        monkeypatch.setattr(store, "_PATH", tmp_path / "applications.json")
+        records = [
+            {
+                **self._make_accepted("2026-06-10", "£100.00"),
+                "status": "applied",
+                "url": "http://a.com/1",
+            },
+            {
+                **self._make_accepted("2026-06-10", "£100.00"),
+                "status": "rejected",
+                "url": "http://a.com/2",
+            },
+            {
+                **self._make_accepted("2026-06-10", "£100.00"),
+                "status": "declined",
+                "url": "http://a.com/3",
+            },
+        ]
+        (tmp_path / "applications.json").write_text(json.dumps(records))
+        result = store.get_income("2026-06-01", "2026-06-30")
+        assert result["total"] == 0.0
+        assert result["count"] == 0
+
+    def test_excludes_records_outside_date_range(self, tmp_path, monkeypatch):
+        import organist_bot.application_store as store
+
+        monkeypatch.setattr(store, "_PATH", tmp_path / "applications.json")
+        records = [
+            self._make_accepted("2026-05-31", "£100.00", "http://a.com/1"),
+            self._make_accepted("2026-06-15", "£140.00", "http://a.com/2"),
+            self._make_accepted("2026-07-01", "£100.00", "http://a.com/3"),
+        ]
+        (tmp_path / "applications.json").write_text(json.dumps(records))
+        result = store.get_income("2026-06-01", "2026-06-30")
+        assert result["count"] == 1
+        assert result["total"] == pytest.approx(140.0)
+
+    def test_empty_fee_counted_as_no_fee(self, tmp_path, monkeypatch):
+        import organist_bot.application_store as store
+
+        monkeypatch.setattr(store, "_PATH", tmp_path / "applications.json")
+        records = [self._make_accepted("2026-06-10", "")]
+        (tmp_path / "applications.json").write_text(json.dumps(records))
+        result = store.get_income("2026-06-01", "2026-06-30")
+        assert result["count"] == 1
+        assert result["no_fee_count"] == 1
+        assert result["total"] == 0.0
+
+    def test_parses_pound_and_dollar(self, tmp_path, monkeypatch):
+        import organist_bot.application_store as store
+
+        monkeypatch.setattr(store, "_PATH", tmp_path / "applications.json")
+        records = [
+            self._make_accepted("2026-06-10", "£140.00", "http://a.com/1"),
+            self._make_accepted("2026-06-15", "$500.00", "http://a.com/2"),
+        ]
+        (tmp_path / "applications.json").write_text(json.dumps(records))
+        result = store.get_income("2026-06-01", "2026-06-30")
+        assert result["total"] == pytest.approx(640.0)
+
+    def test_fails_open_on_corrupt_json(self, tmp_path, monkeypatch):
+        import organist_bot.application_store as store
+
+        monkeypatch.setattr(store, "_PATH", tmp_path / "applications.json")
+        (tmp_path / "applications.json").write_text("not json")
+        result = store.get_income("2026-06-01", "2026-06-30")
+        assert result == {"total": 0.0, "count": 0, "no_fee_count": 0, "records": []}
+
+
+# ── update_reply_message_id ───────────────────────────────────────────────────
+
+
+class TestUpdateReplyMessageId:
+    def _make_record(self, url, email="church@example.com"):
+        return {
+            "url": url,
+            "header": "Test",
+            "organisation": "St John",
+            "date": "2026-06-10",
+            "fee": "£100",
+            "email": email,
+            "status": "applied",
+            "applied_at": "2026-06-01T10:00:00Z",
+            "updated_at": "2026-06-01T10:00:00Z",
+        }
+
+    def test_sets_reply_message_id_on_existing_record(self, tmp_path, monkeypatch):
+        import organist_bot.application_store as store
+
+        monkeypatch.setattr(store, "_PATH", tmp_path / "applications.json")
+        (tmp_path / "applications.json").write_text(
+            json.dumps([self._make_record("http://a.com/1")])
+        )
+        result = store.update_reply_message_id("http://a.com/1", "msg123")
+        assert result is True
+        records = json.loads((tmp_path / "applications.json").read_text())
+        assert records[0]["reply_message_id"] == "msg123"
+
+    def test_returns_false_when_url_not_found(self, tmp_path, monkeypatch):
+        import organist_bot.application_store as store
+
+        monkeypatch.setattr(store, "_PATH", tmp_path / "applications.json")
+        (tmp_path / "applications.json").write_text(json.dumps([]))
+        assert store.update_reply_message_id("http://notfound.com", "msg123") is False

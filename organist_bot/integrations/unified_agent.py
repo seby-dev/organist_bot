@@ -447,6 +447,31 @@ TOOLS: list[dict] = [
             "required": ["action"],
         },
     },
+    # ── Income forecast ─────────────────────────────────────────────────────
+    {
+        "name": "get_income_forecast",
+        "description": (
+            "Show total income from accepted gigs for any period. "
+            "Convert natural language to ISO dates before calling: "
+            "'June' → from_date='2026-06-01', to_date='2026-06-30'; "
+            "'this year' → from_date='2026-01-01', to_date='2026-12-31'; "
+            "'last 3 months' → compute relative to today."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "from_date": {
+                    "type": "string",
+                    "description": "Start date ISO format YYYY-MM-DD (inclusive)",
+                },
+                "to_date": {
+                    "type": "string",
+                    "description": "End date ISO format YYYY-MM-DD (inclusive)",
+                },
+            },
+            "required": ["from_date", "to_date"],
+        },
+    },
 ]
 
 
@@ -469,6 +494,7 @@ _VERBATIM_RESPONSE_TOOLS = {
     "get_gig_stats",
     "manage_config",
     "manage_applications",
+    "get_income_forecast",
 }
 
 
@@ -1047,6 +1073,50 @@ async def _execute_tool(name: str, input_data: dict, chat_id: int) -> str:
             return json.dumps({"result": msg})
         return json.dumps({"error": f"Unknown action: {action}"})
 
+    # ── get_income_forecast ──────────────────────────────────────────────────
+    if name == "get_income_forecast":
+        from_date = input_data.get("from_date", "")
+        to_date = input_data.get("to_date", "")
+        try:
+            income_summary: dict = application_store.get_income(from_date, to_date)
+        except Exception as exc:
+            return json.dumps({"error": f"Failed to retrieve income: {exc}"})
+
+        try:
+            from_dt = datetime.date.fromisoformat(from_date)
+            to_dt = datetime.date.fromisoformat(to_date)
+            header = f"💰 Income — {from_dt.day} {from_dt.strftime('%b')} to {to_dt.day} {to_dt.strftime('%b %Y')}"
+        except ValueError:
+            header = f"💰 Income — {from_date} to {to_date}"
+
+        if income_summary["count"] == 0:
+            return json.dumps({"result": f"{header}\n\nNo accepted gigs in this period."})
+
+        lines = [
+            header,
+            "",
+            f"Confirmed gigs:   {income_summary['count']}",
+            f"Total income:     £{income_summary['total']:.2f}",
+        ]
+        if income_summary["no_fee_count"] > 0:
+            lines.append(
+                f"No fee recorded:  {income_summary['no_fee_count']} gig(s) (not included in total)"
+            )
+
+        lines.append("")
+        for i, r in enumerate(income_summary["records"], start=1):
+            org = r.get("organisation") or r.get("header") or "Unknown"
+            try:
+                d = datetime.date.fromisoformat(r.get("date", ""))
+                date_str = f"{d.day} {d.strftime('%b')}"
+            except ValueError:
+                date_str = r.get("date", "")
+            fee_str = r.get("fee", "").strip()
+            fee_display = fee_str if fee_str else "(no fee)"
+            lines.append(f"{i}. {org} — {date_str}  {fee_display}")
+
+        return json.dumps({"result": "\n".join(lines)})
+
     # ── manage_applications ──────────────────────────────────────────────────
     if name == "manage_applications":
         action = input_data.get("action", "summary")
@@ -1059,6 +1129,7 @@ async def _execute_tool(name: str, input_data: dict, chat_id: int) -> str:
                 "applied": sum(1 for r in records if r["status"] == "applied"),
                 "no_response": sum(1 for r in records if r["status"] == "no_response"),
                 "declined": sum(1 for r in records if r["status"] == "declined"),
+                "rejected": sum(1 for r in records if r["status"] == "rejected"),
             }
             total = len(records)
             lines = [
@@ -1068,8 +1139,22 @@ async def _execute_tool(name: str, input_data: dict, chat_id: int) -> str:
                 f"Accepted:     {counts['accepted']}",
                 f"No response:  {counts['no_response']}",
                 f"Declined:     {counts['declined']}",
+                f"Rejected:     {counts['rejected']}",
                 f"Pending:      {counts['applied']}",
             ]
+            today = datetime.date.today()
+            from_date = (today - datetime.timedelta(days=days)).isoformat()
+            to_date = today.isoformat()
+            income = application_store.get_income(from_date, to_date)
+            income_line = f"Income (accepted):  £{income['total']:.2f}"
+            if income["no_fee_count"] > 0:
+                if income["no_fee_count"] == income["count"] and income["count"] > 0:
+                    income_line += f"  · all {income['count']} gig(s) have no fee recorded"
+                else:
+                    n = income["no_fee_count"]
+                    income_line += f"  · {n} gig{'s' if n != 1 else ''} have no fee recorded"
+            lines.append("")
+            lines.append(income_line)
             return json.dumps({"result": "\n".join(lines)})
 
         if action == "list":
@@ -1081,6 +1166,7 @@ async def _execute_tool(name: str, input_data: dict, chat_id: int) -> str:
                 "applied": "⏳",
                 "no_response": "🔕",
                 "declined": "❌",
+                "rejected": "🚫",
             }
             lines = [f"📋 Applications — last {days} days", ""]
             for i, r in enumerate(records, start=1):
@@ -1105,10 +1191,19 @@ async def _execute_tool(name: str, input_data: dict, chat_id: int) -> str:
             url = record.get("url", "")
             if not url:
                 return json.dumps({"error": "Cannot update a manual entry with no URL."})
+            original_status = record.get("status", "")
             ok = application_store.update_status(url, status)
             if ok:
                 listing[n - 1]["status"] = status
-                return json.dumps({"result": f"Updated application {n} to '{status}'."})
+                msg = f"Updated application {n} to '{status}'."
+                if original_status == "accepted" and status == "declined":
+                    org = record.get("organisation") or record.get("header", "")
+                    date = record.get("date", "")
+                    msg += (
+                        f"\n\nThis was a confirmed booking ({org} on {date}). "
+                        "Do you want to delete the calendar event?"
+                    )
+                return json.dumps({"result": msg})
             return json.dumps({"error": "Application not found in store."})
 
         return json.dumps({"error": f"Unknown action: {action}"})

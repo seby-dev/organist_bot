@@ -36,6 +36,10 @@ class Settings(BaseSettings):
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""
 
+    # ── Gmail (reply monitoring) ───────────────────────────────────────────────
+    gmail_credentials_file: str = ""
+    gmail_token_file: str = "data/gmail_token.json"
+
     # ── Invoice agent ─────────────────────────────────────────────────────────
     anthropic_api_key: str = ""
     from_name: str = ""
