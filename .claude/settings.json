@@ -17,7 +17,8 @@
       "Bash(uv *)",
       "Bash(EMAIL_SENDER=* *)",
       "Bash(EMAIL_PASSWORD=* *)",
-      "Bash(CC_EMAIL=* *)"
+      "Bash(CC_EMAIL=* *)",
+      "Bash(sed *)"
     ],
     "deny": [
       "Read(.env)",
