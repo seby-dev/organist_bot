@@ -85,6 +85,18 @@ def update_status(url: str, status: str) -> bool:
     return False
 
 
+def update_reply_message_id(url: str, message_id: str) -> bool:
+    """Set reply_message_id on the record with the given URL. Returns False if not found."""
+    records = _read()
+    for r in records:
+        if r["url"] == url:
+            r["reply_message_id"] = message_id
+            r["updated_at"] = _now_iso()
+            _write(records)
+            return True
+    return False
+
+
 def upsert_accepted(
     url: str | None,
     header: str,

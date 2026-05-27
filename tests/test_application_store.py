@@ -294,3 +294,40 @@ class TestGetIncome:
         (tmp_path / "applications.json").write_text("not json")
         result = store.get_income("2026-06-01", "2026-06-30")
         assert result == {"total": 0.0, "count": 0, "no_fee_count": 0, "records": []}
+
+
+# ── update_reply_message_id ───────────────────────────────────────────────────
+
+
+class TestUpdateReplyMessageId:
+    def _make_record(self, url, email="church@example.com"):
+        return {
+            "url": url,
+            "header": "Test",
+            "organisation": "St John",
+            "date": "2026-06-10",
+            "fee": "£100",
+            "email": email,
+            "status": "applied",
+            "applied_at": "2026-06-01T10:00:00Z",
+            "updated_at": "2026-06-01T10:00:00Z",
+        }
+
+    def test_sets_reply_message_id_on_existing_record(self, tmp_path, monkeypatch):
+        import organist_bot.application_store as store
+
+        monkeypatch.setattr(store, "_PATH", tmp_path / "applications.json")
+        (tmp_path / "applications.json").write_text(
+            json.dumps([self._make_record("http://a.com/1")])
+        )
+        result = store.update_reply_message_id("http://a.com/1", "msg123")
+        assert result is True
+        records = json.loads((tmp_path / "applications.json").read_text())
+        assert records[0]["reply_message_id"] == "msg123"
+
+    def test_returns_false_when_url_not_found(self, tmp_path, monkeypatch):
+        import organist_bot.application_store as store
+
+        monkeypatch.setattr(store, "_PATH", tmp_path / "applications.json")
+        (tmp_path / "applications.json").write_text(json.dumps([]))
+        assert store.update_reply_message_id("http://notfound.com", "msg123") is False
