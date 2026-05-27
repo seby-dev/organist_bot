@@ -677,3 +677,30 @@ class TestAddTravelBuffers:
         end = dt.datetime(2026, 7, 15, 11, 0)
         with pytest.raises(Exception, match="API error"):
             client.add_travel_buffers("Test Gig", start, end, 30)
+
+    def test_cleans_up_before_event_if_after_insert_fails(self, client, mock_service):
+        call_count = 0
+
+        def fake_insert(calendarId, body):
+            nonlocal call_count
+            call_count += 1
+            mock = MagicMock()
+            if call_count == 1:
+                mock.execute.return_value = {"id": "before_orphan"}
+            else:
+                mock.execute.side_effect = Exception("after insert failed")
+            return mock
+
+        mock_service.events.return_value.insert.side_effect = fake_insert
+        mock_service.events.return_value.delete.return_value.execute.return_value = {}
+
+        start = dt.datetime(2026, 7, 15, 10, 0)
+        end = dt.datetime(2026, 7, 15, 11, 0)
+
+        with pytest.raises(Exception, match="after insert failed"):
+            client.add_travel_buffers("Test Gig", start, end, 30)
+
+        # Should have attempted to delete the orphaned before event
+        mock_service.events.return_value.delete.assert_called_once()
+        delete_call_kwargs = mock_service.events.return_value.delete.call_args
+        assert delete_call_kwargs.kwargs.get("eventId") == "before_orphan"

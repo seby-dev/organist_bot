@@ -374,16 +374,42 @@ class GoogleCalendarClient:
         }
 
         t0 = time.perf_counter()
-        before_created = (
-            self._service.events().insert(calendarId=self.calendar_id, body=before_event).execute()
-        )
-        before_id = before_created["id"]
+        before_id: str | None = None
+        try:
+            before_created = (
+                self._service.events()
+                .insert(calendarId=self.calendar_id, body=before_event)
+                .execute()
+            )
+            before_id = before_created["id"]
 
-        after_created = (
-            self._service.events().insert(calendarId=self.calendar_id, body=after_event).execute()
-        )
-        after_id = after_created["id"]
+            after_created = (
+                self._service.events()
+                .insert(calendarId=self.calendar_id, body=after_event)
+                .execute()
+            )
+            after_id: str = after_created["id"]
+        except Exception:
+            elapsed_ms = int((time.perf_counter() - t0) * 1000)
+            logger.exception(
+                "Failed to create travel buffers",
+                extra={
+                    "gig_summary": gig_summary,
+                    "calendar_id": self.calendar_id,
+                    "elapsed_ms": elapsed_ms,
+                },
+            )
+            # Clean up orphaned before-event if after-event creation failed
+            if before_id is not None:
+                try:
+                    self._service.events().delete(
+                        calendarId=self.calendar_id, eventId=before_id
+                    ).execute()
+                except Exception:
+                    logger.warning("Failed to clean up orphaned travel buffer event %s", before_id)
+            raise
 
+        assert before_id is not None  # always set if try block completed without raising
         elapsed_ms = int((time.perf_counter() - t0) * 1000)
         logger.info(
             "Travel buffers created",
