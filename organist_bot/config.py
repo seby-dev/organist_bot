@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     home_postcode: str = ""
     google_maps_api_key: str = ""
     max_travel_minutes: int = 45
+    travel_home_postcode: str = ""  # origin for travel buffer lookups; falls back to home_postcode
 
     # ── Google Calendar ───────────────────────────────────────────────────────
     google_calendar_id: str = ""
