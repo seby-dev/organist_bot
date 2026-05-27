@@ -155,3 +155,10 @@ class TestGetGigTypeBreakdown:
         assert b["Wedding"]["count"] == 4
         assert b["Wedding"]["accepted"] == 2
         assert b["Wedding"]["acceptance_rate"] == 50.0
+
+    def test_exception_returns_empty_dict(self):
+        with patch.object(
+            analytics.application_store, "list_applications", side_effect=Exception("boom")
+        ):
+            b = analytics.get_gig_type_breakdown()
+        assert b == {}

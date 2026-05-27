@@ -94,9 +94,9 @@ _GIG_TYPE_KEYWORDS: list[tuple[str, str]] = [
     ("funeral", "Funeral"),
     ("memorial", "Memorial"),
     ("requiem", "Requiem"),
+    ("christmas", "Christmas"),
     ("concert", "Concert"),
     ("recital", "Recital"),
-    ("christmas", "Christmas"),
     ("easter", "Easter"),
     ("school", "School"),
     ("graduation", "Graduation"),
@@ -119,6 +119,10 @@ def get_gig_type_breakdown(days: int = 365) -> dict[str, dict[str, int | float]]
     Classifies each record's ``header`` field using keyword matching.
     Returns a dict keyed by type label:
       {"Wedding": {"count": int, "accepted": int, "acceptance_rate": float}, ...}
+
+    Note: ``count`` includes all records regardless of status (including still-pending
+    "applied" records). This differs from ``get_success_metrics`` which excludes pending
+    records from rate denominators — the breakdown intentionally shows raw volume per type.
 
     Returns {} on any exception.
     """
