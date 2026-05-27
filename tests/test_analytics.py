@@ -100,3 +100,12 @@ class TestGetSuccessMetrics:
         with patch.object(analytics.application_store, "list_applications", return_value=records):
             m = analytics.get_success_metrics()
         assert m["avg_response_days"] is None
+
+    def test_exception_returns_empty_sentinel(self):
+        with patch.object(
+            analytics.application_store, "list_applications", side_effect=Exception("boom")
+        ):
+            m = analytics.get_success_metrics()
+        assert m["total"] == 0
+        assert m["acceptance_rate"] == 0.0
+        assert m["avg_response_days"] is None

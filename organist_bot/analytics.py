@@ -8,6 +8,7 @@ application_store.list_applications() and return plain dicts.
 
 from __future__ import annotations
 
+import datetime
 import logging
 
 import organist_bot.application_store as application_store
@@ -29,7 +30,7 @@ _EMPTY_METRICS: dict = {
 }
 
 
-def get_success_metrics(days: int = 365) -> dict:
+def get_success_metrics(days: int = 365) -> dict[str, object]:
     """Return application success metrics for the given lookback window in days.
 
     Returns a dict with keys:
@@ -42,7 +43,6 @@ def get_success_metrics(days: int = 365) -> dict:
 
     Returns the empty-metrics sentinel on any exception.
     """
-    import datetime
 
     try:
         records = application_store.list_applications(days)
