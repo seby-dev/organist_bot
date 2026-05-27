@@ -69,6 +69,7 @@ You are an assistant for an organist. You handle three areas:
 - "What applications are pending?" / "show my applications" → manage_applications(action=list).
 - "Application summary" / "how many gigs have I applied to?" → manage_applications(action=summary).
 - "Mark application 2 as declined" → manage_applications(action=update, number=2, status=declined).
+- "Show me full details of application 3" / "tell me more about #2" → manage_applications(action=detail, number=3).
 - Valid statuses for update: applied, accepted, no_response, declined.
 
 ## Conversation
@@ -427,8 +428,8 @@ TOOLS: list[dict] = [
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["summary", "list", "update"],
-                    "description": "summary=status counts, list=numbered listing, update=change status",
+                    "enum": ["summary", "list", "update", "detail"],
+                    "description": "summary=status counts, list=numbered listing, update=change status, detail=full fields for one record",
                 },
                 "days": {
                     "type": "integer",
@@ -1122,6 +1123,8 @@ async def _execute_tool(name: str, input_data: dict, chat_id: int) -> str:
         action = input_data.get("action", "summary")
         days = input_data.get("days", 30)
         records = application_store.list_applications(days)
+        if action in ("summary", "list"):
+            _last_application_listing[chat_id] = records
 
         if action == "summary":
             counts = {
@@ -1205,6 +1208,33 @@ async def _execute_tool(name: str, input_data: dict, chat_id: int) -> str:
                     )
                 return json.dumps({"result": msg})
             return json.dumps({"error": "Application not found in store."})
+
+        if action == "detail":
+            n = input_data.get("number")
+            listing = _last_application_listing.get(chat_id)
+            if not listing:
+                return json.dumps(
+                    {
+                        "error": "No application listing cached. Ask to list or summarise applications first."
+                    }
+                )
+            if n is None or n < 1 or n > len(listing):
+                return json.dumps({"error": f"No application number {n}."})
+            r = listing[n - 1]
+            lines = [
+                f"📋 Application {n} — full details",
+                "",
+                f"Header:        {r.get('header') or '—'}",
+                f"Organisation:  {r.get('organisation') or '—'}",
+                f"Date:          {r.get('date') or '—'}",
+                f"Fee:           {r.get('fee') or '—'}",
+                f"Status:        {r.get('status') or '—'}",
+                f"Email:         {r.get('email') or '—'}",
+                f"URL:           {r.get('url') or '—'}",
+                f"Applied at:    {r.get('applied_at') or '—'}",
+                f"Updated at:    {r.get('updated_at') or '—'}",
+            ]
+            return json.dumps({"result": "\n".join(lines)})
 
         return json.dumps({"error": f"Unknown action: {action}"})
 
