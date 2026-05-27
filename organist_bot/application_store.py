@@ -149,6 +149,54 @@ def expire_past_applied() -> int:
     return changed
 
 
+def _parse_fee(fee_str: str) -> float | None:
+    """Strip currency symbols and commas, convert to float. Return None if empty or unparseable."""
+    cleaned = fee_str.strip().lstrip("£$").replace(",", "").strip()
+    if not cleaned:
+        return None
+    try:
+        return float(cleaned)
+    except ValueError:
+        return None
+
+
+def get_income(from_date: str, to_date: str) -> dict:
+    """Return income summary for accepted records where gig date falls in [from_date, to_date] inclusive."""
+    _empty: dict = {"total": 0.0, "count": 0, "no_fee_count": 0, "records": []}
+    try:
+        start = datetime.date.fromisoformat(from_date)
+        end = datetime.date.fromisoformat(to_date)
+        records = _read()
+        matched = []
+        for r in records:
+            if r.get("status") != "accepted":
+                continue
+            try:
+                gig_date = datetime.date.fromisoformat(r.get("date", ""))
+            except ValueError:
+                continue
+            if start <= gig_date <= end:
+                matched.append(r)
+        matched.sort(key=lambda r: r.get("date", ""))
+        total = 0.0
+        no_fee_count = 0
+        for r in matched:
+            fee = _parse_fee(r.get("fee", ""))
+            if fee is None:
+                no_fee_count += 1
+            else:
+                total += fee
+        return {
+            "total": total,
+            "count": len(matched),
+            "no_fee_count": no_fee_count,
+            "records": matched,
+        }
+    except Exception:
+        logger.exception("application_store: get_income failed")
+        return _empty
+
+
 def list_applications(days: int = 30) -> list[dict]:
     """Return all records with applied_at within the last N days, newest first."""
     records = _read()
