@@ -1294,6 +1294,87 @@ class TestManageApplications:
         data = json.loads(result)
         assert "error" in data
 
+    @pytest.mark.asyncio
+    async def test_summary_populates_listing_cache(self):
+        """summary must populate _last_application_listing so detail works afterwards."""
+        from organist_bot.integrations.unified_agent import _last_application_listing
+
+        _last_application_listing.pop(CHAT_ID, None)
+        records = [_make_app_record(status="accepted")]
+        income = {"total": 80.0, "count": 1, "no_fee_count": 0, "records": []}
+        with patch("organist_bot.integrations.unified_agent.application_store") as mock_store:
+            mock_store.list_applications.return_value = records
+            mock_store.get_income.return_value = income
+            await _execute_tool("manage_applications", {"action": "summary"}, CHAT_ID)
+        assert _last_application_listing.get(CHAT_ID) == records
+
+    @pytest.mark.asyncio
+    async def test_detail_returns_all_fields(self):
+        """detail returns every stored field for the requested record."""
+        records = [
+            _make_app_record(
+                status="accepted",
+                email="vicar@stmarys.org",
+                applied_at="2026-05-01T10:00:00Z",
+                updated_at="2026-05-02T11:00:00Z",
+            )
+        ]
+        with patch("organist_bot.integrations.unified_agent.application_store") as mock_store:
+            mock_store.list_applications.return_value = records
+            await _execute_tool("manage_applications", {"action": "list"}, CHAT_ID)
+            result = await _execute_tool(
+                "manage_applications", {"action": "detail", "number": 1}, CHAT_ID
+            )
+        data = json.loads(result)
+        text = data["result"]
+        assert "Sunday Service" in text
+        assert "St Mary's" in text
+        assert "vicar@stmarys.org" in text
+        assert "https://organistsonline.org/gig/1" in text
+        assert "2026-05-01T10:00:00Z" in text
+        assert "accepted" in text
+
+    @pytest.mark.asyncio
+    async def test_detail_after_summary_works(self):
+        """detail must work after summary (not just after list)."""
+        records = [_make_app_record(status="no_response")]
+        income = {"total": 0.0, "count": 0, "no_fee_count": 0, "records": []}
+        with patch("organist_bot.integrations.unified_agent.application_store") as mock_store:
+            mock_store.list_applications.return_value = records
+            mock_store.get_income.return_value = income
+            await _execute_tool("manage_applications", {"action": "summary"}, CHAT_ID)
+            result = await _execute_tool(
+                "manage_applications", {"action": "detail", "number": 1}, CHAT_ID
+            )
+        data = json.loads(result)
+        assert "result" in data
+        assert "Sunday Service" in data["result"]
+
+    @pytest.mark.asyncio
+    async def test_detail_no_cache_returns_error(self):
+        """detail with no prior list/summary returns a clear error."""
+        from organist_bot.integrations.unified_agent import _last_application_listing
+
+        _last_application_listing.pop(CHAT_ID, None)
+        result = await _execute_tool(
+            "manage_applications", {"action": "detail", "number": 1}, CHAT_ID
+        )
+        data = json.loads(result)
+        assert "error" in data
+
+    @pytest.mark.asyncio
+    async def test_detail_out_of_range_returns_error(self):
+        """detail with a number beyond the listing length returns a clear error."""
+        records = [_make_app_record(status="applied")]
+        with patch("organist_bot.integrations.unified_agent.application_store") as mock_store:
+            mock_store.list_applications.return_value = records
+            await _execute_tool("manage_applications", {"action": "list"}, CHAT_ID)
+            result = await _execute_tool(
+                "manage_applications", {"action": "detail", "number": 99}, CHAT_ID
+            )
+        data = json.loads(result)
+        assert "error" in data
+
 
 # ── get_income_forecast ───────────────────────────────────────────────────────
 
