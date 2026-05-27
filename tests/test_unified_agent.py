@@ -1232,8 +1232,10 @@ class TestManageApplications:
             _make_app_record(url="u2", status="applied"),
             _make_app_record(url="u3", status="no_response"),
         ]
+        income = {"total": 80.0, "count": 1, "no_fee_count": 0, "records": []}
         with patch("organist_bot.integrations.unified_agent.application_store") as mock_store:
             mock_store.list_applications.return_value = records
+            mock_store.get_income.return_value = income
             result = await _execute_tool("manage_applications", {"action": "summary"}, CHAT_ID)
         assert "Accepted" in result
         assert "Pending" in result
@@ -1291,3 +1293,106 @@ class TestManageApplications:
             )
         data = json.loads(result)
         assert "error" in data
+
+
+# ── get_income_forecast ───────────────────────────────────────────────────────
+
+
+class TestGetIncomeForecast:
+    @pytest.mark.asyncio
+    async def test_formats_output_with_records(self):
+        summary = {
+            "total": 290.0,
+            "count": 2,
+            "no_fee_count": 0,
+            "records": [
+                {"organisation": "St John", "date": "2026-06-10", "fee": "£140.00"},
+                {"organisation": "St Leonard's", "date": "2026-06-22", "fee": "£150.00"},
+            ],
+        }
+        with patch(
+            "organist_bot.integrations.unified_agent.application_store.get_income",
+            return_value=summary,
+        ):
+            result = await _execute_tool(
+                "get_income_forecast",
+                {"from_date": "2026-06-01", "to_date": "2026-06-30"},
+                CHAT_ID,
+            )
+        data = json.loads(result)["result"]
+        assert "💰" in data
+        assert "£290.00" in data
+        assert "St John" in data
+        assert "St Leonard" in data
+
+    @pytest.mark.asyncio
+    async def test_no_gigs_message(self):
+        summary = {"total": 0.0, "count": 0, "no_fee_count": 0, "records": []}
+        with patch(
+            "organist_bot.integrations.unified_agent.application_store.get_income",
+            return_value=summary,
+        ):
+            result = await _execute_tool(
+                "get_income_forecast",
+                {"from_date": "2026-06-01", "to_date": "2026-06-30"},
+                CHAT_ID,
+            )
+        assert "No accepted gigs" in result
+
+    @pytest.mark.asyncio
+    async def test_shows_no_fee_note(self):
+        summary = {
+            "total": 140.0,
+            "count": 2,
+            "no_fee_count": 1,
+            "records": [
+                {"organisation": "St John", "date": "2026-06-10", "fee": "£140.00"},
+                {"organisation": "All Saints", "date": "2026-06-15", "fee": ""},
+            ],
+        }
+        with patch(
+            "organist_bot.integrations.unified_agent.application_store.get_income",
+            return_value=summary,
+        ):
+            result = await _execute_tool(
+                "get_income_forecast",
+                {"from_date": "2026-06-01", "to_date": "2026-06-30"},
+                CHAT_ID,
+            )
+        assert "no fee" in result.lower() or "(no fee)" in result.lower()
+
+
+# ── manage_applications summary income ───────────────────────────────────────
+
+
+class TestManageApplicationsSummaryIncome:
+    @pytest.mark.asyncio
+    async def test_summary_includes_income_line(self):
+        records = [
+            {
+                "url": "http://a.com/1",
+                "header": "Service",
+                "organisation": "St John",
+                "date": "2026-06-10",
+                "fee": "£140.00",
+                "email": "",
+                "status": "accepted",
+                "applied_at": "2026-06-01T10:00:00Z",
+                "updated_at": "2026-06-01T10:00:00Z",
+            }
+        ]
+        income = {"total": 140.0, "count": 1, "no_fee_count": 0, "records": records}
+        with (
+            patch(
+                "organist_bot.integrations.unified_agent.application_store.list_applications",
+                return_value=records,
+            ),
+            patch(
+                "organist_bot.integrations.unified_agent.application_store.get_income",
+                return_value=income,
+            ),
+        ):
+            result = await _execute_tool("manage_applications", {"action": "summary"}, CHAT_ID)
+        text = json.loads(result)["result"]
+        assert "Income" in text
+        assert "£140.00" in text
