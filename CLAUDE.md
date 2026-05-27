@@ -90,3 +90,72 @@ Filter toggles (`ENABLE_FEE_FILTER`, `ENABLE_CALENDAR_FILTER`, etc.) all default
 - **Full filter** (after detail-page fetch): all of the above plus `BlacklistFilter` (requires contact email) and `PostcodeFilter` (requires postcode + Google Maps API)
 
 `PostcodeFilter` requires `HOME_POSTCODE` and `GOOGLE_MAPS_API_KEY` to activate. `CalendarFilter` requires `GOOGLE_CALENDAR_ID` and `GOOGLE_CALENDAR_CREDENTIALS_FILE`.
+
+# Development Workflow
+
+## Agent Strategy
+- For any task that can be decomposed into independent subtasks, always use subagents.
+- **Parallel by default**: if N items can be checked/implemented independently, spawn N subagents simultaneously — never check them one by one in a single agent.
+- Delegate exploratory/read-only work (finding files, analysing schemas) to an Explore subagent.
+- Delegate planning and design to a Plan subagent before implementation begins.
+- Use background agents for long-running tasks (test runs, log analysis) so the main session stays responsive.
+- Up to 10 subagents can run in parallel — use this capacity for large implementations.
+
+## Full Feature Workflow
+When given a new feature request:
+1. **Brainstorm** (`superpowers:brainstorming`) — explore context, ask clarifying questions, propose approaches, write and commit a spec to `docs/superpowers/specs/`
+2. **Plan** (`superpowers:writing-plans`) — convert the approved spec into a step-by-step implementation plan saved to `docs/superpowers/plans/`
+3. **Implement** (`superpowers:subagent-driven-development`) — dispatch fresh subagents per task with spec + code quality review after each
+4. **Ship** — commit, push, create PR, and merge automatically per the Git & PR Workflow below
+
+## Decomposition Pattern
+When given an implementation task:
+1. Spawn an Explore subagent to map the relevant codebase
+2. Spawn a Plan subagent to design the approach
+3. Decompose implementation into independent modules and run them in parallel
+4. Spawn a review subagent to validate output before committing
+
+## Parallelism Examples
+- "Check whether features A, B, C, D are implemented" → spawn 4 Explore subagents in one message, one per feature
+- "Implement modules X, Y, Z" → spawn 3 implementer subagents simultaneously if they don't share files
+- "Review these 5 files" → spawn 5 reviewer subagents in parallel
+- The signal: any time you find yourself writing "check A, then check B, then check C" — stop and parallelize it
+
+## Security & Review Workflow
+
+After implementation and before shipping, run these in parallel:
+
+- **`pr-review-toolkit:silent-failure-hunter`** — hunt for swallowed exceptions, silent fallbacks, and inadequate error handling
+- **`pr-review-toolkit:code-reviewer`** — bugs, security vulnerabilities, convention violations
+- **`coderabbit:code-reviewer`** — deep CodeRabbit-powered diff analysis
+- **`semgrep`** — static analysis for known vulnerability patterns (SQL injection, hardcoded secrets, insecure API usage); requires `/setup-semgrep-plugin` first run
+
+Passive (always on, no invocation needed):
+- **`security-guidance`** — injects OWASP-style security reminders automatically each session
+
+When to invoke each:
+- Any error handling or fallback code → always run `silent-failure-hunter`
+- Before every PR → run `code-reviewer` + `coderabbit:code-reviewer` in parallel
+- New external integrations or auth flows → also run `semgrep`
+
+## Git & PR Workflow
+
+When an implementation task is complete:
+
+1. Stage and commit all changes with a descriptive commit message following conventional commits format
+2. Push the branch to origin: `git push -u origin HEAD`
+3. Create a PR using gh CLI:
+
+```
+gh pr create --title "<title>" --body "<summary of changes, what was done and why>" --draft=false
+```
+
+4. If all CI checks pass, merge the PR:
+
+```
+gh pr merge --squash --auto --delete-branch
+```
+
+5. Report the PR URL to the user.
+
+Use `--auto` on the merge so it only merges once checks pass. Never force-push or merge if CI is failing.
