@@ -598,3 +598,82 @@ class TestUnblockPeriod:
 
         assert result is False
         mock_service.events().list.assert_not_called()
+
+
+# ── add_travel_buffers ────────────────────────────────────────────────────────
+
+
+class TestAddTravelBuffers:
+    def test_creates_two_buffer_events_and_returns_ids(self, client, mock_service):
+        created_ids = iter(["before_evt_1", "after_evt_2"])
+
+        def fake_insert(calendarId, body):
+            mock = MagicMock()
+            mock.execute.return_value = {"id": next(created_ids)}
+            return mock
+
+        mock_service.events.return_value.insert.side_effect = fake_insert
+
+        start = dt.datetime(2026, 7, 15, 10, 0)
+        end = dt.datetime(2026, 7, 15, 11, 0)
+        before_id, after_id = client.add_travel_buffers(
+            gig_summary="Wedding — St Mary's",
+            start_dt=start,
+            end_dt=end,
+            travel_minutes=45,
+        )
+
+        assert before_id == "before_evt_1"
+        assert after_id == "after_evt_2"
+        assert mock_service.events.return_value.insert.call_count == 2
+
+    def test_before_event_ends_at_gig_start_and_after_starts_at_gig_end(self, client, mock_service):
+        inserted_bodies = []
+
+        def fake_insert(calendarId, body):
+            inserted_bodies.append(body)
+            mock = MagicMock()
+            mock.execute.return_value = {"id": f"evt_{len(inserted_bodies)}"}
+            return mock
+
+        mock_service.events.return_value.insert.side_effect = fake_insert
+
+        start = dt.datetime(2026, 7, 15, 10, 0)
+        end = dt.datetime(2026, 7, 15, 11, 0)
+        client.add_travel_buffers("Test Gig", start, end, 30)
+
+        before_body = inserted_bodies[0]
+        after_body = inserted_bodies[1]
+
+        assert "Travel to Test Gig" in before_body["summary"]
+        assert before_body["end"]["dateTime"] == start.isoformat()
+
+        assert "Travel from Test Gig" in after_body["summary"]
+        assert after_body["start"]["dateTime"] == end.isoformat()
+
+    def test_events_tagged_with_extended_property(self, client, mock_service):
+        inserted_bodies = []
+
+        def fake_insert(calendarId, body):
+            inserted_bodies.append(body)
+            mock = MagicMock()
+            mock.execute.return_value = {"id": "x"}
+            return mock
+
+        mock_service.events.return_value.insert.side_effect = fake_insert
+
+        start = dt.datetime(2026, 7, 15, 10, 0)
+        end = dt.datetime(2026, 7, 15, 11, 0)
+        client.add_travel_buffers("Test Gig", start, end, 30)
+
+        for body in inserted_bodies:
+            assert body["extendedProperties"]["private"]["organist_bot_travel"] == "1"
+
+    def test_raises_on_api_failure(self, client, mock_service):
+        mock_service.events.return_value.insert.return_value.execute.side_effect = Exception(
+            "API error"
+        )
+        start = dt.datetime(2026, 7, 15, 10, 0)
+        end = dt.datetime(2026, 7, 15, 11, 0)
+        with pytest.raises(Exception, match="API error"):
+            client.add_travel_buffers("Test Gig", start, end, 30)
