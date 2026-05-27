@@ -1159,14 +1159,14 @@ async def _execute_tool(name: str, input_data: dict, chat_id: int) -> str:
 
     # ── get_application_analytics ────────────────────────────────────────────
     if name == "get_application_analytics":
-        days = int(input_data.get("days", 365))
+        days = max(int(input_data.get("days", 365)), 1)
         m = analytics.get_success_metrics(days)
         lines = [
             f"📊 Application Analytics (last {days} days)",
             "",
             f"Total applications: {m['total']}",
             f"✅ Accepted:      {m['accepted']:>4}",
-            f"❌ Rejected:      {m['rejected']:>4}",
+            f"❌ Rejected/declined: {m['rejected']:>4}",
             f"💤 No response:   {m['no_response']:>4}",
             f"⏳ Still pending: {m['applied']:>4}",
             "",
@@ -1181,7 +1181,7 @@ async def _execute_tool(name: str, input_data: dict, chat_id: int) -> str:
 
     # ── get_gig_breakdown ─────────────────────────────────────────────────────
     if name == "get_gig_breakdown":
-        days = int(input_data.get("days", 365))
+        days = max(int(input_data.get("days", 365)), 1)
         breakdown = analytics.get_gig_type_breakdown(days)
         if not breakdown:
             return json.dumps({"result": f"No applications in the last {days} days."})
