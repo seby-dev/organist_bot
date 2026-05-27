@@ -6,7 +6,7 @@ import logging
 from dataclasses import dataclass
 from typing import cast
 
-from organist_bot import application_store, filter_store
+from organist_bot import analytics, application_store, filter_store
 from organist_bot.config import settings
 from organist_bot.filters import normalize_to_yyyymmdd, parse_start_time
 from organist_bot.integrations.calendar_client import GoogleCalendarClient
@@ -71,6 +71,8 @@ You are an assistant for an organist. You handle three areas:
 - "Mark application 2 as declined" → manage_applications(action=update, number=2, status=declined).
 - "Show me full details of application 3" / "tell me more about #2" → manage_applications(action=detail, number=3).
 - Valid statuses for update: applied, accepted, no_response, declined.
+- "What's my acceptance rate?" / "show analytics" → get_application_analytics.
+- "Break down my gigs by type" / "which gig types do I win?" → get_gig_breakdown.
 
 ## Conversation
 - If the user asks to start over, reset, or forget everything → call clear_conversation.
@@ -473,6 +475,42 @@ TOOLS: list[dict] = [
             "required": ["from_date", "to_date"],
         },
     },
+    # ── Application analytics ────────────────────────────────────────────────
+    {
+        "name": "get_application_analytics",
+        "description": (
+            "Return application success metrics: total applications, acceptance rate, "
+            "response rate, and average response time. "
+            "Optional days parameter (default 365)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "days": {
+                    "type": "integer",
+                    "description": "Lookback window in days. Default 365.",
+                }
+            },
+        },
+    },
+    {
+        "name": "get_gig_breakdown",
+        "description": (
+            "Return breakdown of applications and acceptance rates by gig type "
+            "(wedding, funeral, service, etc). "
+            "acceptance_rate is accepted / total-including-pending for each type. "
+            "Optional days parameter (default 365)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "days": {
+                    "type": "integer",
+                    "description": "Lookback window in days. Default 365.",
+                }
+            },
+        },
+    },
 ]
 
 
@@ -496,6 +534,8 @@ _VERBATIM_RESPONSE_TOOLS = {
     "manage_config",
     "manage_applications",
     "get_income_forecast",
+    "get_application_analytics",
+    "get_gig_breakdown",
 }
 
 
@@ -1116,6 +1156,45 @@ async def _execute_tool(name: str, input_data: dict, chat_id: int) -> str:
             fee_display = fee_str if fee_str else "(no fee)"
             lines.append(f"{i}. {org} — {date_str}  {fee_display}")
 
+        return json.dumps({"result": "\n".join(lines)})
+
+    # ── get_application_analytics ────────────────────────────────────────────
+    if name == "get_application_analytics":
+        days = min(max(int(input_data.get("days", 365)), 1), 730)
+        m = analytics.get_success_metrics(days)
+        lines = [
+            f"📊 Application Analytics (last {days} days)",
+            "",
+            f"Total applications: {m['total']}",
+            f"✅ Accepted:      {m['accepted']:>4}",
+            f"❌ Rejected/declined: {m['rejected']:>4}",
+            f"💤 No response:   {m['no_response']:>4}",
+            f"⏳ Still pending: {m['applied']:>4}",
+            "",
+            f"Acceptance rate: {m['acceptance_rate']}% (of resolved)",
+            f"Response rate:   {m['response_rate']}% (of resolved)",
+        ]
+        if m["avg_response_days"] is not None:
+            lines.append(f"Avg response time: {m['avg_response_days']} days")
+        else:
+            lines.append("Avg response time: not enough data")
+        return json.dumps({"result": "\n".join(lines)})
+
+    # ── get_gig_breakdown ─────────────────────────────────────────────────────
+    if name == "get_gig_breakdown":
+        days = min(max(int(input_data.get("days", 365)), 1), 730)
+        breakdown = analytics.get_gig_type_breakdown(days)
+        if not breakdown:
+            return json.dumps({"result": f"No applications in the last {days} days."})
+        sorted_types = sorted(breakdown.items(), key=lambda kv: kv[1]["count"], reverse=True)
+        max_label = max(len(t) for t, _ in sorted_types)
+        lines = [f"🎹 Gig Type Breakdown (last {days} days)", ""]
+        for gig_type, data in sorted_types:
+            label = f"{gig_type}:"
+            lines.append(
+                f"{label:<{max_label + 1}}  {data['count']:>3} applied"
+                f" | {data['accepted']:>2} accepted ({data['acceptance_rate']:.0f}%)"
+            )
         return json.dumps({"result": "\n".join(lines)})
 
     # ── manage_applications ──────────────────────────────────────────────────
