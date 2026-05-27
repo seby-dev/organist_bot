@@ -85,3 +85,60 @@ def get_success_metrics(days: int = 365) -> dict[str, object]:
     except Exception:
         logger.exception("analytics.get_success_metrics failed")
         return dict(_EMPTY_METRICS)
+
+
+# Keyword → label, checked in priority order (first match wins).
+_GIG_TYPE_KEYWORDS: list[tuple[str, str]] = [
+    ("carol", "Carol Service"),
+    ("wedding", "Wedding"),
+    ("funeral", "Funeral"),
+    ("memorial", "Memorial"),
+    ("requiem", "Requiem"),
+    ("concert", "Concert"),
+    ("recital", "Recital"),
+    ("christmas", "Christmas"),
+    ("easter", "Easter"),
+    ("school", "School"),
+    ("graduation", "Graduation"),
+    ("service", "Service"),
+]
+
+
+def _classify_gig_type(header: str) -> str:
+    """Return the gig type label for a header string (case-insensitive, first keyword match)."""
+    h = header.lower()
+    for keyword, label in _GIG_TYPE_KEYWORDS:
+        if keyword in h:
+            return label
+    return "Other"
+
+
+def get_gig_type_breakdown(days: int = 365) -> dict[str, dict[str, int | float]]:
+    """Return breakdown of applications and acceptance rates by gig type.
+
+    Classifies each record's ``header`` field using keyword matching.
+    Returns a dict keyed by type label:
+      {"Wedding": {"count": int, "accepted": int, "acceptance_rate": float}, ...}
+
+    Returns {} on any exception.
+    """
+    try:
+        records = application_store.list_applications(days)
+        breakdown: dict[str, dict[str, int | float]] = {}
+        for r in records:
+            gig_type = _classify_gig_type(r.get("header", ""))
+            if gig_type not in breakdown:
+                breakdown[gig_type] = {"count": 0, "accepted": 0, "acceptance_rate": 0.0}
+            breakdown[gig_type]["count"] = int(breakdown[gig_type]["count"]) + 1
+            if r["status"] == "accepted":
+                breakdown[gig_type]["accepted"] = int(breakdown[gig_type]["accepted"]) + 1
+
+        for entry in breakdown.values():
+            count = int(entry["count"])
+            accepted = int(entry["accepted"])
+            entry["acceptance_rate"] = round(accepted / count * 100, 1) if count else 0.0
+
+        return breakdown
+    except Exception:
+        logger.exception("analytics.get_gig_type_breakdown failed")
+        return {}

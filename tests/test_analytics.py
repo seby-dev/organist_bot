@@ -109,3 +109,49 @@ class TestGetSuccessMetrics:
         assert m["total"] == 0
         assert m["acceptance_rate"] == 0.0
         assert m["avg_response_days"] is None
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# get_gig_type_breakdown
+# ────────────────────────────────────────────────────────────────────────────
+
+
+class TestGetGigTypeBreakdown:
+    def test_empty_records_returns_empty_dict(self):
+        with patch.object(analytics.application_store, "list_applications", return_value=[]):
+            b = analytics.get_gig_type_breakdown()
+        assert b == {}
+
+    def test_keyword_matching(self):
+        records = [
+            _make_record("applied", _T0, _T0, header="Wedding at St Mary's"),
+            _make_record("accepted", _T0, _T0, header="Funeral Service"),
+            _make_record("applied", _T0, _T0, header="Organist Required"),
+        ]
+        with patch.object(analytics.application_store, "list_applications", return_value=records):
+            b = analytics.get_gig_type_breakdown()
+        assert "Wedding" in b
+        assert "Funeral" in b
+        assert "Other" in b
+
+    def test_carol_beats_service_in_priority(self):
+        records = [
+            _make_record("applied", _T0, _T0, header="Christmas Carol Service"),
+        ]
+        with patch.object(analytics.application_store, "list_applications", return_value=records):
+            b = analytics.get_gig_type_breakdown()
+        assert "Carol Service" in b
+        assert "Service" not in b
+
+    def test_acceptance_rate_calculation(self):
+        records = [
+            _make_record("accepted", _T0, _T0, header="Wedding"),
+            _make_record("accepted", _T0, _T0, header="Wedding"),
+            _make_record("no_response", _T0, _T0, header="Wedding"),
+            _make_record("no_response", _T0, _T0, header="Wedding"),
+        ]
+        with patch.object(analytics.application_store, "list_applications", return_value=records):
+            b = analytics.get_gig_type_breakdown()
+        assert b["Wedding"]["count"] == 4
+        assert b["Wedding"]["accepted"] == 2
+        assert b["Wedding"]["acceptance_rate"] == 50.0
