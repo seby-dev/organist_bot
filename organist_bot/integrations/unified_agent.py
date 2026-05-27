@@ -498,6 +498,7 @@ TOOLS: list[dict] = [
         "description": (
             "Return breakdown of applications and acceptance rates by gig type "
             "(wedding, funeral, service, etc). "
+            "acceptance_rate is accepted / total-including-pending for each type. "
             "Optional days parameter (default 365)."
         ),
         "input_schema": {
@@ -1159,7 +1160,7 @@ async def _execute_tool(name: str, input_data: dict, chat_id: int) -> str:
 
     # ── get_application_analytics ────────────────────────────────────────────
     if name == "get_application_analytics":
-        days = max(int(input_data.get("days", 365)), 1)
+        days = min(max(int(input_data.get("days", 365)), 1), 730)
         m = analytics.get_success_metrics(days)
         lines = [
             f"📊 Application Analytics (last {days} days)",
@@ -1181,7 +1182,7 @@ async def _execute_tool(name: str, input_data: dict, chat_id: int) -> str:
 
     # ── get_gig_breakdown ─────────────────────────────────────────────────────
     if name == "get_gig_breakdown":
-        days = max(int(input_data.get("days", 365)), 1)
+        days = min(max(int(input_data.get("days", 365)), 1), 730)
         breakdown = analytics.get_gig_type_breakdown(days)
         if not breakdown:
             return json.dumps({"result": f"No applications in the last {days} days."})
