@@ -15,7 +15,9 @@
       "Bash(ruff *)",
       "Bash(mypy *)",
       "Bash(uv *)",
-      "Bash(EMAIL_SENDER=* *)"
+      "Bash(EMAIL_SENDER=* *)",
+      "Bash(EMAIL_PASSWORD=* *)",
+      "Bash(CC_EMAIL=* *)"
     ],
     "deny": [
       "Read(.env)",
