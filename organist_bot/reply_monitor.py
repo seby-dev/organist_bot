@@ -18,8 +18,10 @@ You are classifying an email reply related to an organ performance job applicati
 The applicant applied for a gig at: {organisation}
 Gig date: {date}
 Reply from: {sender}
-Reply body:
+
+<email>
 {body}
+</email>
 
 Classify the reply as one of:
 - accepted: The church/organisation is confirming/booking the applicant.
@@ -28,6 +30,8 @@ Classify the reply as one of:
 - unclear: Anything else (questions, ambiguous requests, logistical queries, etc.).
 
 Reply with ONLY the classification word, nothing else."""
+
+_TERMINAL_STATUSES = frozenset({"rejected", "declined", "no_response"})
 
 
 def _make_gmail_client() -> GmailClient:
@@ -74,19 +78,25 @@ def _send_telegram_notification(text: str) -> None:
     if not token or not chat_id:
         return
     try:
-        requests.post(
+        resp = requests.post(
             f"https://api.telegram.org/bot{token}/sendMessage",
             json={"chat_id": chat_id, "text": text},
             timeout=10,
         )
+        if not resp.ok:
+            logger.warning(
+                "reply_monitor: Telegram notification returned HTTP %d: %s",
+                resp.status_code,
+                resp.text[:200],
+            )
     except Exception as exc:
         logger.warning("reply_monitor: telegram notification failed: %s", exc)
 
 
-def _create_calendar_event(record: dict) -> None:
-    """Create a Google Calendar event for an accepted booking."""
+def _create_calendar_event(record: dict) -> bool:
+    """Create a Google Calendar event for an accepted booking. Returns True on success."""
     if not settings.google_calendar_id or not settings.google_calendar_credentials_file:
-        return
+        return False
     try:
         from organist_bot.integrations.calendar_client import GoogleCalendarClient
         from organist_bot.models import Gig
@@ -105,97 +115,155 @@ def _create_calendar_event(record: dict) -> None:
             fee=record.get("fee", ""),
         )
         cal.add_gig(gig)
+        return True
     except Exception as exc:
         logger.warning("reply_monitor: calendar event creation failed: %s", exc)
+        return False
+
+
+def _extract_email_address(header: str) -> str:
+    """Extract bare email address from a header value like 'Name <email@example.com>'."""
+    import re
+
+    m = re.search(r"<([^>]+)>", header)
+    return m.group(1).lower() if m else header.lower()
 
 
 def _match_record(message: dict, records: list[dict]) -> dict | None:
-    """Find the application record whose email matches the message sender or recipient."""
-    msg_sender = message.get("sender", "").lower()
-    msg_recipient = message.get("recipient", "").lower()
+    """Find the application record whose email exactly matches the message sender or recipient."""
+    msg_sender = _extract_email_address(message.get("sender", ""))
+    msg_recipient = _extract_email_address(message.get("recipient", ""))
     for r in records:
         record_email = r.get("email", "").lower()
         if not record_email:
             continue
-        if record_email in msg_sender or record_email in msg_recipient:
+        if record_email in (msg_sender, msg_recipient):
             return r
     return None
 
 
 def check_replies() -> None:
-    """Check Gmail for replies to active applications and dispatch actions."""
-    if not settings.gmail_credentials_file:
+    """Check Gmail for replies to active applications and dispatch actions.
+
+    Fails open — infrastructure errors (DB, Gmail auth) are caught, logged,
+    and a Telegram alert is sent so the operator is notified. Per-message
+    errors are caught individually so one bad message does not abort the run.
+    """
+    if not settings.gmail_credentials_file or not settings.gmail_token_file:
         return
+
+    import datetime as _dt
+
     try:
         records = application_store.list_applications(days=365)
-        active = [r for r in records if r["status"] in ("applied", "accepted")]
-        if not active:
-            return
+    except Exception as exc:
+        logger.warning("reply_monitor: could not load applications: %s", exc)
+        _send_telegram_notification(f"⚠️ reply_monitor: failed to load applications — {exc}")
+        return
 
-        applied_emails = [r["email"] for r in active if r["status"] == "applied" and r.get("email")]
-        accepted_emails = [
-            r["email"] for r in active if r["status"] == "accepted" and r.get("email")
-        ]
+    active = [r for r in records if r["status"] in ("applied", "accepted")]
+    if not active:
+        return
 
+    applied_emails = [r["email"] for r in active if r["status"] == "applied" and r.get("email")]
+    accepted_emails = [r["email"] for r in active if r["status"] == "accepted" and r.get("email")]
+
+    # Bound Gmail search to the oldest applied_at to avoid full-inbox scans every tick.
+    since = _dt.date.today() - _dt.timedelta(days=365)
+    for r in active:
+        try:
+            applied = _dt.date.fromisoformat(r.get("applied_at", "")[:10])
+            if applied < since:
+                since = applied
+        except (ValueError, TypeError):
+            pass
+    since_str = since.strftime("%Y/%m/%d")
+
+    try:
         client = _make_gmail_client()
-        messages = client.fetch_reply_messages(
-            applied_emails=applied_emails,
-            accepted_emails=accepted_emails,
-        )
+    except Exception as exc:
+        logger.warning("reply_monitor: Gmail client init failed: %s", exc)
+        _send_telegram_notification(f"⚠️ reply_monitor: Gmail auth failed — {exc}")
+        return
 
-        for msg in messages:
-            try:
-                record = _match_record(msg, active)
-                if record is None:
-                    continue
+    messages = client.fetch_reply_messages(
+        applied_emails=applied_emails,
+        accepted_emails=accepted_emails,
+        since_date=since_str,
+    )
 
-                if record.get("reply_message_id"):
-                    continue
+    seen_msg_ids: set[str] = set()
+    for msg in messages:
+        try:
+            msg_id = msg["message_id"]
+            if msg_id in seen_msg_ids:
+                continue
 
-                classification = _classify_reply(msg, record)
-                org = record.get("organisation") or record.get("header", "")
-                date = record.get("date", "")
+            record = _match_record(msg, active)
+            if record is None:
+                continue
 
-                if classification == "accepted":
+            if record.get("reply_message_id"):
+                continue
+
+            classification = _classify_reply(msg, record)
+            org = record.get("organisation") or record.get("header", "")
+            date = record.get("date", "")
+            url = record.get("url") or ""
+
+            # Stamp reply_message_id BEFORE side-effects so partial failures
+            # (calendar API down, Telegram down) don't cause duplicate processing.
+            # For "unclear" we skip stamping so the message is re-evaluated next tick.
+            if classification != "unclear":
+                if url:
+                    wrote = application_store.update_reply_message_id(url, msg_id)
+                    if not wrote:
+                        logger.warning(
+                            "reply_monitor: could not persist reply_message_id for url=%r — "
+                            "this reply may be reprocessed on the next tick",
+                            url,
+                        )
+                seen_msg_ids.add(msg_id)
+
+            if classification == "accepted":
+                if record.get("status") not in _TERMINAL_STATUSES:
                     application_store.upsert_accepted(
-                        url=record.get("url") or None,
+                        url=url or None,
                         header=record.get("header", ""),
                         organisation=org,
                         date=date,
                         fee=record.get("fee", ""),
+                        email=record.get("email", ""),
                     )
-                    _create_calendar_event(record)
-                    _send_telegram_notification(
-                        f"✅ Booking confirmed: {org} on {date}\n(via email reply)"
-                    )
-
-                elif classification == "rejected":
-                    application_store.update_status(record["url"], "rejected")
-                    _send_telegram_notification(
-                        f"❌ Application rejected: {org} on {date}\n(via email reply)"
-                    )
-
-                elif classification == "cancellation":
-                    _send_telegram_notification(
-                        f"⚠️ Possible cancellation: {org} on {date}\n"
-                        f"Reply from: {msg.get('sender', 'unknown')}\n"
-                        f'"{msg.get("body", "")[:200]}"\n\n'
-                        "Delete calendar event or ignore?"
-                    )
-
-                elif classification == "unclear":
-                    _send_telegram_notification(
-                        f'📧 Unclassified reply from {org} ({date}):\n"{msg.get("body", "")[:300]}"'
-                    )
-
-                application_store.update_reply_message_id(record.get("url", ""), msg["message_id"])
-
-            except Exception as exc:
-                logger.warning(
-                    "reply_monitor: error processing message %s: %s",
-                    msg.get("message_id"),
-                    exc,
+                calendar_ok = _create_calendar_event(record)
+                note = "" if calendar_ok else "\n\n⚠️ Calendar event could not be created."
+                _send_telegram_notification(
+                    f"✅ Booking confirmed: {org} on {date}\n(via email reply){note}"
                 )
 
-    except Exception:
-        logger.warning("reply_monitor: check_replies failed", exc_info=True)
+            elif classification == "rejected":
+                if url:
+                    application_store.update_status(url, "rejected")
+                _send_telegram_notification(
+                    f"❌ Application rejected: {org} on {date}\n(via email reply)"
+                )
+
+            elif classification == "cancellation":
+                _send_telegram_notification(
+                    f"⚠️ Possible cancellation: {org} on {date}\n"
+                    f"Reply from: {msg.get('sender', 'unknown')}\n"
+                    f'"{msg.get("body", "")[:200]}"\n\n'
+                    "Delete calendar event or ignore?"
+                )
+
+            elif classification == "unclear":
+                _send_telegram_notification(
+                    f'📧 Unclassified reply from {org} ({date}):\n"{msg.get("body", "")[:300]}"'
+                )
+
+        except Exception as exc:
+            logger.warning(
+                "reply_monitor: error processing message %s: %s",
+                msg.get("message_id"),
+                exc,
+            )

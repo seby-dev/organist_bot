@@ -1085,7 +1085,7 @@ async def _execute_tool(name: str, input_data: dict, chat_id: int) -> str:
         try:
             from_dt = datetime.date.fromisoformat(from_date)
             to_dt = datetime.date.fromisoformat(to_date)
-            header = f"💰 Income — {from_dt.strftime('%-d %b')} to {to_dt.strftime('%-d %b %Y')}"
+            header = f"💰 Income — {from_dt.day} {from_dt.strftime('%b')} to {to_dt.day} {to_dt.strftime('%b %Y')}"
         except ValueError:
             header = f"💰 Income — {from_date} to {to_date}"
 
@@ -1108,7 +1108,7 @@ async def _execute_tool(name: str, input_data: dict, chat_id: int) -> str:
             org = r.get("organisation") or r.get("header") or "Unknown"
             try:
                 d = datetime.date.fromisoformat(r.get("date", ""))
-                date_str = d.strftime("%-d %b")
+                date_str = f"{d.day} {d.strftime('%b')}"
             except ValueError:
                 date_str = r.get("date", "")
             fee_str = r.get("fee", "").strip()
@@ -1151,7 +1151,8 @@ async def _execute_tool(name: str, input_data: dict, chat_id: int) -> str:
                 if income["no_fee_count"] == income["count"] and income["count"] > 0:
                     income_line += f"  · all {income['count']} gig(s) have no fee recorded"
                 else:
-                    income_line += f"  · {income['no_fee_count']} gig has no fee recorded"
+                    n = income["no_fee_count"]
+                    income_line += f"  · {n} gig{'s' if n != 1 else ''} have no fee recorded"
             lines.append("")
             lines.append(income_line)
             return json.dumps({"result": "\n".join(lines)})

@@ -4,9 +4,27 @@ from __future__ import annotations
 
 import base64
 import logging
+import os
+import tempfile
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+
+def _write_token_secure(path: Path, content: str) -> None:
+    """Write token content atomically with mode 0o600 (owner read/write only)."""
+    fd, tmp = tempfile.mkstemp(dir=path.parent)
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(content)
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, str(path))
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 class GmailClient:
@@ -31,7 +49,7 @@ class GmailClient:
             if creds and creds.expired and creds.refresh_token:
                 try:
                     creds.refresh(Request())
-                    token_path.write_text(creds.to_json())
+                    _write_token_secure(token_path, creds.to_json())
                 except Exception as exc:
                     logger.warning("Gmail: token refresh failed: %s", exc)
                     raise
@@ -74,12 +92,14 @@ class GmailClient:
         self,
         applied_emails: list[str],
         accepted_emails: list[str],
+        since_date: str | None = None,
     ) -> list[dict]:
         """
         Search inbox for messages FROM church emails (applied + accepted records).
         Search sent folder for messages TO church emails (accepted records only).
+        since_date: optional YYYY/MM/DD bound to limit search (avoids full-inbox scan).
         Returns list of dicts: message_id, sender, recipient, body, direction ('incoming'|'outgoing').
-        Fails open — returns [] on API errors.
+        Deduplicates by message_id. Fails open — returns [] on API errors.
         """
         try:
             service = self._build_service()
@@ -87,23 +107,31 @@ class GmailClient:
             logger.warning("Gmail: could not build service: %s", exc)
             return []
 
+        seen_ids: set[str] = set()
         results: list[dict] = []
+        date_suffix = f" after:{since_date}" if since_date else ""
         all_emails = list(set(applied_emails + accepted_emails))
 
         # Inbox: messages FROM any church email (applied and accepted)
         for email in all_emails:
-            msgs = self._search_messages(service, f"from:{email} in:inbox")
+            msgs = self._search_messages(service, f"from:{email} in:inbox{date_suffix}")
             for m in msgs:
+                if m["id"] in seen_ids:
+                    continue
                 details = self._get_message_details(service, m["id"], "incoming")
                 if details:
+                    seen_ids.add(m["id"])
                     results.append(details)
 
         # Sent: messages TO accepted-record emails only (outgoing cancellations)
         for email in accepted_emails:
-            msgs = self._search_messages(service, f"to:{email} in:sent")
+            msgs = self._search_messages(service, f"to:{email} in:sent{date_suffix}")
             for m in msgs:
+                if m["id"] in seen_ids:
+                    continue
                 details = self._get_message_details(service, m["id"], "outgoing")
                 if details:
+                    seen_ids.add(m["id"])
                     results.append(details)
 
         return results

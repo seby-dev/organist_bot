@@ -35,12 +35,28 @@ def main() -> None:
     token_path = Path(settings.gmail_token_file)
     token_path.parent.mkdir(parents=True, exist_ok=True)
 
+    import os
+    import tempfile
+
     from google_auth_oauthlib.flow import InstalledAppFlow
 
     flow = InstalledAppFlow.from_client_secrets_file(str(creds_path), SCOPES)
     creds = flow.run_local_server(port=0)
-    token_path.write_text(creds.to_json())
-    print(f"Token saved to {token_path}")
+
+    fd, tmp = tempfile.mkstemp(dir=token_path.parent)
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(creds.to_json())
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, str(token_path))
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+    print(f"Token saved to {token_path} (mode 600)")
     print("Gmail reply monitoring is now authorised.")
 
 

@@ -283,8 +283,8 @@ def _run(scraper: Scraper, sheets_logger: SheetsLogger | None = None) -> None:
         import organist_bot.reply_monitor as reply_monitor
 
         reply_monitor.check_replies()
-    except Exception:
-        alert.send_alert("⚠️ reply_monitor: check_replies failed — check logs.")
+    except Exception as exc:
+        alert.send_alert(f"⚠️ reply_monitor: check_replies failed — {exc}")
         logger.warning("reply_monitor: check_replies failed", exc_info=True)
 
     # ── Run summary ───────────────────────────────────────────────────────────

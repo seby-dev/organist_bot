@@ -103,6 +103,7 @@ def upsert_accepted(
     organisation: str,
     date: str,
     fee: str,
+    email: str = "",
 ) -> None:
     """Create or update a record to 'accepted'.
 
@@ -125,7 +126,7 @@ def upsert_accepted(
             "organisation": organisation,
             "date": date,
             "fee": fee,
-            "email": "",
+            "email": email,
             "status": "accepted",
             "applied_at": now,
             "updated_at": now,
@@ -162,12 +163,16 @@ def expire_past_applied() -> int:
 
 
 def _parse_fee(fee_str: str) -> float | None:
-    """Strip currency symbols and commas, convert to float. Return None if empty or unparseable."""
-    cleaned = fee_str.strip().lstrip("£$").replace(",", "").strip()
-    if not cleaned:
+    """Extract first numeric value from a fee string. Returns None if empty or no number found."""
+    import re
+
+    if not fee_str or not fee_str.strip():
+        return None
+    m = re.search(r"[\d,]+(?:\.\d+)?", fee_str.replace("£", "").replace("$", ""))
+    if not m:
         return None
     try:
-        return float(cleaned)
+        return float(m.group().replace(",", ""))
     except ValueError:
         return None
 
