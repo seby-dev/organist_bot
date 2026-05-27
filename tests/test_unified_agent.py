@@ -1477,3 +1477,102 @@ class TestManageApplicationsSummaryIncome:
         text = json.loads(result)["result"]
         assert "Income" in text
         assert "£140.00" in text
+
+
+# ── get_application_analytics ─────────────────────────────────────────────────
+
+
+class TestGetApplicationAnalytics:
+    @pytest.mark.asyncio
+    async def test_returns_formatted_metrics(self):
+        mock_metrics = {
+            "total": 10,
+            "accepted": 3,
+            "rejected": 2,
+            "no_response": 4,
+            "applied": 1,
+            "acceptance_rate": 33.3,
+            "response_rate": 55.6,
+            "avg_response_days": 4.5,
+        }
+        with patch("organist_bot.integrations.unified_agent.analytics") as mock_analytics:
+            mock_analytics.get_success_metrics.return_value = mock_metrics
+            result = await _execute_tool("get_application_analytics", {}, CHAT_ID)
+        data = json.loads(result)
+        assert "result" in data
+        assert "33.3%" in data["result"]
+        assert "4.5 days" in data["result"]
+
+    @pytest.mark.asyncio
+    async def test_no_avg_response_shows_not_enough_data(self):
+        mock_metrics = {
+            "total": 5,
+            "accepted": 0,
+            "rejected": 0,
+            "no_response": 5,
+            "applied": 0,
+            "acceptance_rate": 0.0,
+            "response_rate": 0.0,
+            "avg_response_days": None,
+        }
+        with patch("organist_bot.integrations.unified_agent.analytics") as mock_analytics:
+            mock_analytics.get_success_metrics.return_value = mock_metrics
+            result = await _execute_tool("get_application_analytics", {}, CHAT_ID)
+        data = json.loads(result)
+        assert "not enough data" in data["result"]
+
+    @pytest.mark.asyncio
+    async def test_custom_days_passed_to_analytics(self):
+        mock_metrics = {
+            "total": 0,
+            "accepted": 0,
+            "rejected": 0,
+            "no_response": 0,
+            "applied": 0,
+            "acceptance_rate": 0.0,
+            "response_rate": 0.0,
+            "avg_response_days": None,
+        }
+        with patch("organist_bot.integrations.unified_agent.analytics") as mock_analytics:
+            mock_analytics.get_success_metrics.return_value = mock_metrics
+            await _execute_tool("get_application_analytics", {"days": 90}, CHAT_ID)
+        mock_analytics.get_success_metrics.assert_called_once_with(90)
+
+
+# ── get_gig_breakdown ─────────────────────────────────────────────────────────
+
+
+class TestGetGigBreakdown:
+    @pytest.mark.asyncio
+    async def test_returns_sorted_breakdown(self):
+        mock_breakdown = {
+            "Wedding": {"count": 10, "accepted": 3, "acceptance_rate": 30.0},
+            "Funeral": {"count": 5, "accepted": 1, "acceptance_rate": 20.0},
+        }
+        with patch("organist_bot.integrations.unified_agent.analytics") as mock_analytics:
+            mock_analytics.get_gig_type_breakdown.return_value = mock_breakdown
+            result = await _execute_tool("get_gig_breakdown", {}, CHAT_ID)
+        data = json.loads(result)
+        assert "result" in data
+        assert "Wedding" in data["result"]
+        assert "Funeral" in data["result"]
+        lines = data["result"].split("\n")
+        wedding_idx = next(i for i, line in enumerate(lines) if "Wedding" in line)
+        funeral_idx = next(i for i, line in enumerate(lines) if "Funeral" in line)
+        # Wedding (10 applied) must appear before Funeral (5 applied)
+        assert wedding_idx < funeral_idx
+
+    @pytest.mark.asyncio
+    async def test_empty_breakdown_returns_no_applications_message(self):
+        with patch("organist_bot.integrations.unified_agent.analytics") as mock_analytics:
+            mock_analytics.get_gig_type_breakdown.return_value = {}
+            result = await _execute_tool("get_gig_breakdown", {}, CHAT_ID)
+        data = json.loads(result)
+        assert "No applications" in data["result"]
+
+    @pytest.mark.asyncio
+    async def test_custom_days_passed_to_analytics(self):
+        with patch("organist_bot.integrations.unified_agent.analytics") as mock_analytics:
+            mock_analytics.get_gig_type_breakdown.return_value = {}
+            await _execute_tool("get_gig_breakdown", {"days": 180}, CHAT_ID)
+        mock_analytics.get_gig_type_breakdown.assert_called_once_with(180)
