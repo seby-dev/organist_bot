@@ -86,3 +86,82 @@ class TestFetchReplyMessages:
                 accepted_emails=[],
             )
         assert result == []
+
+
+class TestFetchInvoiceReplies:
+    def _make_client(self, tmp_path):
+        creds_file = tmp_path / "credentials.json"
+        creds_file.write_text('{"installed": {}}')
+        token_file = tmp_path / "token.json"
+        from organist_bot.integrations.gmail_client import GmailClient
+
+        return GmailClient(str(creds_file), str(token_file))
+
+    def test_returns_inbox_replies_from_client_email(self, tmp_path):
+        client = self._make_client(tmp_path)
+        expected = _make_message_dict(
+            "msg1",
+            "client@example.com",
+            "me@example.com",
+            "Thank you, payment has been sent.",
+            "incoming",
+        )
+        with (
+            patch.object(client, "_build_service"),
+            patch.object(client, "_search_messages", return_value=[{"id": "msg1"}]),
+            patch.object(client, "_get_message_details", return_value=expected),
+        ):
+            result = client.fetch_invoice_replies(
+                invoice_number="INV-2026-001",
+                client_email="client@example.com",
+            )
+        assert len(result) == 1
+        assert result[0]["message_id"] == "msg1"
+
+    def test_search_query_includes_invoice_number_and_client_email(self, tmp_path):
+        client = self._make_client(tmp_path)
+        captured_queries = []
+
+        def capture_search(service, query):
+            captured_queries.append(query)
+            return []
+
+        with (
+            patch.object(client, "_build_service"),
+            patch.object(client, "_search_messages", side_effect=capture_search),
+        ):
+            client.fetch_invoice_replies(
+                invoice_number="INV-2026-001",
+                client_email="client@example.com",
+            )
+
+        assert any("INV-2026-001" in q for q in captured_queries)
+        assert any("client@example.com" in q for q in captured_queries)
+
+    def test_since_date_appended_to_query(self, tmp_path):
+        client = self._make_client(tmp_path)
+        captured_queries = []
+
+        def capture_search(service, query):
+            captured_queries.append(query)
+            return []
+
+        with (
+            patch.object(client, "_build_service"),
+            patch.object(client, "_search_messages", side_effect=capture_search),
+        ):
+            client.fetch_invoice_replies(
+                invoice_number="INV-2026-001",
+                client_email="client@example.com",
+                since_date="2026/06/01",
+            )
+
+        assert any("2026/06/01" in q for q in captured_queries)
+
+    def test_returns_empty_list_on_api_error(self, tmp_path):
+        client = self._make_client(tmp_path)
+        with (
+            patch.object(client, "_build_service", side_effect=Exception("auth error")),
+        ):
+            result = client.fetch_invoice_replies("INV-2026-001", "client@example.com")
+        assert result == []
