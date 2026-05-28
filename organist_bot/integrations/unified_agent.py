@@ -19,6 +19,7 @@ from organist_bot.integrations.invoice_generator import (
     load_clients,
     load_invoices,
     mark_invoice_emailed,
+    mark_invoice_paid,
 )
 from organist_bot.models import Gig
 from organist_bot.runtime_config_store import runtime_config
@@ -45,6 +46,7 @@ You are an assistant for an organist. You handle three areas:
 - After generating an invoice, ask if the user wants to email it.
 - Use list_clients to look up available client keys when the user mentions a client by name.
 - Use list_invoices to look up past invoices when the user mentions a client or date.
+- "Mark INV-2026-001 as paid" / "invoice has been paid" → mark_invoice_paid.
 - Use £ for money.
 
 ## Filter management
@@ -313,6 +315,20 @@ TOOLS: list[dict] = [
                 "limit": {"type": "integer"},
             },
             "required": [],
+        },
+    },
+    {
+        "name": "mark_invoice_paid",
+        "description": "Mark an invoice as paid. Use when the user says an invoice has been paid or confirms payment.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "invoice_number": {
+                    "type": "string",
+                    "description": "The invoice number, e.g. INV-2026-001",
+                }
+            },
+            "required": ["invoice_number"],
         },
     },
     {
@@ -988,32 +1004,47 @@ async def _execute_tool(name: str, input_data: dict, chat_id: int) -> str:
             return json.dumps({"result": f"Invoice {inv_num} re-sent to {inv['client_email']}."})
         return json.dumps({"error": email_result["error"]})
 
+    if name == "mark_invoice_paid":
+        inv_num = input_data["invoice_number"]
+        ok = mark_invoice_paid(inv_num)
+        if not ok:
+            return json.dumps({"error": f"Invoice {inv_num} not found."})
+        return json.dumps({"result": f"✅ Invoice {inv_num} marked as paid."})
+
     if name == "list_invoices":
         invoices = load_invoices()
         if not invoices:
             return json.dumps({"result": "No invoices found."})
 
-        client_filter = input_data.get("client_key")
-        limit = input_data.get("limit", 10)
+        import datetime as _dt
+
+        now = _dt.datetime.now(_dt.UTC)
+
+        def _payment_status(r: dict) -> str:
+            if r.get("paid_at"):
+                return "✅ paid"
+            emailed_at_str = r.get("emailed_at")
+            if not r.get("emailed") or not emailed_at_str:
+                return "not sent"
+            try:
+                emailed_at = _dt.datetime.fromisoformat(emailed_at_str.replace("Z", "+00:00"))
+                days = (now - emailed_at).days
+                if days >= 5:
+                    return f"⏰ overdue ({days}d)"
+                return f"emailed {days}d ago"
+            except ValueError:
+                return "emailed"
 
         records = list(invoices.values())
-        if client_filter:
-            records = [r for r in records if r.get("client_key") == client_filter]
-
         records.sort(key=lambda r: r.get("created_at", ""), reverse=True)
-        records = records[:limit]
-
-        summary = [
-            {
-                "invoice_number": r["invoice_number"],
-                "client": r["client_name"],
-                "total": f"{r['currency']}{r['total']:.2f}",
-                "date": r["date"],
-                "emailed": r.get("emailed", False),
-            }
-            for r in records
-        ]
-        return json.dumps(summary, indent=2)
+        lines = ["📄 Invoices (most recent first)", ""]
+        for r in records[:20]:
+            pay_status = _payment_status(r)
+            lines.append(
+                f"{r['invoice_number']}  {r.get('client_name', '?'):<20}"
+                f"  £{r.get('total', 0):.2f}  {r.get('date', '?')}  {pay_status}"
+            )
+        return json.dumps({"result": "\n".join(lines)})
 
     if name == "get_invoice":
         invoices = load_invoices()
@@ -1572,3 +1603,10 @@ def reset_conversation(chat_id: int) -> None:
     _last_invoice.pop(chat_id, None)
     _last_gig_listing.pop(chat_id, None)
     _last_application_listing.pop(chat_id, None)
+
+
+class UnifiedAgent:
+    """Thin wrapper around the module-level _execute_tool for testability."""
+
+    async def _execute_tool(self, name: str, input_data: dict, chat_id: int) -> str:
+        return await _execute_tool(name, input_data, chat_id)

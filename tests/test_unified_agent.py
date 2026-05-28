@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from organist_bot.integrations.unified_agent import (
+    UnifiedAgent,
     _execute_tool,
     _last_gig_listing,
     sync_calendar_blocks,
@@ -1659,6 +1660,88 @@ class TestAddGigTravelBuffers:
 
         data = json.loads(result)
         assert "event_123" in data["result"]  # Still succeeded despite buffer failure
+
+
+# ── mark_invoice_paid ─────────────────────────────────────────────────────────
+
+
+class TestMarkInvoicePaidTool:
+    async def test_marks_invoice_paid_and_returns_success(self):
+        with patch(
+            "organist_bot.integrations.unified_agent.mark_invoice_paid", return_value=True
+        ) as mock_paid:
+            agent = UnifiedAgent()
+            result = await agent._execute_tool(
+                "mark_invoice_paid", {"invoice_number": "INV-2026-001"}, chat_id=1
+            )
+        import json
+
+        data = json.loads(result)
+        assert "INV-2026-001" in data["result"]
+        assert "paid" in data["result"].lower()
+        mock_paid.assert_called_once_with("INV-2026-001")
+
+    async def test_returns_error_for_unknown_invoice(self):
+        with patch("organist_bot.integrations.unified_agent.mark_invoice_paid", return_value=False):
+            agent = UnifiedAgent()
+            result = await agent._execute_tool(
+                "mark_invoice_paid", {"invoice_number": "INV-9999-999"}, chat_id=1
+            )
+        import json
+
+        data = json.loads(result)
+        assert "error" in data
+
+
+class TestListInvoicesPaymentStatus:
+    async def test_shows_paid_status(self):
+        invoices = {
+            "INV-2026-001": {
+                "invoice_number": "INV-2026-001",
+                "client_name": "St Paul's",
+                "total": 150.0,
+                "currency": "£",
+                "date": "1 June 2026",
+                "emailed": True,
+                "emailed_at": "2026-06-01T10:00:00Z",
+                "paid_at": "2026-06-03T10:00:00Z",
+                "reminder_sent": False,
+            }
+        }
+        with patch("organist_bot.integrations.unified_agent.load_invoices", return_value=invoices):
+            agent = UnifiedAgent()
+            result = await agent._execute_tool("list_invoices", {}, chat_id=1)
+        import json
+
+        data = json.loads(result)
+        assert "paid" in data["result"].lower()
+
+    async def test_shows_overdue_status(self):
+        import datetime
+
+        overdue_at = (datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=7)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+        invoices = {
+            "INV-2026-001": {
+                "invoice_number": "INV-2026-001",
+                "client_name": "St Mary's",
+                "total": 200.0,
+                "currency": "£",
+                "date": "1 May 2026",
+                "emailed": True,
+                "emailed_at": overdue_at,
+                "paid_at": None,
+                "reminder_sent": False,
+            }
+        }
+        with patch("organist_bot.integrations.unified_agent.load_invoices", return_value=invoices):
+            agent = UnifiedAgent()
+            result = await agent._execute_tool("list_invoices", {}, chat_id=1)
+        import json
+
+        data = json.loads(result)
+        assert "overdue" in data["result"].lower()
 
 
 # ── manage_applications declined → delete travel buffers ─────────────────────
