@@ -24,6 +24,14 @@ INVOICES_FILE = _PROJ_ROOT / "invoices.json"
 
 logger = logging.getLogger(__name__)
 
+
+def _now_iso() -> str:
+    """Return current UTC time as ISO-8601 string ending in Z."""
+    import datetime as _dt
+
+    return _dt.datetime.now(_dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 _pw_instance = None
 _browser = None
 
@@ -102,7 +110,14 @@ def load_invoices() -> dict:
 
 def save_invoice(invoice_data: dict) -> None:
     invoices = load_invoices()
-    record = {**invoice_data, "pdf_path": str(invoice_data["pdf_path"])}
+    record = {
+        **invoice_data,
+        "pdf_path": str(invoice_data["pdf_path"]),
+        "emailed_at": invoice_data.get("emailed_at", None),
+        "paid_at": invoice_data.get("paid_at", None),
+        "reminder_sent": invoice_data.get("reminder_sent", False),
+        "checked_reply_ids": invoice_data.get("checked_reply_ids", []),
+    }
     invoices[invoice_data["invoice_number"]] = record
     with open(INVOICES_FILE, "w") as f:
         json.dump(invoices, f, indent=2)
@@ -112,8 +127,30 @@ def mark_invoice_emailed(invoice_number: str) -> None:
     invoices = load_invoices()
     if invoice_number in invoices:
         invoices[invoice_number]["emailed"] = True
+        invoices[invoice_number]["emailed_at"] = _now_iso()
         with open(INVOICES_FILE, "w") as f:
             json.dump(invoices, f, indent=2)
+
+
+def mark_invoice_paid(invoice_number: str) -> bool:
+    """Set paid_at on the matching invoice record. Returns False if not found."""
+    invoices = load_invoices()
+    if invoice_number not in invoices:
+        return False
+    invoices[invoice_number]["paid_at"] = _now_iso()
+    with open(INVOICES_FILE, "w") as f:
+        json.dump(invoices, f, indent=2)
+    return True
+
+
+def save_invoice_field(invoice_number: str, field: str, value: object) -> None:
+    """Update a single field on an invoice record. Silently ignores unknown invoice numbers."""
+    invoices = load_invoices()
+    if invoice_number not in invoices:
+        return
+    invoices[invoice_number][field] = value
+    with open(INVOICES_FILE, "w") as f:
+        json.dump(invoices, f, indent=2)
 
 
 # ── Invoice numbering ─────────────────────────────────────────────────────────
