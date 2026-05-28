@@ -328,6 +328,101 @@ class GoogleCalendarClient:
         )
         return event_id
 
+    def add_travel_buffers(
+        self,
+        gig_summary: str,
+        start_dt: datetime.datetime,
+        end_dt: datetime.datetime,
+        travel_minutes: int,
+    ) -> tuple[str, str]:
+        """Create travel buffer events before and after a gig.
+
+        Creates:
+          - '🚗 Travel to {gig_summary}' ending at start_dt
+          - '🚗 Travel from {gig_summary}' starting at end_dt
+
+        Both events are tagged with extended property organist_bot_travel=1.
+        Returns (before_event_id, after_event_id).
+        Raises on API failure.
+        """
+        delta = datetime.timedelta(minutes=travel_minutes)
+
+        before_event = {
+            "summary": f"🚗 Travel to {gig_summary}",
+            "start": {
+                "dateTime": (start_dt - delta).isoformat(),
+                "timeZone": "Europe/London",
+            },
+            "end": {
+                "dateTime": start_dt.isoformat(),
+                "timeZone": "Europe/London",
+            },
+            "extendedProperties": {"private": {"organist_bot_travel": "1"}},
+        }
+
+        after_event = {
+            "summary": f"🚗 Travel from {gig_summary}",
+            "start": {
+                "dateTime": end_dt.isoformat(),
+                "timeZone": "Europe/London",
+            },
+            "end": {
+                "dateTime": (end_dt + delta).isoformat(),
+                "timeZone": "Europe/London",
+            },
+            "extendedProperties": {"private": {"organist_bot_travel": "1"}},
+        }
+
+        t0 = time.perf_counter()
+        before_id: str | None = None
+        try:
+            before_created = (
+                self._service.events()
+                .insert(calendarId=self.calendar_id, body=before_event)
+                .execute()
+            )
+            before_id = before_created["id"]
+
+            after_created = (
+                self._service.events()
+                .insert(calendarId=self.calendar_id, body=after_event)
+                .execute()
+            )
+            after_id: str = after_created["id"]
+        except Exception:
+            elapsed_ms = int((time.perf_counter() - t0) * 1000)
+            logger.exception(
+                "Failed to create travel buffers",
+                extra={
+                    "gig_summary": gig_summary,
+                    "calendar_id": self.calendar_id,
+                    "elapsed_ms": elapsed_ms,
+                },
+            )
+            # Clean up orphaned before-event if after-event creation failed
+            if before_id is not None:
+                try:
+                    self._service.events().delete(
+                        calendarId=self.calendar_id, eventId=before_id
+                    ).execute()
+                except Exception:
+                    logger.warning("Failed to clean up orphaned travel buffer event %s", before_id)
+            raise
+
+        assert before_id is not None  # always set if try block completed without raising
+        elapsed_ms = int((time.perf_counter() - t0) * 1000)
+        logger.info(
+            "Travel buffers created",
+            extra={
+                "gig_summary": gig_summary,
+                "travel_minutes": travel_minutes,
+                "before_id": before_id,
+                "after_id": after_id,
+                "elapsed_ms": elapsed_ms,
+            },
+        )
+        return before_id, after_id
+
     def block_period(self, period: str) -> str | None:
         """Create an all-day 'Unavailable' blocking event for the given period token.
 

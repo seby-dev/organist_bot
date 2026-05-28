@@ -62,8 +62,10 @@ def record_application(gig: Gig) -> bool:
             "header": gig.header or "",
             "organisation": gig.organisation or "",
             "date": gig.date or "",
+            "time": gig.time or "",
             "fee": gig.fee or "",
             "email": gig.email or "",
+            "postcode": gig.postcode or "",
             "status": "applied",
             "applied_at": now,
             "updated_at": now,
@@ -104,6 +106,9 @@ def upsert_accepted(
     date: str,
     fee: str,
     email: str = "",
+    *,
+    postcode: str = "",
+    time: str = "",
 ) -> None:
     """Create or update a record to 'accepted'.
 
@@ -117,6 +122,10 @@ def upsert_accepted(
             if r["url"] == url:
                 r["status"] = "accepted"
                 r["updated_at"] = now
+                if postcode:
+                    r["postcode"] = postcode
+                if time:
+                    r["time"] = time
                 _write(records)
                 return
     records.append(
@@ -125,14 +134,32 @@ def upsert_accepted(
             "header": header,
             "organisation": organisation,
             "date": date,
+            "time": time,
             "fee": fee,
             "email": email,
+            "postcode": postcode,
             "status": "accepted",
             "applied_at": now,
             "updated_at": now,
         }
     )
     _write(records)
+
+
+def update_travel_buffer_ids(url: str, before_id: str, after_id: str) -> bool:
+    """Set travel_before_event_id and travel_after_event_id on the record with the given URL.
+
+    Returns False if not found.
+    """
+    records = _read()
+    for r in records:
+        if r["url"] == url:
+            r["travel_before_event_id"] = before_id
+            r["travel_after_event_id"] = after_id
+            r["updated_at"] = _now_iso()
+            _write(records)
+            return True
+    return False
 
 
 def expire_past_applied() -> int:

@@ -331,3 +331,100 @@ class TestUpdateReplyMessageId:
         monkeypatch.setattr(store, "_PATH", tmp_path / "applications.json")
         (tmp_path / "applications.json").write_text(json.dumps([]))
         assert store.update_reply_message_id("http://notfound.com", "msg123") is False
+
+
+# ── New fields: postcode, time, travel buffer IDs ────────────────────────────
+
+
+class TestPostcodeStoredOnApplication:
+    def test_record_application_stores_postcode(self):
+        gig = _make_gig(postcode="CM1 1AA")
+        store.record_application(gig)
+        records = json.loads(store._PATH.read_text())
+        assert records[0]["postcode"] == "CM1 1AA"
+
+    def test_record_application_stores_time(self):
+        gig = _make_gig(time="10:30 AM")
+        store.record_application(gig)
+        records = json.loads(store._PATH.read_text())
+        assert records[0]["time"] == "10:30 AM"
+
+    def test_record_application_stores_blank_postcode_when_none(self):
+        gig = _make_gig()  # postcode not set → None
+        store.record_application(gig)
+        records = json.loads(store._PATH.read_text())
+        assert records[0]["postcode"] == ""
+
+
+class TestUpsertAcceptedPostcode:
+    def test_upsert_accepted_stores_postcode(self):
+        store.upsert_accepted(
+            url="http://a.com/1",
+            header="Wedding",
+            organisation="St Mary's",
+            date="2026-07-01",
+            fee="£200",
+            postcode="SW1A 1AA",
+        )
+        records = json.loads(store._PATH.read_text())
+        assert records[0]["postcode"] == "SW1A 1AA"
+
+    def test_upsert_accepted_postcode_defaults_to_empty(self):
+        store.upsert_accepted(
+            url="http://a.com/2",
+            header="Funeral",
+            organisation="St John's",
+            date="2026-07-02",
+            fee="£100",
+        )
+        records = json.loads(store._PATH.read_text())
+        assert records[0]["postcode"] == ""
+
+    def test_upsert_accepted_updates_postcode_on_existing_record(self):
+        # First record the application
+        gig = _make_gig()
+        store.record_application(gig)
+        # Then accept it with a postcode
+        store.upsert_accepted(
+            url="https://organistsonline.org/gig/123",
+            header="Wedding",
+            organisation="St Mary's",
+            date="2026-07-01",
+            fee="£200",
+            postcode="CM1 1AA",
+        )
+        records = json.loads(store._PATH.read_text())
+        assert records[0]["postcode"] == "CM1 1AA"
+
+    def test_upsert_accepted_preserves_existing_postcode_when_blank(self):
+        # Record application with a postcode
+        gig = _make_gig(postcode="CM1 1AA")
+        store.record_application(gig)
+        # Accept without providing a postcode
+        store.upsert_accepted(
+            url="https://organistsonline.org/gig/123",
+            header="Wedding",
+            organisation="St Mary's",
+            date="2026-07-01",
+            fee="£200",
+        )
+        records = json.loads(store._PATH.read_text())
+        # Original postcode should be preserved (not overwritten with "")
+        assert records[0]["postcode"] == "CM1 1AA"
+
+
+class TestUpdateTravelBufferIds:
+    def test_sets_buffer_ids_on_existing_record(self):
+        gig = _make_gig()
+        store.record_application(gig)
+        result = store.update_travel_buffer_ids(
+            "https://organistsonline.org/gig/123", "before_id_123", "after_id_456"
+        )
+        assert result is True
+        records = json.loads(store._PATH.read_text())
+        assert records[0]["travel_before_event_id"] == "before_id_123"
+        assert records[0]["travel_after_event_id"] == "after_id_456"
+
+    def test_returns_false_for_unknown_url(self):
+        result = store.update_travel_buffer_ids("http://not-found.com", "b", "a")
+        assert result is False

@@ -136,6 +136,42 @@ class GmailClient:
 
         return results
 
+    def fetch_invoice_replies(
+        self,
+        invoice_number: str,
+        client_email: str,
+        since_date: str | None = None,
+    ) -> list[dict]:
+        """Search inbox for replies to a sent invoice.
+
+        Searches for messages from client_email with the invoice number in the subject.
+        since_date: optional YYYY/MM/DD bound to avoid full-inbox scan.
+        Returns list of {message_id, sender, body, ...} dicts.
+        Fails open — returns [] on any error.
+        """
+        try:
+            service = self._build_service()
+        except Exception as exc:
+            logger.warning("Gmail: could not build service for invoice replies: %s", exc)
+            return []
+
+        date_suffix = f" after:{since_date}" if since_date else ""
+        query = f"from:{client_email} subject:{invoice_number} in:inbox{date_suffix}"
+
+        seen_ids: set[str] = set()
+        results: list[dict] = []
+
+        msgs = self._search_messages(service, query)
+        for m in msgs:
+            if m["id"] in seen_ids:
+                continue
+            details = self._get_message_details(service, m["id"], "incoming")
+            if details:
+                seen_ids.add(m["id"])
+                results.append(details)
+
+        return results
+
 
 def _extract_body(payload: dict) -> str:
     """Recursively extract plain-text body from a Gmail message payload."""

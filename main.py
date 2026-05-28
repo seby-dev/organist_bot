@@ -287,6 +287,14 @@ def _run(scraper: Scraper, sheets_logger: SheetsLogger | None = None) -> None:
         alert.send_alert(f"⚠️ reply_monitor: check_replies failed — {exc}")
         logger.warning("reply_monitor: check_replies failed", exc_info=True)
 
+    try:
+        import organist_bot.invoice_monitor as invoice_monitor
+
+        invoice_monitor.check_invoice_reminders_and_replies()
+    except Exception as exc:
+        alert.send_alert(f"⚠️ invoice_monitor: check failed — {exc}")
+        logger.warning("invoice_monitor: check_invoice_reminders_and_replies failed", exc_info=True)
+
     # ── Run summary ───────────────────────────────────────────────────────────
     logger.info(
         "Run summary",
