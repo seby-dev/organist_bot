@@ -208,6 +208,8 @@ class TestAddGigApplicationStore:
             organisation="St Mary's",
             date="Sunday 1st June 2025",
             fee="£150",
+            postcode="",
+            time="10:30am",
         )
 
     @pytest.mark.asyncio
@@ -232,6 +234,8 @@ class TestAddGigApplicationStore:
             organisation="St Mary's",
             date="Sunday 1st June 2025",
             fee="£150",
+            postcode="",
+            time="10:30am",
         )
 
     @pytest.mark.asyncio
@@ -252,6 +256,8 @@ class TestAddGigApplicationStore:
             organisation="St Mary's",
             date="Sunday 1st June 2025",
             fee="£150",
+            postcode="",
+            time="10:30am",
         )
 
 
@@ -1576,3 +1582,123 @@ class TestGetGigBreakdown:
             mock_analytics.get_gig_type_breakdown.return_value = {}
             await _execute_tool("get_gig_breakdown", {"days": 180}, CHAT_ID)
         mock_analytics.get_gig_type_breakdown.assert_called_once_with(180)
+
+
+# ── add_gig travel buffers ────────────────────────────────────────────────────
+
+
+class TestAddGigTravelBuffers:
+    """add_gig should create travel buffers after creating the calendar event."""
+
+    @pytest.mark.asyncio
+    async def test_creates_travel_buffers_when_postcode_provided(self):
+        with (
+            patch("organist_bot.integrations.unified_agent._make_calendar_client") as mock_cal_fn,
+            patch("organist_bot.integrations.unified_agent.travel") as mock_travel,
+            patch("organist_bot.integrations.unified_agent.application_store"),
+            patch("organist_bot.integrations.unified_agent.filter_store"),
+            patch("organist_bot.integrations.unified_agent.settings") as mock_settings,
+        ):
+            mock_settings.max_travel_minutes = 45
+            mock_cal = MagicMock()
+            mock_cal_fn.return_value = mock_cal
+            mock_cal.add_gig.return_value = "event_123"
+            mock_cal.add_travel_buffers.return_value = ("before_id", "after_id")
+            mock_travel.get_travel_minutes.return_value = 40
+
+            result = await _execute_tool(
+                "add_gig",
+                {
+                    "confirmed": True,
+                    "header": "Wedding",
+                    "organisation": "St Paul's",
+                    "locality": "Chelmsford",
+                    "date": "2026-07-15",
+                    "time": "11:00 AM",
+                    "fee": "£200",
+                    "postcode": "CM1 1AA",
+                },
+                CHAT_ID,
+            )
+
+        data = json.loads(result)
+        assert "event_123" in data["result"]
+        mock_travel.get_travel_minutes.assert_called_once_with("CM1 1AA")
+        mock_cal.add_travel_buffers.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_add_gig_still_succeeds_when_buffer_creation_fails(self):
+        with (
+            patch("organist_bot.integrations.unified_agent._make_calendar_client") as mock_cal_fn,
+            patch("organist_bot.integrations.unified_agent.travel") as mock_travel,
+            patch("organist_bot.integrations.unified_agent.application_store"),
+            patch("organist_bot.integrations.unified_agent.filter_store"),
+            patch("organist_bot.integrations.unified_agent.settings") as mock_settings,
+        ):
+            mock_settings.max_travel_minutes = 45
+            mock_cal = MagicMock()
+            mock_cal_fn.return_value = mock_cal
+            mock_cal.add_gig.return_value = "event_123"
+            mock_cal.add_travel_buffers.side_effect = Exception("Calendar API down")
+            mock_travel.get_travel_minutes.return_value = 30
+
+            result = await _execute_tool(
+                "add_gig",
+                {
+                    "confirmed": True,
+                    "header": "Wedding",
+                    "organisation": "St Paul's",
+                    "locality": "Chelmsford",
+                    "date": "2026-07-15",
+                    "time": "11:00 AM",
+                    "fee": "£200",
+                    "postcode": "CM1 1AA",
+                },
+                CHAT_ID,
+            )
+
+        data = json.loads(result)
+        assert "event_123" in data["result"]  # Still succeeded despite buffer failure
+
+
+# ── manage_applications declined → delete travel buffers ─────────────────────
+
+
+class TestManageApplicationsDeclinedDeletesBuffers:
+    @pytest.mark.asyncio
+    async def test_declined_accepted_gig_deletes_travel_buffers(self):
+        from organist_bot.integrations.unified_agent import _last_application_listing
+
+        record = {
+            "url": "http://a.com/1",
+            "header": "Wedding",
+            "organisation": "St Mary's",
+            "date": "2026-07-15",
+            "status": "accepted",
+            "travel_before_event_id": "before_abc",
+            "travel_after_event_id": "after_def",
+        }
+        _last_application_listing[CHAT_ID] = [record]
+        try:
+            with (
+                patch("organist_bot.integrations.unified_agent.application_store") as mock_store,
+                patch(
+                    "organist_bot.integrations.unified_agent._make_calendar_client"
+                ) as mock_cal_fn,
+            ):
+                mock_store.list_applications.return_value = [record]
+                mock_store.update_status.return_value = True
+                mock_cal = MagicMock()
+                mock_cal_fn.return_value = mock_cal
+
+                await _execute_tool(
+                    "manage_applications",
+                    {"action": "update", "number": 1, "status": "declined"},
+                    CHAT_ID,
+                )
+
+            deleted_ids = [c.args[0] for c in mock_cal.delete_event.call_args_list]
+            assert "before_abc" in deleted_ids
+            assert "after_def" in deleted_ids
+        finally:
+            _last_application_listing.pop(CHAT_ID, None)

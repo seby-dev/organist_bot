@@ -6,7 +6,7 @@ import logging
 from dataclasses import dataclass
 from typing import cast
 
-from organist_bot import analytics, application_store, filter_store
+from organist_bot import analytics, application_store, filter_store, travel
 from organist_bot.config import settings
 from organist_bot.filters import normalize_to_yyyymmdd, parse_start_time
 from organist_bot.integrations.calendar_client import GoogleCalendarClient
@@ -115,6 +115,10 @@ TOOLS: list[dict] = [
                 "url": {
                     "type": "string",
                     "description": "Source gig URL from fetch_gig_details. Omit for manual entries.",
+                },
+                "postcode": {
+                    "type": "string",
+                    "description": "Gig venue postcode for travel buffer calculation (e.g. CM1 1AA)",
                 },
             },
             "required": ["confirmed", "header", "date", "time"],
@@ -714,6 +718,27 @@ async def _execute_tool(name: str, input_data: dict, chat_id: int) -> str:
                 link="",
             )
             event_id = cal.add_gig(gig)
+            url = input_data.get("url") or None
+            # Travel buffers (non-fatal — gig event already created)
+            try:
+                postcode = input_data.get("postcode", "")
+                yyyymmdd_buf = normalize_to_yyyymmdd(fields["date"])
+                start_time_buf = parse_start_time(fields["time"])
+                if yyyymmdd_buf and start_time_buf:
+                    buf_date = datetime.datetime.strptime(yyyymmdd_buf, "%Y%m%d").date()
+                    buf_start = datetime.datetime.combine(buf_date, start_time_buf)
+                    buf_end = buf_start + datetime.timedelta(hours=1)
+                    travel_mins = travel.get_travel_minutes(postcode) or settings.max_travel_minutes
+                    before_id, after_id = cal.add_travel_buffers(
+                        gig_summary=f"{fields['header']} — {fields['organisation']}",
+                        start_dt=buf_start,
+                        end_dt=buf_end,
+                        travel_minutes=travel_mins,
+                    )
+                    if url:
+                        application_store.update_travel_buffer_ids(url, before_id, after_id)
+            except Exception as buf_exc:
+                logger.warning("add_gig: travel buffer creation failed: %s", buf_exc)
             yyyymmdd = normalize_to_yyyymmdd(fields["date"])
             if yyyymmdd:
                 try:
@@ -724,7 +749,6 @@ async def _execute_tool(name: str, input_data: dict, chat_id: int) -> str:
                         "Failed to add gig date to unavailable periods",
                         extra={"date": fields["date"]},
                     )
-            url = input_data.get("url") or None
             try:
                 application_store.upsert_accepted(
                     url=url,
@@ -732,6 +756,8 @@ async def _execute_tool(name: str, input_data: dict, chat_id: int) -> str:
                     organisation=fields.get("organisation", ""),
                     date=fields["date"],
                     fee=fields["fee"] if fields["fee"] != "not specified" else "",
+                    postcode=input_data.get("postcode", ""),
+                    time=fields.get("time", ""),
                 )
             except Exception:
                 logger.warning(
@@ -1281,6 +1307,20 @@ async def _execute_tool(name: str, input_data: dict, chat_id: int) -> str:
                 if original_status == "accepted" and status == "declined":
                     org = record.get("organisation") or record.get("header", "")
                     date = record.get("date", "")
+                    # Delete travel buffer events
+                    cal = _make_calendar_client()
+                    if cal:
+                        for field in ("travel_before_event_id", "travel_after_event_id"):
+                            evt_id = record.get(field)
+                            if evt_id:
+                                try:
+                                    cal.delete_event(evt_id)
+                                except Exception as del_exc:
+                                    logger.warning(
+                                        "manage_applications: failed to delete travel buffer %s: %s",
+                                        evt_id,
+                                        del_exc,
+                                    )
                     msg += (
                         f"\n\nThis was a confirmed booking ({org} on {date}). "
                         "Do you want to delete the calendar event?"
