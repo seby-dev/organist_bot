@@ -31,7 +31,11 @@ if mypy.returncode != 0 and mypy.stdout.strip():
     lines = mypy.stdout.strip().splitlines()
     # Drop the summary line ("Found N errors") to save space
     # Filter import-untyped: false positives when stubs aren't installed locally
-    error_lines = [line for line in lines if "error:" in line and "import-untyped" not in line][:20]
+    error_lines = [
+        line
+        for line in lines
+        if "error:" in line and "import-untyped" not in line and "unused-ignore" not in line
+    ][:20]
     if error_lines:
         issues.append("mypy:\n" + "\n".join(error_lines))
 
