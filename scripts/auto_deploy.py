@@ -1,26 +1,21 @@
 """
 Auto-deploy: run every 60 seconds via launchd.
 Fetches origin/main; if local main is behind, pulls, syncs the venv,
-and restarts the bots via launchctl.
+and restarts the bots via supervisorctl.
 """
 
-import os
 import subprocess
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
-REPO = Path.home() / "Documents/Dev/organist_bot"
-VENV = Path.home() / ".venvs/organist_bot"
+REPO = Path(__file__).resolve().parent.parent
+VENV = REPO / ".venv"
 UV = Path.home() / ".local/bin/uv"
-HOME = str(Path.home())
-UID = os.getuid()
+SUPERVISORCTL = VENV / "bin" / "supervisorctl"
+CONF = REPO / "supervisord.conf"
 
 GIT = ["git", "-C", str(REPO)]
-PLISTS = [
-    Path.home() / "Library/LaunchAgents/com.organistbot.scheduler.plist",
-    Path.home() / "Library/LaunchAgents/com.organistbot.telegram.plist",
-]
 
 
 def run(cmd, **kwargs):
@@ -50,13 +45,11 @@ if result.returncode != 0:
     print("git reset failed")
     sys.exit(1)
 
-run(
-    [str(UV), "sync", "--project", str(REPO)],
-    env={**os.environ, "UV_PROJECT_ENVIRONMENT": str(VENV)},
-)
+run([str(UV), "sync", "--project", str(REPO)])
 
-for plist in PLISTS:
-    run(["launchctl", "bootout", f"gui/{UID}", str(plist)], capture_output=True)
-    run(["launchctl", "bootstrap", f"gui/{UID}", str(plist)])
+result = run([str(SUPERVISORCTL), "-c", str(CONF), "restart", "all"])
+if result.returncode != 0:
+    print("supervisorctl restart failed")
+    sys.exit(1)
 
 print(f"[{ts()}] Deploy complete")
