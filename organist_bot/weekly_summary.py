@@ -50,9 +50,10 @@ def should_send(
         return False
     try:
         h, m = (int(x) for x in summary_time_str.split(":"))
+        send_time = datetime.time(h, m)
     except (ValueError, AttributeError):
-        h, m = 9, 0
-    if now.time() < datetime.time(h, m):
+        send_time = datetime.time(9, 0)
+    if now.time() < send_time:
         return False
     if last_sent == now.date():
         return False

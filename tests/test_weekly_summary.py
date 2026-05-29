@@ -46,6 +46,14 @@ class TestShouldSend:
         """Falls back to 09:00 when time string is malformed."""
         assert ws.should_send(self._saturday(9, 5), None, "bad:time") is True
 
+    def test_handles_out_of_range_hour(self):
+        """Falls back to 09:00 when hour is out of range (e.g. 25:00)."""
+        assert ws.should_send(self._saturday(9, 5), None, "25:00") is True
+
+    def test_handles_out_of_range_minute(self):
+        """Falls back to 09:00 when minute is out of range (e.g. 9:99)."""
+        assert ws.should_send(self._saturday(9, 5), None, "9:99") is True
+
     def test_custom_send_time(self):
         assert ws.should_send(self._saturday(11, 0), None, "10:30") is True
         assert ws.should_send(self._saturday(10, 29), None, "10:30") is False
