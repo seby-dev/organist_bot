@@ -31,6 +31,15 @@
   "hooks": {
     "PostToolUse": [
       {
+        "matcher": "mcp__github__create_pull_request",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python /home/user/organist_bot/.claude/hooks/post_pr_created.py"
+          }
+        ]
+      },
+      {
         "matcher": "Write|Edit",
         "hooks": [
           {
