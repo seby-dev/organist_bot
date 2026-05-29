@@ -59,9 +59,11 @@ Summarise in a single message:
   injects the code-review + security-review pipeline. Steps 2–4 of this skill
   are therefore triggered by the hook; you do not need to invoke them manually
   unless the hook message is absent.
-- After steps 2–4 pass clean, the hook also calls `enable_pr_auto_merge` (SQUASH)
-  so the PR merges automatically once CI passes.
-- Push any fix commits to the same branch — auto-merge picks them up.
+- After steps 2–4 pass clean, Claude checks CI status and either merges
+  immediately (if CI is already green) or subscribes to PR activity and merges
+  via `mcp__github__merge_pull_request` (SQUASH) when CI turns green.
+- Push any fix commits to the same branch before CI completes — Claude will
+  wait for the updated run.
 - Skip `/verify` only if the change is purely internal (no user-visible
   behaviour, no runtime path changed) and say so explicitly in the report.
 - The post-edit lint hook runs ruff automatically after every file write, so
