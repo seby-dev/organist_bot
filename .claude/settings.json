@@ -27,5 +27,36 @@
       "Bash(rm -rf *)",
       "Bash(sudo *)"
     ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python /home/user/organist_bot/.claude/hooks/validate_filter_registration.py"
+          },
+          {
+            "type": "command",
+            "command": "python /home/user/organist_bot/.claude/hooks/validate_invoice_tools.py /home/user/organist_bot/organist_bot/integrations/unified_agent.py"
+          },
+          {
+            "type": "command",
+            "command": "python /home/user/organist_bot/.claude/hooks/post_edit_lint.py"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python /home/user/organist_bot/.claude/hooks/stop_quality_check.py"
+          }
+        ]
+      }
+    ]
   }
 }
