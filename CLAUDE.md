@@ -7,6 +7,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 After pushing a branch and creating a PR:
 1. Always create PRs as **ready for review** (never as draft).
 2. Immediately enable **auto-merge with squash** on the PR (`mcp__github__enable_pr_auto_merge` with `mergeMethod: SQUASH`).
+3. Immediately spawn a background review agent (using the `Agent` tool) to do a deep review of the PR for security, correctness, and code quality. The agent must:
+   - Wait for CI to go green (poll `mcp__github__pull_request_read` `get_check_runs` until all completed).
+   - Review the full diff thoroughly.
+   - Fix any issues found, rerun tests locally, push, wait for CI again, then re-review.
+   - Only merge (via `mcp__github__merge_pull_request` with `SQUASH`) once the review is clean and CI is green.
+   The agent runs in the background — do not block on it or duplicate its work.
 
 ## Commands
 
