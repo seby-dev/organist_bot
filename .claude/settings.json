@@ -27,5 +27,27 @@
       "Bash(rm -rf *)",
       "Bash(sudo *)"
     ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python .claude/hooks/validate_filter_registration.py"
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "test -f organist_bot/integrations/unified_agent.py && python .claude/hooks/validate_invoice_tools.py organist_bot/integrations/unified_agent.py || true"
+          }
+        ]
+      }
+    ]
   }
 }
