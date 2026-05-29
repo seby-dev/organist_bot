@@ -20,11 +20,16 @@ print(
                 f"{pr_ref} has been created. Run the post-PR review pipeline now:\n"
                 "1. Run the code-review skill at medium effort with --fix and apply all findings.\n"
                 "2. Run the security-review skill on the pending branch diff and fix any findings.\n"
-                "3. If both pass clean (or after fixes are pushed), call "
-                "mcp__github__enable_pr_auto_merge with mergeMethod=SQUASH on this PR so it "
-                "merges automatically once CI passes.\n"
-                "If enable_pr_auto_merge fails because auto-merge is disabled on the repo, "
-                "report that to the user and stop — do not retry."
+                "3. Once both pass clean, check CI status with "
+                "mcp__github__pull_request_read (method=get_check_runs).\n"
+                "   - If all checks have conclusion=success: call mcp__github__merge_pull_request "
+                "with mergeMethod=SQUASH to merge immediately.\n"
+                "   - If checks are still in_progress or queued: call "
+                "mcp__github__subscribe_pr_activity on this PR, then end your turn. "
+                "When CI completes and you receive a webhook event showing all checks passed, "
+                "merge with mcp__github__merge_pull_request (mergeMethod=SQUASH).\n"
+                "   - If any check has conclusion=failure: report the failure to the user "
+                "and do not merge."
             )
         }
     )
