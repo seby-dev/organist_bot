@@ -7,6 +7,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 After pushing a branch and creating a PR:
 1. Always create PRs as **ready for review** (never as draft).
 2. Immediately enable **auto-merge with squash** on the PR (`mcp__github__enable_pr_auto_merge` with `mergeMethod: SQUASH`).
+3. Call `subscribe_pr_activity` for the PR to monitor CI and review events.
+4. Run `/code-review --comment` to review the diff and post any findings as inline PR comments.
+5. Once CI passes and there are no blocking issues from the review, merge the PR using `mcp__github__merge_pull_request` with `mergeMethod: squash`.
 
 ## Commands
 
