@@ -69,6 +69,12 @@ class Settings(BaseSettings):
     # ── Availability filter ───────────────────────────────────────────────────
     enable_availability_filter: bool = True
 
+    # ── Dry-run mode ──────────────────────────────────────────────────────────
+    dry_run: bool = False
+
+    # ── Weekly summary ────────────────────────────────────────────────────────
+    weekly_summary_time: str = "09:00"
+
     model_config = SettingsConfigDict(env_file=".env")
 
 

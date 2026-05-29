@@ -371,6 +371,66 @@ class TestScraperHelperMethods:
         assert result == "Spaced"
 
 
+class TestPostcodeExtraction:
+    """Tests for UK postcode extraction — both structured field and regex fallback."""
+
+    def test_extract_uk_postcode_standard_with_space(self):
+        assert Scraper._extract_uk_postcode("The venue is at SW1A 1AA in London") == "SW1A 1AA"
+
+    def test_extract_uk_postcode_no_space(self):
+        assert Scraper._extract_uk_postcode("Postcode: E1W2RR") == "E1W2RR"
+
+    def test_extract_uk_postcode_lowercase_normalised(self):
+        assert Scraper._extract_uk_postcode("postcode sw1a 1aa") == "SW1A 1AA"
+
+    def test_extract_uk_postcode_returns_none_when_absent(self):
+        assert Scraper._extract_uk_postcode("No postcode here at all") is None
+
+    def test_extract_uk_postcode_returns_first_match(self):
+        result = Scraper._extract_uk_postcode("First is SW1A 1AA then EC1A 1BB")
+        assert result == "SW1A 1AA"
+
+    def test_full_details_uses_structured_field_when_present(self):
+        """When 'Postcode/Zip:' is present, use it — no regex fallback needed."""
+        scraper = Scraper()
+        details = scraper.extract_full_details(SAMPLE_DETAIL_HTML)
+        assert details["postcode"] == "SW1A 1AA"
+
+    def test_full_details_falls_back_to_regex_when_no_structured_field(self):
+        """When 'Postcode/Zip:' is absent but a postcode appears in text, extract it."""
+        html_no_postcode_field = """
+        <html><body>
+            <div class="bookingDetails">
+                <h3>Contact:</h3><p>Jane Doe</p>
+                <h3>Address:</h3><p>1 High Street, London, EC1A 1BB</p>
+            </div>
+        </body></html>
+        """
+        scraper = Scraper()
+        details = scraper.extract_full_details(html_no_postcode_field)
+        assert details["postcode"] == "EC1A 1BB"
+
+    def test_full_details_postcode_none_when_truly_absent(self):
+        """When no postcode appears anywhere, postcode is None."""
+        html_no_postcode = """
+        <html><body>
+            <div class="bookingDetails">
+                <h3>Contact:</h3><p>Jane Doe</p>
+                <h3>Address:</h3><p>1 High Street, London</p>
+            </div>
+        </body></html>
+        """
+        scraper = Scraper()
+        details = scraper.extract_full_details(html_no_postcode)
+        assert details["postcode"] is None
+
+    def test_empty_bookingdetails_postcode_none(self):
+        """Empty bookingDetails div yields None postcode."""
+        scraper = Scraper()
+        details = scraper.extract_full_details(EMPTY_DETAIL_HTML)
+        assert details["postcode"] is None
+
+
 class TestScraperContextManager:
     """Test Scraper as context manager."""
 

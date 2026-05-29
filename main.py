@@ -1,3 +1,4 @@
+import argparse
 import fcntl
 import hashlib
 import logging
@@ -40,7 +41,11 @@ logger = logging.getLogger(__name__)
 _LOCK_FILE = "/tmp/organistbot_scheduler.lock"
 
 
-def main(scraper: Scraper, sheets_logger: SheetsLogger | None = None) -> None:
+def main(
+    scraper: Scraper,
+    sheets_logger: SheetsLogger | None = None,
+    dry_run: bool = False,
+) -> None:
     lock = open(_LOCK_FILE, "w")
     try:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -50,15 +55,31 @@ def main(scraper: Scraper, sheets_logger: SheetsLogger | None = None) -> None:
         return
 
     try:
-        _run(scraper, sheets_logger)
+        _run(scraper, sheets_logger, dry_run=dry_run)
     finally:
         fcntl.flock(lock, fcntl.LOCK_UN)
         lock.close()
 
+    try:
+        from organist_bot.weekly_summary import check_and_send
 
-def _run(scraper: Scraper, sheets_logger: SheetsLogger | None = None) -> None:
+        check_and_send()
+    except Exception:
+        logger.warning("weekly_summary: check_and_send failed", exc_info=True)
+
+
+def _run(
+    scraper: Scraper,
+    sheets_logger: SheetsLogger | None = None,
+    dry_run: bool = False,
+) -> None:
     run_id = uuid.uuid4().hex[:8]
     set_run_id(run_id)
+
+    if dry_run:
+        logger.info("╔═══════════════════════════════════════╗")
+        logger.info("║  DRY-RUN mode — no writes or emails  ║")
+        logger.info("╚═══════════════════════════════════════╝")
 
     logger.info(
         "OrganistBot run started",
@@ -67,6 +88,7 @@ def _run(scraper: Scraper, sheets_logger: SheetsLogger | None = None) -> None:
             "target_url": settings.target_url,
             "min_fee": settings.min_fee,
             "poll_minutes": settings.poll_minutes,
+            "dry_run": dry_run,
         },
     )
     run_start = time.perf_counter()
@@ -252,23 +274,36 @@ def _run(scraper: Scraper, sheets_logger: SheetsLogger | None = None) -> None:
 
     # ── Phase 3: Notify ───────────────────────────────────────────────────────
     if valid_gigs:
-        logger.info("Phase 3 — sending notifications", extra={"gig_count": len(valid_gigs)})
-        t0 = time.perf_counter()
+        if dry_run:
+            logger.info(
+                "Phase 3 — DRY-RUN: would send notifications",
+                extra={"gig_count": len(valid_gigs)},
+            )
+            for gig in valid_gigs:
+                logger.info(
+                    "Would notify: %s (%s) — %s",
+                    gig.header,
+                    gig.organisation or "",
+                    gig.fee or "",
+                )
+        else:
+            logger.info("Phase 3 — sending notifications", extra={"gig_count": len(valid_gigs)})
+            t0 = time.perf_counter()
 
-        transport = SMTPTransport(password=settings.email_password)
-        notifier = Notifier(settings, transport)
-        notifier.send_summary(valid_gigs)
-        for gig in valid_gigs:
-            notifier.apply_to_gig(gig)
+            transport = SMTPTransport(password=settings.email_password)
+            notifier = Notifier(settings, transport)
+            notifier.send_summary(valid_gigs)
+            for gig in valid_gigs:
+                notifier.apply_to_gig(gig)
 
-        logger.info(
-            "Notifications sent",
-            extra={
-                "gig_count": len(valid_gigs),
-                "elapsed_ms": int((time.perf_counter() - t0) * 1000),
-            },
-        )
-        save_seen_gigs(seen=seen_gigs_set | set(gig.link for gig in valid_gigs))
+            logger.info(
+                "Notifications sent",
+                extra={
+                    "gig_count": len(valid_gigs),
+                    "elapsed_ms": int((time.perf_counter() - t0) * 1000),
+                },
+            )
+            save_seen_gigs(seen=seen_gigs_set | set(gig.link for gig in valid_gigs))
     else:
         logger.info("No new gigs passed the filters — notifications skipped")
 
@@ -308,10 +343,13 @@ def _run(scraper: Scraper, sheets_logger: SheetsLogger | None = None) -> None:
         },
     )
 
-    save_listings_hash(current_hash)
+    if dry_run:
+        logger.info("DRY-RUN complete — listings hash and seen-gigs NOT updated")
+    else:
+        save_listings_hash(current_hash)
 
     # ── Flush logs to Google Sheets ───────────────────────────────────────────
-    if sheets_logger is not None:
+    if sheets_logger is not None and not dry_run:
         try:
             rows = sheets_logger.drain()
             logger.info("Sheets flush complete", extra={"rows_written": rows})
@@ -324,12 +362,25 @@ def _run(scraper: Scraper, sheets_logger: SheetsLogger | None = None) -> None:
 
 
 if __name__ == "__main__":
+    _parser = argparse.ArgumentParser(description="OrganistBot scheduler")
+    _parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        default=False,
+        help="Run the full pipeline without sending emails or writing state.",
+    )
+    _args = _parser.parse_args()
+    _dry_run = _args.dry_run or settings.dry_run
+
     setup_logging(settings.log_file)
     logger.info(
         "Scheduler starting",
-        extra={"poll_minutes": settings.poll_minutes},
+        extra={"poll_minutes": settings.poll_minutes, "dry_run": _dry_run},
     )
-    alert.send_alert(f"🔄 Scheduler started (polling every {settings.poll_minutes} min)")
+    if _dry_run:
+        logger.info("DRY-RUN mode active — no emails, no state writes, no Sheets drain")
+    else:
+        alert.send_alert(f"🔄 Scheduler started (polling every {settings.poll_minutes} min)")
 
     # ── Google Sheets logger (optional) ───────────────────────────────────────
     sheets_logger: SheetsLogger | None = None
@@ -354,9 +405,11 @@ if __name__ == "__main__":
 
     scraper = Scraper()
     try:
-        main(scraper, sheets_logger)  # run immediately on startup, then on schedule
+        main(
+            scraper, sheets_logger, dry_run=_dry_run
+        )  # run immediately on startup, then on schedule
         current_poll = runtime_config.get("poll_minutes", settings.poll_minutes)
-        job = schedule.every(current_poll).minutes.do(main, scraper, sheets_logger)
+        job = schedule.every(current_poll).minutes.do(main, scraper, sheets_logger, _dry_run)
 
         _tick = 0
         while True:
@@ -371,7 +424,9 @@ if __name__ == "__main__":
                 desired_poll = runtime_config.get("poll_minutes", settings.poll_minutes)
                 if desired_poll != current_poll:
                     schedule.cancel_job(job)
-                    job = schedule.every(desired_poll).minutes.do(main, scraper, sheets_logger)
+                    job = schedule.every(desired_poll).minutes.do(
+                        main, scraper, sheets_logger, _dry_run
+                    )
                     current_poll = desired_poll
                     logger.info(
                         "Poll interval updated",
