@@ -1,4 +1,5 @@
 import logging
+import re
 import time
 
 import requests
@@ -155,6 +156,10 @@ class Scraper:
             "musical_requirements": self._get_sibling_text(detail_element, "Musical Requirements:"),
         }
 
+        # Fallback: regex-scan full text for a UK postcode when the structured field is absent.
+        if not result["postcode"]:
+            result["postcode"] = self._extract_uk_postcode(detail_element.get_text())
+
         populated = [k for k, v in result.items() if v is not None]
         missing = [k for k, v in result.items() if v is None]
         logger.debug(
@@ -162,6 +167,12 @@ class Scraper:
             extra={"populated": populated, "missing": missing},
         )
         return result
+
+    @staticmethod
+    def _extract_uk_postcode(text: str) -> str | None:
+        """Regex-scan text for the first UK postcode. Returns normalised upper-case or None."""
+        m = re.search(r"\b([A-Z]{1,2}[0-9][0-9A-Z]?\s*[0-9][A-Z]{2})\b", text.upper())
+        return m.group(1) if m else None
 
     def _extract_link(self, booking: Tag) -> str | None:
         """Safely extract the gig detail URL from a listing element."""
