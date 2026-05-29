@@ -105,7 +105,6 @@ def _create_calendar_event(record: dict) -> bool:
     try:
         import datetime as _dt
 
-        from organist_bot.filters import normalize_to_yyyymmdd, parse_start_time
         from organist_bot.models import Gig
 
         cal = GoogleCalendarClient(
@@ -125,11 +124,8 @@ def _create_calendar_event(record: dict) -> bool:
 
         # Travel buffers (non-fatal — gig event is already created)
         try:
-            date_str = normalize_to_yyyymmdd(gig.date)
-            start_time = parse_start_time(gig.time)
-            if date_str and start_time:
-                date = _dt.datetime.strptime(date_str, "%Y%m%d").date()
-                start_dt = _dt.datetime.combine(date, start_time)
+            if gig.parsed_date and gig.parsed_time:
+                start_dt = _dt.datetime.combine(gig.parsed_date, gig.parsed_time)
                 end_dt = start_dt + _dt.timedelta(hours=1)
                 postcode = record.get("postcode", "")
                 travel_mins = travel.get_travel_minutes(postcode) or settings.max_travel_minutes

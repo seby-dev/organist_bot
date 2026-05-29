@@ -42,7 +42,6 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
 from organist_bot import alert
-from organist_bot.filters import normalize_to_yyyymmdd, parse_start_time
 from organist_bot.models import Gig
 
 logger = logging.getLogger(__name__)
@@ -264,16 +263,12 @@ class GoogleCalendarClient:
         Returns the Google Calendar event ID.
         Raises ValueError if the gig's date or time cannot be parsed.
         """
-        date_str = normalize_to_yyyymmdd(gig.date)
-        if not date_str:
+        if not gig.parsed_date:
             raise ValueError(f"Cannot parse gig date: {gig.date!r}")
-
-        start_time = parse_start_time(gig.time)
-        if not start_time:
+        if not gig.parsed_time:
             raise ValueError(f"Cannot parse gig time: {gig.time!r}")
 
-        date = datetime.datetime.strptime(date_str, "%Y%m%d").date()
-        start_dt = datetime.datetime.combine(date, start_time)
+        start_dt = datetime.datetime.combine(gig.parsed_date, gig.parsed_time)
         end_dt = start_dt + datetime.timedelta(hours=1)
 
         description = "\n".join(
