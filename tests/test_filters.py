@@ -1369,3 +1369,13 @@ class TestCalendarFilterCompeting:
         with patch("organist_bot.filters.alert") as mock_alert:
             assert f(gig) is False
         mock_alert.send_alert.assert_called_once()
+
+    def test_api_failure_fails_open_passes_gig(self):
+        """get_events_on_date returns [] on API error — gig should pass through."""
+        client = MagicMock()
+        client.get_events_on_date.return_value = []  # simulates API error (fail-open)
+        f = CalendarFilter(client)
+        gig = make_gig(date="Sunday, 15 March 2026")
+        with patch("organist_bot.filters.alert") as mock_alert:
+            assert f(gig) is True
+        mock_alert.send_alert.assert_not_called()
