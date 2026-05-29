@@ -1541,8 +1541,8 @@ async def process_message(chat_id: int, text: str) -> list[AgentResponse]:
             model="claude-sonnet-4-6",
             max_tokens=1024,
             system=SYSTEM_PROMPT,
-            tools=TOOLS,  # type: ignore[arg-type]
-            messages=_histories[chat_id],  # type: ignore[arg-type]
+            tools=TOOLS,
+            messages=_histories[chat_id],
         )
 
         _histories[chat_id].append({"role": "assistant", "content": response.content})
