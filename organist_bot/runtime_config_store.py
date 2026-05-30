@@ -14,10 +14,6 @@ def _read() -> dict[str, int]:
     return dict(atomic_store.read_json(_PATH, {}))
 
 
-def _write(data: dict[str, int]) -> None:
-    atomic_store.write_json(_PATH, data)
-
-
 class RuntimeConfigStore:
     """File-backed store for runtime pipeline config overrides."""
 

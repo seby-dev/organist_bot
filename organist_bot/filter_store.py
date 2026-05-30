@@ -29,10 +29,6 @@ def _read() -> dict[str, list[str]]:
     return {k: list(raw.get(k, [])) for k in _KEYS}
 
 
-def _write(data: dict[str, list[str]]) -> None:
-    atomic_store.write_json(_PATH, data)
-
-
 # ── Read helpers (fresh read each call) ───────────────────────────────────────
 
 
@@ -41,6 +37,8 @@ def blacklist_emails() -> list[str]:
 
 
 def unavailable_periods() -> list[str]:
+    # NOTE: not a pure read — calls purge_past_periods(), which acquires file_lock(_PATH)
+    # and may write.  Do NOT call this while already holding file_lock(_PATH).
     purge_past_periods()
     return _read()["unavailable_periods"]
 

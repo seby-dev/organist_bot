@@ -27,55 +27,59 @@ def _read() -> list[dict]:
 
 
 def _write(records: list[dict]) -> None:
-    atomic_store.write_json(_PATH, records)
+    """Atomically write records. Caller MUST hold file_lock(_PATH)."""
+    atomic_store.write_json(_PATH, records, lock=False)
 
 
 def record_application(gig: Gig) -> bool:
     """Write a new 'applied' record. Returns False if URL already exists (idempotent)."""
-    records = _read()
-    if any(r["url"] == gig.link for r in records):
-        return False
-    now = _now_iso()
-    records.append(
-        {
-            "url": gig.link,
-            "header": gig.header or "",
-            "organisation": gig.organisation or "",
-            "date": gig.date or "",
-            "time": gig.time or "",
-            "fee": gig.fee or "",
-            "email": gig.email or "",
-            "postcode": gig.postcode or "",
-            "status": "applied",
-            "applied_at": now,
-            "updated_at": now,
-        }
-    )
-    _write(records)
+    with atomic_store.file_lock(_PATH):
+        records = _read()
+        if any(r["url"] == gig.link for r in records):
+            return False
+        now = _now_iso()
+        records.append(
+            {
+                "url": gig.link,
+                "header": gig.header or "",
+                "organisation": gig.organisation or "",
+                "date": gig.date or "",
+                "time": gig.time or "",
+                "fee": gig.fee or "",
+                "email": gig.email or "",
+                "postcode": gig.postcode or "",
+                "status": "applied",
+                "applied_at": now,
+                "updated_at": now,
+            }
+        )
+        _write(records)
     return True
 
 
 def update_status(url: str, status: str) -> bool:
     """Update status and updated_at for the record with the given URL. Returns False if not found."""
-    records = _read()
-    for r in records:
-        if r["url"] == url:
-            r["status"] = status
-            r["updated_at"] = _now_iso()
-            _write(records)
-            return True
+    with atomic_store.file_lock(_PATH):
+        records = _read()
+        for r in records:
+            if r["url"] == url:
+                r["status"] = status
+                r["updated_at"] = _now_iso()
+                _write(records)
+                return True
     return False
 
 
 def update_reply_message_id(url: str, message_id: str) -> bool:
     """Set reply_message_id on the record with the given URL. Returns False if not found."""
-    records = _read()
-    for r in records:
-        if r["url"] == url:
-            r["reply_message_id"] = message_id
-            r["updated_at"] = _now_iso()
-            _write(records)
-            return True
+    with atomic_store.file_lock(_PATH):
+        records = _read()
+        for r in records:
+            if r["url"] == url:
+                r["reply_message_id"] = message_id
+                r["updated_at"] = _now_iso()
+                _write(records)
+                return True
     return False
 
 
@@ -95,35 +99,36 @@ def upsert_accepted(
     If url is given and matches an existing record, updates it in place.
     Otherwise creates a new 'accepted' record (url may be None for manual entries).
     """
-    records = _read()
-    now = _now_iso()
-    if url is not None:
-        for r in records:
-            if r["url"] == url:
-                r["status"] = "accepted"
-                r["updated_at"] = now
-                if postcode:
-                    r["postcode"] = postcode
-                if time:
-                    r["time"] = time
-                _write(records)
-                return
-    records.append(
-        {
-            "url": url or "",
-            "header": header,
-            "organisation": organisation,
-            "date": date,
-            "time": time,
-            "fee": fee,
-            "email": email,
-            "postcode": postcode,
-            "status": "accepted",
-            "applied_at": now,
-            "updated_at": now,
-        }
-    )
-    _write(records)
+    with atomic_store.file_lock(_PATH):
+        records = _read()
+        now = _now_iso()
+        if url is not None:
+            for r in records:
+                if r["url"] == url:
+                    r["status"] = "accepted"
+                    r["updated_at"] = now
+                    if postcode:
+                        r["postcode"] = postcode
+                    if time:
+                        r["time"] = time
+                    _write(records)
+                    return
+        records.append(
+            {
+                "url": url or "",
+                "header": header,
+                "organisation": organisation,
+                "date": date,
+                "time": time,
+                "fee": fee,
+                "email": email,
+                "postcode": postcode,
+                "status": "accepted",
+                "applied_at": now,
+                "updated_at": now,
+            }
+        )
+        _write(records)
 
 
 def update_travel_buffer_ids(url: str, before_id: str, after_id: str) -> bool:
@@ -131,14 +136,15 @@ def update_travel_buffer_ids(url: str, before_id: str, after_id: str) -> bool:
 
     Returns False if not found.
     """
-    records = _read()
-    for r in records:
-        if r["url"] == url:
-            r["travel_before_event_id"] = before_id
-            r["travel_after_event_id"] = after_id
-            r["updated_at"] = _now_iso()
-            _write(records)
-            return True
+    with atomic_store.file_lock(_PATH):
+        records = _read()
+        for r in records:
+            if r["url"] == url:
+                r["travel_before_event_id"] = before_id
+                r["travel_after_event_id"] = after_id
+                r["updated_at"] = _now_iso()
+                _write(records)
+                return True
     return False
 
 
@@ -147,25 +153,26 @@ def expire_past_applied() -> int:
     from organist_bot.filters import normalize_to_yyyymmdd
 
     today = datetime.date.today()
-    records = _read()
-    changed = 0
-    now = _now_iso()
-    for r in records:
-        if r["status"] != "applied":
-            continue
-        normalized = normalize_to_yyyymmdd(r["date"])
-        if normalized is None:
-            continue
-        try:
-            gig_date = datetime.datetime.strptime(normalized, "%Y%m%d").date()
-        except ValueError:
-            continue
-        if gig_date < today:
-            r["status"] = "no_response"
-            r["updated_at"] = now
-            changed += 1
-    if changed:
-        _write(records)
+    with atomic_store.file_lock(_PATH):
+        records = _read()
+        changed = 0
+        now = _now_iso()
+        for r in records:
+            if r["status"] != "applied":
+                continue
+            normalized = normalize_to_yyyymmdd(r["date"])
+            if normalized is None:
+                continue
+            try:
+                gig_date = datetime.datetime.strptime(normalized, "%Y%m%d").date()
+            except ValueError:
+                continue
+            if gig_date < today:
+                r["status"] = "no_response"
+                r["updated_at"] = now
+                changed += 1
+        if changed:
+            _write(records)
     return changed
 
 
