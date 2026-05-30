@@ -3,6 +3,7 @@ from __future__ import annotations
 import datetime
 import json
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import cast
 
@@ -547,6 +548,19 @@ _last_invoice: dict[int, dict] = {}
 _last_gig_listing: dict[int, list[dict]] = {}
 _last_application_listing: dict[int, list[dict]] = {}
 
+_TOOL_HANDLERS: dict[str, Callable[[dict, int], Awaitable[str]]] = {}
+
+
+def _handler(name: str) -> Callable[[Callable], Callable]:
+    """Register an async tool handler under `name` in _TOOL_HANDLERS."""
+
+    def deco(fn: Callable) -> Callable:
+        _TOOL_HANDLERS[name] = fn
+        return fn
+
+    return deco
+
+
 _PDF_RESPONSE_TOOLS = {"generate_invoice", "duplicate_invoice", "get_invoice"}
 _VERBATIM_RESPONSE_TOOLS = {
     "list_upcoming_gigs",
@@ -685,6 +699,10 @@ def _fmt_application_date(date_str: str) -> str:
 
 
 async def _execute_tool(name: str, input_data: dict, chat_id: int) -> str:
+    handler = _TOOL_HANDLERS.get(name)
+    if handler is not None:
+        return await handler(input_data, chat_id)
+
     # ── fetch_gig_details ───────────────────────────────────────────────────
     if name == "fetch_gig_details":
         try:
