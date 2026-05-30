@@ -703,297 +703,6 @@ async def _execute_tool(name: str, input_data: dict, chat_id: int) -> str:
     if handler is not None:
         return await handler(input_data, chat_id)
 
-    # ── get_income_forecast ──────────────────────────────────────────────────
-    if name == "get_income_forecast":
-        from_date = input_data.get("from_date", "")
-        to_date = input_data.get("to_date", "")
-        try:
-            income_summary: dict = application_store.get_income(from_date, to_date)
-        except Exception as exc:
-            return json.dumps({"error": f"Failed to retrieve income: {exc}"})
-
-        try:
-            from_dt = datetime.date.fromisoformat(from_date)
-            to_dt = datetime.date.fromisoformat(to_date)
-            header = f"💰 Income — {from_dt.day} {from_dt.strftime('%b')} to {to_dt.day} {to_dt.strftime('%b %Y')}"
-        except ValueError:
-            header = f"💰 Income — {from_date} to {to_date}"
-
-        if income_summary["count"] == 0:
-            return json.dumps({"result": f"{header}\n\nNo accepted gigs in this period."})
-
-        lines = [
-            header,
-            "",
-            f"Confirmed gigs:   {income_summary['count']}",
-            f"Total income:     £{income_summary['total']:.2f}",
-        ]
-        if income_summary["no_fee_count"] > 0:
-            lines.append(
-                f"No fee recorded:  {income_summary['no_fee_count']} gig(s) (not included in total)"
-            )
-
-        lines.append("")
-        for i, r in enumerate(income_summary["records"], start=1):
-            org = r.get("organisation") or r.get("header") or "Unknown"
-            try:
-                d = datetime.date.fromisoformat(r.get("date", ""))
-                date_str = f"{d.day} {d.strftime('%b')}"
-            except ValueError:
-                date_str = r.get("date", "")
-            fee_str = r.get("fee", "").strip()
-            fee_display = fee_str if fee_str else "(no fee)"
-            lines.append(f"{i}. {org} — {date_str}  {fee_display}")
-
-        return json.dumps({"result": "\n".join(lines)})
-
-    # ── get_application_analytics ────────────────────────────────────────────
-    if name == "get_application_analytics":
-        days = min(max(int(input_data.get("days", 365)), 1), 730)
-        m = analytics.get_success_metrics(days)
-        lines = [
-            f"📊 Application Analytics (last {days} days)",
-            "",
-            f"Total applications: {m['total']}",
-            f"✅ Accepted:      {m['accepted']:>4}",
-            f"❌ Rejected/declined: {m['rejected']:>4}",
-            f"💤 No response:   {m['no_response']:>4}",
-            f"⏳ Still pending: {m['applied']:>4}",
-            "",
-            f"Acceptance rate: {m['acceptance_rate']}% (of resolved)",
-            f"Response rate:   {m['response_rate']}% (of resolved)",
-        ]
-        if m["avg_response_days"] is not None:
-            lines.append(f"Avg response time: {m['avg_response_days']} days")
-        else:
-            lines.append("Avg response time: not enough data")
-        return json.dumps({"result": "\n".join(lines)})
-
-    # ── get_gig_breakdown ─────────────────────────────────────────────────────
-    if name == "get_gig_breakdown":
-        days = min(max(int(input_data.get("days", 365)), 1), 730)
-        breakdown = analytics.get_gig_type_breakdown(days)
-        if not breakdown:
-            return json.dumps({"result": f"No applications in the last {days} days."})
-        sorted_types = sorted(breakdown.items(), key=lambda kv: kv[1]["count"], reverse=True)
-        max_label = max(len(t) for t, _ in sorted_types)
-        lines = [f"🎹 Gig Type Breakdown (last {days} days)", ""]
-        for gig_type, data in sorted_types:
-            label = f"{gig_type}:"
-            lines.append(
-                f"{label:<{max_label + 1}}  {data['count']:>3} applied"
-                f" | {data['accepted']:>2} accepted ({data['acceptance_rate']:.0f}%)"
-            )
-        return json.dumps({"result": "\n".join(lines)})
-
-    # ── manage_applications ──────────────────────────────────────────────────
-    if name == "manage_applications":
-        action = input_data.get("action", "summary")
-        days = input_data.get("days", 30)
-        records = application_store.list_applications(days)
-        if action in ("summary", "list"):
-            _last_application_listing[chat_id] = records
-
-        if action == "summary":
-            counts = {
-                "accepted": sum(1 for r in records if r["status"] == "accepted"),
-                "applied": sum(1 for r in records if r["status"] == "applied"),
-                "no_response": sum(1 for r in records if r["status"] == "no_response"),
-                "declined": sum(1 for r in records if r["status"] == "declined"),
-                "rejected": sum(1 for r in records if r["status"] == "rejected"),
-            }
-            total = len(records)
-            lines = [
-                f"📋 Applications — last {days} days",
-                "",
-                f"Applied:      {total}",
-                f"Accepted:     {counts['accepted']}",
-                f"No response:  {counts['no_response']}",
-                f"Declined:     {counts['declined']}",
-                f"Rejected:     {counts['rejected']}",
-                f"Pending:      {counts['applied']}",
-            ]
-            today = datetime.date.today()
-            from_date = (today - datetime.timedelta(days=days)).isoformat()
-            to_date = today.isoformat()
-            income = application_store.get_income(from_date, to_date)
-            income_line = f"Income (accepted):  £{income['total']:.2f}"
-            if income["no_fee_count"] > 0:
-                if income["no_fee_count"] == income["count"] and income["count"] > 0:
-                    income_line += f"  · all {income['count']} gig(s) have no fee recorded"
-                else:
-                    n = income["no_fee_count"]
-                    income_line += f"  · {n} gig{'s' if n != 1 else ''} have no fee recorded"
-            lines.append("")
-            lines.append(income_line)
-            return json.dumps({"result": "\n".join(lines)})
-
-        if action == "list":
-            if not records:
-                return json.dumps({"result": f"No applications in the last {days} days."})
-            _last_application_listing[chat_id] = records
-            _status_emoji = {
-                "accepted": "✅",
-                "applied": "⏳",
-                "no_response": "🔕",
-                "declined": "❌",
-                "rejected": "🚫",
-            }
-            lines = [f"📋 Applications — last {days} days", ""]
-            for i, r in enumerate(records, start=1):
-                emoji = _status_emoji.get(r["status"], "❓")
-                org_part = f" — {r['organisation']}" if r.get("organisation") else ""
-                date_part = _fmt_application_date(r.get("date", ""))
-                fee_part = f"  {r['fee']}" if r.get("fee") else ""
-                lines.append(f"{i}. {emoji} {r['header']}{org_part}  ({date_part}){fee_part}")
-            return json.dumps({"result": "\n".join(lines)}, ensure_ascii=False)
-
-        if action == "update":
-            n = input_data.get("number")
-            status: str = input_data.get("status") or ""
-            listing = _last_application_listing.get(chat_id)
-            if not listing:
-                return json.dumps(
-                    {"error": "No application listing cached. Ask to list applications first."}
-                )
-            if n is None or n < 1 or n > len(listing):
-                return json.dumps({"error": f"No application number {n}."})
-            record = listing[n - 1]
-            url = record.get("url", "")
-            if not url:
-                return json.dumps({"error": "Cannot update a manual entry with no URL."})
-            original_status = record.get("status", "")
-            ok = application_store.update_status(url, status)
-            if ok:
-                listing[n - 1]["status"] = status
-                msg = f"Updated application {n} to '{status}'."
-                if original_status == "accepted" and status == "declined":
-                    org = record.get("organisation") or record.get("header", "")
-                    date = record.get("date", "")
-                    # Delete travel buffer events
-                    cal = _make_calendar_client()
-                    if cal:
-                        for field in ("travel_before_event_id", "travel_after_event_id"):
-                            evt_id = record.get(field)
-                            if evt_id:
-                                try:
-                                    cal.delete_event(evt_id)
-                                except Exception as del_exc:
-                                    logger.warning(
-                                        "manage_applications: failed to delete travel buffer %s: %s",
-                                        evt_id,
-                                        del_exc,
-                                    )
-                    msg += (
-                        f"\n\nThis was a confirmed booking ({org} on {date}). "
-                        "Do you want to delete the calendar event?"
-                    )
-                return json.dumps({"result": msg})
-            return json.dumps({"error": "Application not found in store."})
-
-        if action == "detail":
-            n = input_data.get("number")
-            listing = _last_application_listing.get(chat_id)
-            if not listing:
-                return json.dumps(
-                    {
-                        "error": "No application listing cached. Ask to list or summarise applications first."
-                    }
-                )
-            if n is None or n < 1 or n > len(listing):
-                return json.dumps({"error": f"No application number {n}."})
-            r = listing[n - 1]
-            lines = [
-                f"📋 Application {n} — full details",
-                "",
-                f"Header:        {r.get('header') or '—'}",
-                f"Organisation:  {r.get('organisation') or '—'}",
-                f"Date:          {r.get('date') or '—'}",
-                f"Fee:           {r.get('fee') or '—'}",
-                f"Status:        {r.get('status') or '—'}",
-                f"Email:         {r.get('email') or '—'}",
-                f"URL:           {r.get('url') or '—'}",
-                f"Applied at:    {r.get('applied_at') or '—'}",
-                f"Updated at:    {r.get('updated_at') or '—'}",
-            ]
-            return json.dumps({"result": "\n".join(lines)})
-
-        return json.dumps({"error": f"Unknown action: {action}"})
-
-    # ── clear_conversation ──────────────────────────────────────────────────
-    if name == "clear_conversation":
-        reset_conversation(chat_id)
-        return json.dumps({"result": "Conversation cleared."})
-
-    # ── get_gig_stats ────────────────────────────────────────────────────────
-    if name == "get_gig_stats":
-        days = min(max(int(input_data.get("days", 7)), 1), 90)
-        sl = _make_sheets_logger()
-        if sl is None:
-            return json.dumps(
-                {"result": "Google Sheets is not configured (GOOGLE_SHEETS_ID missing)."}
-            )
-        try:
-            runs = sl.query_run_stats(days)
-        except Exception as exc:
-            return json.dumps({"result": f"Could not reach Google Sheets: {exc}"})
-
-        if not runs:
-            return json.dumps({"result": f"No pipeline runs logged in the last {days} days."})
-
-        total_runs = len(runs)
-        total_listed = sum(r.get("listed", 0) for r in runs)
-        total_pre = sum(r.get("pre_filter_passed", 0) for r in runs)
-        total_valid = sum(r.get("valid", 0) for r in runs)
-        total_errors = sum(r.get("gig_errors", 0) for r in runs)
-        avg_listed = round(total_listed / total_runs, 1)
-        avg_pre = round(total_pre / total_runs, 1)
-        avg_valid = round(total_valid / total_runs, 1)
-
-        # Aggregate filter breakdown, stripping repr params and deduplicating.
-        # e.g. "AvailabilityFilter(mode='block', periods=7)" → "AvailabilityFilter"
-        name_totals: dict[str, int] = {}
-        for r in runs:
-            for k, v in r.get("filter_breakdown", {}).items():
-                name = k.split("(")[0]
-                name_totals[name] = name_totals.get(name, 0) + v
-        active_filters = [
-            (k, v)
-            for k, v in sorted(name_totals.items(), key=lambda x: x[1], reverse=True)
-            if v > 0
-        ]
-
-        def _fmt_elapsed(ms: int) -> str:
-            return f"{ms / 1000:.1f}s" if ms >= 1000 else f"{ms}ms"
-
-        lines = [
-            f"📊 *Pipeline stats — last {days} days*",
-            "",
-            f"*Runs:* {total_runs}",
-            f"*Listed:*      {total_listed:>5}  ({avg_listed}/run)",
-            f"*Pre-filter:*  {total_pre:>5}  ({avg_pre}/run)",
-            f"*Valid:*       {total_valid:>5}  ({avg_valid}/run)",
-            f"*Errors:* {total_errors}",
-        ]
-
-        if active_filters:
-            max_len = max(len(k) for k, _ in active_filters)
-            lines += ["", "*🔍 Filter rejections:*"]
-            for k, v in active_filters:
-                pct = round(v / total_listed * 100) if total_listed else 0
-                lines.append(f"`{k:<{max_len}}  {v:>4}  ({pct}%)`")
-
-        lines += ["", "*📅 Recent runs:*"]
-        for r in runs[:5]:
-            ts = r["timestamp"][:16].replace("T", " ")
-            listed = r.get("listed", 0)
-            pre = r.get("pre_filter_passed", 0)
-            valid = r.get("valid", 0)
-            t = _fmt_elapsed(r.get("elapsed_ms", 0))
-            lines.append(f"`{ts}  {listed}→{pre}→{valid}  {t}`")
-
-        return json.dumps({"result": "\n".join(lines)})
-
     # ── manage_config ────────────────────────────────────────────────────────
     if name == "manage_config":
         action = input_data["action"]
@@ -1575,6 +1284,305 @@ async def _handle_manage_available(input_data: dict, chat_id: int) -> str:
         )
         return json.dumps({"result": msg})
     return json.dumps({"error": f"Unknown action: {action}"})
+
+
+# ── Analytics tools ──────────────────────────────────────────────────────────
+
+
+@_handler("get_income_forecast")
+async def _handle_get_income_forecast(input_data: dict, chat_id: int) -> str:
+    from_date = input_data.get("from_date", "")
+    to_date = input_data.get("to_date", "")
+    try:
+        income_summary: dict = application_store.get_income(from_date, to_date)
+    except Exception as exc:
+        return json.dumps({"error": f"Failed to retrieve income: {exc}"})
+
+    try:
+        from_dt = datetime.date.fromisoformat(from_date)
+        to_dt = datetime.date.fromisoformat(to_date)
+        header = f"💰 Income — {from_dt.day} {from_dt.strftime('%b')} to {to_dt.day} {to_dt.strftime('%b %Y')}"
+    except ValueError:
+        header = f"💰 Income — {from_date} to {to_date}"
+
+    if income_summary["count"] == 0:
+        return json.dumps({"result": f"{header}\n\nNo accepted gigs in this period."})
+
+    lines = [
+        header,
+        "",
+        f"Confirmed gigs:   {income_summary['count']}",
+        f"Total income:     £{income_summary['total']:.2f}",
+    ]
+    if income_summary["no_fee_count"] > 0:
+        lines.append(
+            f"No fee recorded:  {income_summary['no_fee_count']} gig(s) (not included in total)"
+        )
+
+    lines.append("")
+    for i, r in enumerate(income_summary["records"], start=1):
+        org = r.get("organisation") or r.get("header") or "Unknown"
+        try:
+            d = datetime.date.fromisoformat(r.get("date", ""))
+            date_str = f"{d.day} {d.strftime('%b')}"
+        except ValueError:
+            date_str = r.get("date", "")
+        fee_str = r.get("fee", "").strip()
+        fee_display = fee_str if fee_str else "(no fee)"
+        lines.append(f"{i}. {org} — {date_str}  {fee_display}")
+
+    return json.dumps({"result": "\n".join(lines)})
+
+
+@_handler("get_application_analytics")
+async def _handle_get_application_analytics(input_data: dict, chat_id: int) -> str:
+    days = min(max(int(input_data.get("days", 365)), 1), 730)
+    m = analytics.get_success_metrics(days)
+    lines = [
+        f"📊 Application Analytics (last {days} days)",
+        "",
+        f"Total applications: {m['total']}",
+        f"✅ Accepted:      {m['accepted']:>4}",
+        f"❌ Rejected/declined: {m['rejected']:>4}",
+        f"💤 No response:   {m['no_response']:>4}",
+        f"⏳ Still pending: {m['applied']:>4}",
+        "",
+        f"Acceptance rate: {m['acceptance_rate']}% (of resolved)",
+        f"Response rate:   {m['response_rate']}% (of resolved)",
+    ]
+    if m["avg_response_days"] is not None:
+        lines.append(f"Avg response time: {m['avg_response_days']} days")
+    else:
+        lines.append("Avg response time: not enough data")
+    return json.dumps({"result": "\n".join(lines)})
+
+
+@_handler("get_gig_breakdown")
+async def _handle_get_gig_breakdown(input_data: dict, chat_id: int) -> str:
+    days = min(max(int(input_data.get("days", 365)), 1), 730)
+    breakdown = analytics.get_gig_type_breakdown(days)
+    if not breakdown:
+        return json.dumps({"result": f"No applications in the last {days} days."})
+    sorted_types = sorted(breakdown.items(), key=lambda kv: kv[1]["count"], reverse=True)
+    max_label = max(len(t) for t, _ in sorted_types)
+    lines = [f"🎹 Gig Type Breakdown (last {days} days)", ""]
+    for gig_type, data in sorted_types:
+        label = f"{gig_type}:"
+        lines.append(
+            f"{label:<{max_label + 1}}  {data['count']:>3} applied"
+            f" | {data['accepted']:>2} accepted ({data['acceptance_rate']:.0f}%)"
+        )
+    return json.dumps({"result": "\n".join(lines)})
+
+
+@_handler("manage_applications")
+async def _handle_manage_applications(input_data: dict, chat_id: int) -> str:
+    action = input_data.get("action", "summary")
+    days = input_data.get("days", 30)
+    records = application_store.list_applications(days)
+    if action in ("summary", "list"):
+        _last_application_listing[chat_id] = records
+
+    if action == "summary":
+        counts = {
+            "accepted": sum(1 for r in records if r["status"] == "accepted"),
+            "applied": sum(1 for r in records if r["status"] == "applied"),
+            "no_response": sum(1 for r in records if r["status"] == "no_response"),
+            "declined": sum(1 for r in records if r["status"] == "declined"),
+            "rejected": sum(1 for r in records if r["status"] == "rejected"),
+        }
+        total = len(records)
+        lines = [
+            f"📋 Applications — last {days} days",
+            "",
+            f"Applied:      {total}",
+            f"Accepted:     {counts['accepted']}",
+            f"No response:  {counts['no_response']}",
+            f"Declined:     {counts['declined']}",
+            f"Rejected:     {counts['rejected']}",
+            f"Pending:      {counts['applied']}",
+        ]
+        today = datetime.date.today()
+        from_date = (today - datetime.timedelta(days=days)).isoformat()
+        to_date = today.isoformat()
+        income = application_store.get_income(from_date, to_date)
+        income_line = f"Income (accepted):  £{income['total']:.2f}"
+        if income["no_fee_count"] > 0:
+            if income["no_fee_count"] == income["count"] and income["count"] > 0:
+                income_line += f"  · all {income['count']} gig(s) have no fee recorded"
+            else:
+                n = income["no_fee_count"]
+                income_line += f"  · {n} gig{'s' if n != 1 else ''} have no fee recorded"
+        lines.append("")
+        lines.append(income_line)
+        return json.dumps({"result": "\n".join(lines)})
+
+    if action == "list":
+        if not records:
+            return json.dumps({"result": f"No applications in the last {days} days."})
+        _last_application_listing[chat_id] = records
+        _status_emoji = {
+            "accepted": "✅",
+            "applied": "⏳",
+            "no_response": "🔕",
+            "declined": "❌",
+            "rejected": "🚫",
+        }
+        lines = [f"📋 Applications — last {days} days", ""]
+        for i, r in enumerate(records, start=1):
+            emoji = _status_emoji.get(r["status"], "❓")
+            org_part = f" — {r['organisation']}" if r.get("organisation") else ""
+            date_part = _fmt_application_date(r.get("date", ""))
+            fee_part = f"  {r['fee']}" if r.get("fee") else ""
+            lines.append(f"{i}. {emoji} {r['header']}{org_part}  ({date_part}){fee_part}")
+        return json.dumps({"result": "\n".join(lines)}, ensure_ascii=False)
+
+    if action == "update":
+        n = input_data.get("number")
+        status: str = input_data.get("status") or ""
+        listing = _last_application_listing.get(chat_id)
+        if not listing:
+            return json.dumps(
+                {"error": "No application listing cached. Ask to list applications first."}
+            )
+        if n is None or n < 1 or n > len(listing):
+            return json.dumps({"error": f"No application number {n}."})
+        record = listing[n - 1]
+        url = record.get("url", "")
+        if not url:
+            return json.dumps({"error": "Cannot update a manual entry with no URL."})
+        original_status = record.get("status", "")
+        ok = application_store.update_status(url, status)
+        if ok:
+            listing[n - 1]["status"] = status
+            msg = f"Updated application {n} to '{status}'."
+            if original_status == "accepted" and status == "declined":
+                org = record.get("organisation") or record.get("header", "")
+                date = record.get("date", "")
+                # Delete travel buffer events
+                cal = _make_calendar_client()
+                if cal:
+                    for field in ("travel_before_event_id", "travel_after_event_id"):
+                        evt_id = record.get(field)
+                        if evt_id:
+                            try:
+                                cal.delete_event(evt_id)
+                            except Exception as del_exc:
+                                logger.warning(
+                                    "manage_applications: failed to delete travel buffer %s: %s",
+                                    evt_id,
+                                    del_exc,
+                                )
+                msg += (
+                    f"\n\nThis was a confirmed booking ({org} on {date}). "
+                    "Do you want to delete the calendar event?"
+                )
+            return json.dumps({"result": msg})
+        return json.dumps({"error": "Application not found in store."})
+
+    if action == "detail":
+        n = input_data.get("number")
+        listing = _last_application_listing.get(chat_id)
+        if not listing:
+            return json.dumps(
+                {
+                    "error": "No application listing cached. Ask to list or summarise applications first."
+                }
+            )
+        if n is None or n < 1 or n > len(listing):
+            return json.dumps({"error": f"No application number {n}."})
+        r = listing[n - 1]
+        lines = [
+            f"📋 Application {n} — full details",
+            "",
+            f"Header:        {r.get('header') or '—'}",
+            f"Organisation:  {r.get('organisation') or '—'}",
+            f"Date:          {r.get('date') or '—'}",
+            f"Fee:           {r.get('fee') or '—'}",
+            f"Status:        {r.get('status') or '—'}",
+            f"Email:         {r.get('email') or '—'}",
+            f"URL:           {r.get('url') or '—'}",
+            f"Applied at:    {r.get('applied_at') or '—'}",
+            f"Updated at:    {r.get('updated_at') or '—'}",
+        ]
+        return json.dumps({"result": "\n".join(lines)})
+
+    return json.dumps({"error": f"Unknown action: {action}"})
+
+
+@_handler("get_gig_stats")
+async def _handle_get_gig_stats(input_data: dict, chat_id: int) -> str:
+    days = min(max(int(input_data.get("days", 7)), 1), 90)
+    sl = _make_sheets_logger()
+    if sl is None:
+        return json.dumps({"result": "Google Sheets is not configured (GOOGLE_SHEETS_ID missing)."})
+    try:
+        runs = sl.query_run_stats(days)
+    except Exception as exc:
+        return json.dumps({"result": f"Could not reach Google Sheets: {exc}"})
+
+    if not runs:
+        return json.dumps({"result": f"No pipeline runs logged in the last {days} days."})
+
+    total_runs = len(runs)
+    total_listed = sum(r.get("listed", 0) for r in runs)
+    total_pre = sum(r.get("pre_filter_passed", 0) for r in runs)
+    total_valid = sum(r.get("valid", 0) for r in runs)
+    total_errors = sum(r.get("gig_errors", 0) for r in runs)
+    avg_listed = round(total_listed / total_runs, 1)
+    avg_pre = round(total_pre / total_runs, 1)
+    avg_valid = round(total_valid / total_runs, 1)
+
+    # Aggregate filter breakdown, stripping repr params and deduplicating.
+    # e.g. "AvailabilityFilter(mode='block', periods=7)" → "AvailabilityFilter"
+    name_totals: dict[str, int] = {}
+    for r in runs:
+        for k, v in r.get("filter_breakdown", {}).items():
+            name = k.split("(")[0]
+            name_totals[name] = name_totals.get(name, 0) + v
+    active_filters = [
+        (k, v) for k, v in sorted(name_totals.items(), key=lambda x: x[1], reverse=True) if v > 0
+    ]
+
+    def _fmt_elapsed(ms: int) -> str:
+        return f"{ms / 1000:.1f}s" if ms >= 1000 else f"{ms}ms"
+
+    lines = [
+        f"📊 *Pipeline stats — last {days} days*",
+        "",
+        f"*Runs:* {total_runs}",
+        f"*Listed:*      {total_listed:>5}  ({avg_listed}/run)",
+        f"*Pre-filter:*  {total_pre:>5}  ({avg_pre}/run)",
+        f"*Valid:*       {total_valid:>5}  ({avg_valid}/run)",
+        f"*Errors:* {total_errors}",
+    ]
+
+    if active_filters:
+        max_len = max(len(k) for k, _ in active_filters)
+        lines += ["", "*🔍 Filter rejections:*"]
+        for k, v in active_filters:
+            pct = round(v / total_listed * 100) if total_listed else 0
+            lines.append(f"`{k:<{max_len}}  {v:>4}  ({pct}%)`")
+
+    lines += ["", "*📅 Recent runs:*"]
+    for r in runs[:5]:
+        ts = r["timestamp"][:16].replace("T", " ")
+        listed = r.get("listed", 0)
+        pre = r.get("pre_filter_passed", 0)
+        valid = r.get("valid", 0)
+        t = _fmt_elapsed(r.get("elapsed_ms", 0))
+        lines.append(f"`{ts}  {listed}→{pre}→{valid}  {t}`")
+
+    return json.dumps({"result": "\n".join(lines)})
+
+
+# ── Config tools ─────────────────────────────────────────────────────────────
+
+
+@_handler("clear_conversation")
+async def _handle_clear_conversation(input_data: dict, chat_id: int) -> str:
+    reset_conversation(chat_id)
+    return json.dumps({"result": "Conversation cleared."})
 
 
 async def process_message(chat_id: int, text: str) -> list[AgentResponse]:
