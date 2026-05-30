@@ -703,65 +703,6 @@ async def _execute_tool(name: str, input_data: dict, chat_id: int) -> str:
     if handler is not None:
         return await handler(input_data, chat_id)
 
-    # ── manage_config ────────────────────────────────────────────────────────
-    if name == "manage_config":
-        action = input_data["action"]
-
-        _RANGES: dict[str, tuple[int, int]] = {
-            "min_fee": (0, 100_000),
-            "max_travel_minutes": (1, 300),
-            "poll_minutes": (1, 60),
-        }
-        _DEFAULTS = {
-            "min_fee": settings.min_fee,
-            "max_travel_minutes": settings.max_travel_minutes,
-            "poll_minutes": settings.poll_minutes,
-        }
-
-        if action == "get":
-            overrides = runtime_config.all()
-            lines = []
-            for key, default in _DEFAULTS.items():
-                if key in overrides:
-                    lines.append(f"{key:<20} {overrides[key]}  (override, default: {default})")
-                else:
-                    lines.append(f"{key:<20} {default}  (default)")
-            return json.dumps({"result": "\n".join(lines)})
-
-        if action == "set":
-            key = input_data.get("key", "")
-            value = input_data.get("value")
-            if key not in _RANGES:
-                return json.dumps(
-                    {"result": f"Unknown key '{key}'. Valid keys: {', '.join(_RANGES)}."}
-                )
-            if value is None:
-                return json.dumps({"result": "value is required for set."})
-            lo, hi = _RANGES[key]
-            if not (lo <= int(value) <= hi):
-                return json.dumps(
-                    {"result": f"Invalid value {value} for {key}. Must be between {lo} and {hi}."}
-                )
-            runtime_config.set(key, int(value))
-            return json.dumps(
-                {"result": f"{key} set to {value}. Takes effect on the next polling tick."}
-            )
-
-        if action == "reset":
-            key = input_data.get("key", "")
-            if key not in _DEFAULTS:
-                return json.dumps(
-                    {"result": f"Unknown key '{key}'. Valid keys: {', '.join(_DEFAULTS)}."}
-                )
-            existed = runtime_config.reset(key)
-            if existed:
-                return json.dumps({"result": f"{key} reset to default ({_DEFAULTS[key]})."})
-            return json.dumps(
-                {"result": f"{key} was already using the default ({_DEFAULTS[key]})."}
-            )
-
-        return json.dumps({"error": f"Unknown action: {action}"})
-
     return json.dumps({"error": f"Tool not implemented: {name}"})
 
 
@@ -1583,6 +1524,62 @@ async def _handle_get_gig_stats(input_data: dict, chat_id: int) -> str:
 async def _handle_clear_conversation(input_data: dict, chat_id: int) -> str:
     reset_conversation(chat_id)
     return json.dumps({"result": "Conversation cleared."})
+
+
+@_handler("manage_config")
+async def _handle_manage_config(input_data: dict, chat_id: int) -> str:
+    action = input_data["action"]
+
+    _RANGES: dict[str, tuple[int, int]] = {
+        "min_fee": (0, 100_000),
+        "max_travel_minutes": (1, 300),
+        "poll_minutes": (1, 60),
+    }
+    _DEFAULTS = {
+        "min_fee": settings.min_fee,
+        "max_travel_minutes": settings.max_travel_minutes,
+        "poll_minutes": settings.poll_minutes,
+    }
+
+    if action == "get":
+        overrides = runtime_config.all()
+        lines = []
+        for key, default in _DEFAULTS.items():
+            if key in overrides:
+                lines.append(f"{key:<20} {overrides[key]}  (override, default: {default})")
+            else:
+                lines.append(f"{key:<20} {default}  (default)")
+        return json.dumps({"result": "\n".join(lines)})
+
+    if action == "set":
+        key = input_data.get("key", "")
+        value = input_data.get("value")
+        if key not in _RANGES:
+            return json.dumps({"result": f"Unknown key '{key}'. Valid keys: {', '.join(_RANGES)}."})
+        if value is None:
+            return json.dumps({"result": "value is required for set."})
+        lo, hi = _RANGES[key]
+        if not (lo <= int(value) <= hi):
+            return json.dumps(
+                {"result": f"Invalid value {value} for {key}. Must be between {lo} and {hi}."}
+            )
+        runtime_config.set(key, int(value))
+        return json.dumps(
+            {"result": f"{key} set to {value}. Takes effect on the next polling tick."}
+        )
+
+    if action == "reset":
+        key = input_data.get("key", "")
+        if key not in _DEFAULTS:
+            return json.dumps(
+                {"result": f"Unknown key '{key}'. Valid keys: {', '.join(_DEFAULTS)}."}
+            )
+        existed = runtime_config.reset(key)
+        if existed:
+            return json.dumps({"result": f"{key} reset to default ({_DEFAULTS[key]})."})
+        return json.dumps({"result": f"{key} was already using the default ({_DEFAULTS[key]})."})
+
+    return json.dumps({"error": f"Unknown action: {action}"})
 
 
 async def process_message(chat_id: int, text: str) -> list[AgentResponse]:
