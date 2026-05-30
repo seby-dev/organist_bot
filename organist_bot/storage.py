@@ -1,8 +1,11 @@
 # organist_bot/storage.py
 
 import csv
+import io
 import logging
 from pathlib import Path
+
+from organist_bot import atomic_store
 
 logger = logging.getLogger(__name__)
 
@@ -40,11 +43,11 @@ def load_seen_gigs(filepath: str = "data/seen_gigs.csv") -> set[str]:
 def save_seen_gigs(seen: set[str], filepath: str = "data/seen_gigs.csv") -> None:
     path = Path(filepath)
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("w", newline="") as fh:
-            writer = csv.writer(fh)
-            for link in sorted(seen):
-                writer.writerow([link])
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        for link in sorted(seen):
+            writer.writerow([link])
+        atomic_store.write_text_atomic(path, buf.getvalue())
 
         logger.info(
             "Saved seen gigs",
@@ -72,8 +75,7 @@ def load_listings_hash(filepath: str = "data/listings_hash.txt") -> str | None:
 def save_listings_hash(hash_str: str, filepath: str = "data/listings_hash.txt") -> None:
     path = Path(filepath)
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(hash_str)
+        atomic_store.write_text_atomic(path, hash_str)
     except Exception:
         logger.exception("Failed to save listings hash", extra={"filepath": str(path)})
         raise

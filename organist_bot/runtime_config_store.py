@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-import json
 import logging
 from pathlib import Path
+
+from organist_bot import atomic_store
 
 logger = logging.getLogger(__name__)
 
@@ -10,18 +11,7 @@ _PATH = Path("data/runtime_config.json")
 
 
 def _read() -> dict[str, int]:
-    if not _PATH.exists():
-        return {}
-    try:
-        return dict(json.loads(_PATH.read_text()))
-    except Exception:
-        logger.exception("runtime_config_store: failed to read %s — using empty config", _PATH)
-        return {}
-
-
-def _write(data: dict[str, int]) -> None:
-    _PATH.parent.mkdir(parents=True, exist_ok=True)
-    _PATH.write_text(json.dumps(data, indent=2) + "\n")
+    return dict(atomic_store.read_json(_PATH, {}))
 
 
 class RuntimeConfigStore:
@@ -33,17 +23,19 @@ class RuntimeConfigStore:
 
     def set(self, key: str, value: int) -> None:
         """Write an override value for key."""
-        data = _read()
-        data[key] = value
-        _write(data)
+        with atomic_store.file_lock(_PATH):
+            data = dict(atomic_store.read_json(_PATH, {}))
+            data[key] = value
+            atomic_store.write_json(_PATH, data, lock=False)
 
     def reset(self, key: str) -> bool:
         """Remove the override for key. Returns True if the key existed."""
-        data = _read()
-        if key not in data:
-            return False
-        del data[key]
-        _write(data)
+        with atomic_store.file_lock(_PATH):
+            data = dict(atomic_store.read_json(_PATH, {}))
+            if key not in data:
+                return False
+            del data[key]
+            atomic_store.write_json(_PATH, data, lock=False)
         return True
 
     def all(self) -> dict[str, int]:

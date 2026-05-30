@@ -11,10 +11,11 @@ from __future__ import annotations
 
 import calendar
 import datetime
-import json
 import logging
 import re
 from pathlib import Path
+
+from organist_bot import atomic_store
 
 logger = logging.getLogger(__name__)
 
@@ -24,19 +25,8 @@ _KEYS = ("blacklist_emails", "unavailable_periods", "available_only_periods")
 
 
 def _read() -> dict[str, list[str]]:
-    if not _PATH.exists():
-        return {k: [] for k in _KEYS}
-    try:
-        raw = json.loads(_PATH.read_text())
-        return {k: list(raw.get(k, [])) for k in _KEYS}
-    except Exception:
-        logger.exception("filter_store: failed to read %s — using empty config", _PATH)
-        return {k: [] for k in _KEYS}
-
-
-def _write(data: dict[str, list[str]]) -> None:
-    _PATH.parent.mkdir(parents=True, exist_ok=True)
-    _PATH.write_text(json.dumps(data, indent=2) + "\n")
+    raw = atomic_store.read_json(_PATH, {})
+    return {k: list(raw.get(k, [])) for k in _KEYS}
 
 
 # ── Read helpers (fresh read each call) ───────────────────────────────────────
@@ -47,6 +37,8 @@ def blacklist_emails() -> list[str]:
 
 
 def unavailable_periods() -> list[str]:
+    # NOTE: not a pure read — calls purge_past_periods(), which acquires file_lock(_PATH)
+    # and may write.  Do NOT call this while already holding file_lock(_PATH).
     purge_past_periods()
     return _read()["unavailable_periods"]
 
@@ -70,8 +62,8 @@ def _period_end_date(token: str) -> datetime.date | None:
         return None
 
 
-def purge_past_periods() -> int:
-    """Remove past unavailable_periods tokens. Returns count removed."""
+def _purge_past_periods_locked() -> int:
+    """Remove past unavailable_periods tokens (caller must hold file_lock). Returns count removed."""
     today = datetime.date.today()
     data = _read()
     before = len(data["unavailable_periods"])
@@ -82,8 +74,14 @@ def purge_past_periods() -> int:
     ]
     removed = before - len(data["unavailable_periods"])
     if removed:
-        _write(data)
+        atomic_store.write_json(_PATH, data, lock=False)
     return removed
+
+
+def purge_past_periods() -> int:
+    """Remove past unavailable_periods tokens. Returns count removed."""
+    with atomic_store.file_lock(_PATH):
+        return _purge_past_periods_locked()
 
 
 # ── Blacklist mutations ───────────────────────────────────────────────────────
@@ -91,24 +89,26 @@ def purge_past_periods() -> int:
 
 def add_blacklist_email(email: str) -> bool:
     """Add email (lowercased). Returns True if added, False if already present."""
-    data = _read()
-    normalized = email.lower().strip()
-    if normalized in {e.lower() for e in data["blacklist_emails"]}:
-        return False
-    data["blacklist_emails"].append(normalized)
-    _write(data)
+    with atomic_store.file_lock(_PATH):
+        data = _read()
+        normalized = email.lower().strip()
+        if normalized in {e.lower() for e in data["blacklist_emails"]}:
+            return False
+        data["blacklist_emails"].append(normalized)
+        atomic_store.write_json(_PATH, data, lock=False)
     return True
 
 
 def remove_blacklist_email(email: str) -> bool:
     """Remove email. Returns True if removed, False if not found."""
-    data = _read()
-    normalized = email.lower().strip()
-    before = len(data["blacklist_emails"])
-    data["blacklist_emails"] = [e for e in data["blacklist_emails"] if e.lower() != normalized]
-    if len(data["blacklist_emails"]) == before:
-        return False
-    _write(data)
+    with atomic_store.file_lock(_PATH):
+        data = _read()
+        normalized = email.lower().strip()
+        before = len(data["blacklist_emails"])
+        data["blacklist_emails"] = [e for e in data["blacklist_emails"] if e.lower() != normalized]
+        if len(data["blacklist_emails"]) == before:
+            return False
+        atomic_store.write_json(_PATH, data, lock=False)
     return True
 
 
@@ -117,24 +117,26 @@ def remove_blacklist_email(email: str) -> bool:
 
 def add_period(key: str, period: str) -> bool:
     """Add a period token. Returns True if added, False if already present."""
-    if key == "unavailable_periods":
-        purge_past_periods()
-    data = _read()
-    if period in data[key]:
-        return False
-    data[key].append(period)
-    _write(data)
+    with atomic_store.file_lock(_PATH):
+        if key == "unavailable_periods":
+            _purge_past_periods_locked()
+        data = _read()
+        if period in data[key]:
+            return False
+        data[key].append(period)
+        atomic_store.write_json(_PATH, data, lock=False)
     return True
 
 
 def remove_period(key: str, period: str) -> bool:
     """Remove a period token. Returns True if removed, False if not found."""
-    if key == "unavailable_periods":
-        purge_past_periods()
-    data = _read()
-    before = len(data[key])
-    data[key] = [p for p in data[key] if p != period]
-    if len(data[key]) == before:
-        return False
-    _write(data)
+    with atomic_store.file_lock(_PATH):
+        if key == "unavailable_periods":
+            _purge_past_periods_locked()
+        data = _read()
+        before = len(data[key])
+        data[key] = [p for p in data[key] if p != period]
+        if len(data[key]) == before:
+            return False
+        atomic_store.write_json(_PATH, data, lock=False)
     return True
