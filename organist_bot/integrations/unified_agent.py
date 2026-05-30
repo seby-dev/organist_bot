@@ -703,54 +703,6 @@ async def _execute_tool(name: str, input_data: dict, chat_id: int) -> str:
     if handler is not None:
         return await handler(input_data, chat_id)
 
-    # ── list_clients ────────────────────────────────────────────────────────
-    if name == "list_clients":
-        clients = load_clients()
-        if not clients:
-            return json.dumps(
-                {"result": "No clients found. Add one with a natural language request."}
-            )
-        return json.dumps(clients, indent=2)
-
-    if name == "get_client":
-        clients = load_clients()
-        key = input_data["client_key"]
-        if key not in clients:
-            return json.dumps(
-                {"error": f"Client '{key}' not found. Available: {', '.join(clients.keys())}"}
-            )
-        return json.dumps({key: clients[key]}, indent=2)
-
-    if name == "add_client":
-        add_client(
-            key=input_data["key"],
-            name=input_data["name"],
-            address=input_data["address"],
-            email=input_data.get("email", ""),
-            cc=input_data.get("cc", []),
-        )
-        return json.dumps({"result": f"Client '{input_data['key']}' added successfully."})
-
-    if name == "edit_client":
-        try:
-            edit_client(
-                key=input_data["key"],
-                name=input_data.get("name"),
-                address=input_data.get("address"),
-                email=input_data.get("email"),
-                cc=input_data.get("cc"),
-            )
-            return json.dumps({"result": f"Client '{input_data['key']}' updated successfully."})
-        except ValueError as e:
-            return json.dumps({"error": str(e)})
-
-    if name == "delete_client":
-        try:
-            delete_client(input_data["key"])
-            return json.dumps({"result": f"Client '{input_data['key']}' deleted."})
-        except ValueError as e:
-            return json.dumps({"error": str(e)})
-
     if name == "generate_invoice":
         try:
             result = await generate_invoice(
@@ -1546,6 +1498,64 @@ async def _handle_edit_gig(input_data: dict, chat_id: int) -> str:
     listing[n - 1] = updated
 
     return json.dumps({"result": "✓ Gig updated."})
+
+
+# ── Client tools ────────────────────────────────────────────────────────────
+
+
+@_handler("list_clients")
+async def _handle_list_clients(input_data: dict, chat_id: int) -> str:
+    clients = load_clients()
+    if not clients:
+        return json.dumps({"result": "No clients found. Add one with a natural language request."})
+    return json.dumps(clients, indent=2)
+
+
+@_handler("get_client")
+async def _handle_get_client(input_data: dict, chat_id: int) -> str:
+    clients = load_clients()
+    key = input_data["client_key"]
+    if key not in clients:
+        return json.dumps(
+            {"error": f"Client '{key}' not found. Available: {', '.join(clients.keys())}"}
+        )
+    return json.dumps({key: clients[key]}, indent=2)
+
+
+@_handler("add_client")
+async def _handle_add_client(input_data: dict, chat_id: int) -> str:
+    add_client(
+        key=input_data["key"],
+        name=input_data["name"],
+        address=input_data["address"],
+        email=input_data.get("email", ""),
+        cc=input_data.get("cc", []),
+    )
+    return json.dumps({"result": f"Client '{input_data['key']}' added successfully."})
+
+
+@_handler("edit_client")
+async def _handle_edit_client(input_data: dict, chat_id: int) -> str:
+    try:
+        edit_client(
+            key=input_data["key"],
+            name=input_data.get("name"),
+            address=input_data.get("address"),
+            email=input_data.get("email"),
+            cc=input_data.get("cc"),
+        )
+        return json.dumps({"result": f"Client '{input_data['key']}' updated successfully."})
+    except ValueError as e:
+        return json.dumps({"error": str(e)})
+
+
+@_handler("delete_client")
+async def _handle_delete_client(input_data: dict, chat_id: int) -> str:
+    try:
+        delete_client(input_data["key"])
+        return json.dumps({"result": f"Client '{input_data['key']}' deleted."})
+    except ValueError as e:
+        return json.dumps({"error": str(e)})
 
 
 async def process_message(chat_id: int, text: str) -> list[AgentResponse]:
