@@ -52,6 +52,12 @@ _SHEET_NAME = "Logs"
 _CELL_THRESHOLD = 900_000
 _NUM_COLS = 9  # len(_HEADERS) — kept as a literal to avoid a forward reference
 
+# Cap the in-memory buffer so a prolonged Sheets outage can't grow it without
+# bound. On overflow the OLDEST rows are dropped (recent observability is more
+# useful than stale) and the dropped count is surfaced via alert on the next
+# drain(). ~50k rows is generous headroom (days of buffering at a 2-min poll).
+_MAX_BUFFER_ROWS = 50_000
+
 # Columns written in a fixed order — all other keys go into the "details" column.
 _FIXED_COLUMNS = [
     "timestamp",
@@ -177,6 +183,7 @@ class SheetsLogger(logging.Handler):
         )
         self._service = build("sheets", "v4", credentials=creds, cache_discovery=False)
         self._buffer: list[list] = []
+        self._dropped = 0  # rows discarded due to the buffer cap (reported on drain)
         self._lock = threading.Lock()
         # Resolved lazily on the first drain() so we always target the latest
         # Logs sheet even after a process restart.
@@ -190,6 +197,10 @@ class SheetsLogger(logging.Handler):
             row = _record_to_row(record)
             with self._lock:
                 self._buffer.append(row)
+                if len(self._buffer) > _MAX_BUFFER_ROWS:
+                    overflow = len(self._buffer) - _MAX_BUFFER_ROWS
+                    del self._buffer[:overflow]  # drop oldest
+                    self._dropped += overflow
         except Exception:
             self.handleError(record)
 
@@ -212,6 +223,13 @@ class SheetsLogger(logging.Handler):
         """
         with self._lock:
             rows, self._buffer = self._buffer, []
+            dropped, self._dropped = self._dropped, 0
+
+        if dropped:
+            alert.send_alert(
+                f"⚠️ SheetsLogger dropped {dropped} buffered log row(s) — buffer "
+                f"cap {_MAX_BUFFER_ROWS} reached (Sheets unavailable?)."
+            )
 
         if not rows:
             return 0
@@ -306,9 +324,14 @@ class SheetsLogger(logging.Handler):
                 self._active_sheet = self._create_next_sheet()
 
         except Exception as exc:
-            # Restore rows to the buffer so they are retried on the next drain().
+            # Restore rows to the buffer so they are retried on the next drain(),
+            # but keep the buffer bounded if the outage persists (drop oldest).
             with self._lock:
                 self._buffer = rows + self._buffer
+                if len(self._buffer) > _MAX_BUFFER_ROWS:
+                    overflow = len(self._buffer) - _MAX_BUFFER_ROWS
+                    del self._buffer[:overflow]
+                    self._dropped += overflow
             alert.send_alert(f"⚠️ Google Sheets API error (batch append failed): {exc}")
             raise
 
