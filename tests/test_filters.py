@@ -574,10 +574,13 @@ class TestSeenFilter:
         f = SeenFilter(set())
         assert f(make_gig()) is True
 
-    def test_no_link_gig_passes(self):
-        """A gig with no link can never be in the seen set, so it passes."""
+    def test_no_link_gig_rejected(self):
+        """A gig with no link is rejected: it can't be deduped, detail-fetched,
+        or applied to, and is never recorded as seen — so passing it would cause
+        re-notification on every tick."""
         f = SeenFilter({"https://example.com/gig/1"})
-        assert f(make_gig(link=None)) is True
+        assert f(make_gig(link=None)) is False
+        assert f(make_gig(link="")) is False
 
     def test_multiple_seen_links(self):
         """All links in the seen set are rejected; unlisted links pass."""

@@ -423,6 +423,11 @@ class SeenFilter:
         self.seen_gigs = seen_gigs
 
     def __call__(self, gig: Gig) -> bool:
+        # A gig with no link can't be deduplicated, detail-fetched, or applied
+        # to, and is never recorded in seen_gigs.csv — so it would be re-notified
+        # on every tick. Reject linkless gigs outright.
+        if not gig.link:
+            return False
         return gig.link not in self.seen_gigs
 
     def __repr__(self):
