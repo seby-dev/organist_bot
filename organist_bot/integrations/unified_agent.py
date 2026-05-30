@@ -3,6 +3,7 @@ from __future__ import annotations
 import datetime
 import json
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import cast
 
@@ -547,6 +548,19 @@ _last_invoice: dict[int, dict] = {}
 _last_gig_listing: dict[int, list[dict]] = {}
 _last_application_listing: dict[int, list[dict]] = {}
 
+_TOOL_HANDLERS: dict[str, Callable[[dict, int], Awaitable[str]]] = {}
+
+
+def _handler(name: str) -> Callable[[Callable], Callable]:
+    """Register an async tool handler under `name` in _TOOL_HANDLERS."""
+
+    def deco(fn: Callable) -> Callable:
+        _TOOL_HANDLERS[name] = fn
+        return fn
+
+    return deco
+
+
 _PDF_RESPONSE_TOOLS = {"generate_invoice", "duplicate_invoice", "get_invoice"}
 _VERBATIM_RESPONSE_TOOLS = {
     "list_upcoming_gigs",
@@ -685,843 +699,887 @@ def _fmt_application_date(date_str: str) -> str:
 
 
 async def _execute_tool(name: str, input_data: dict, chat_id: int) -> str:
-    # ── fetch_gig_details ───────────────────────────────────────────────────
-    if name == "fetch_gig_details":
-        try:
-            scraper = Scraper()
-            html = scraper.fetch(input_data["url"])
-            basic = scraper.extract_basic_from_detail(html, input_data["url"])
-            full = scraper.extract_full_details(html)
-            details = {**basic, **full}
-            scraper.session.close()
-            return json.dumps({k: v for k, v in details.items() if v is not None})
-        except Exception as exc:
-            return json.dumps({"error": str(exc)})
-
-    # ── add_gig ─────────────────────────────────────────────────────────────
-    if name == "add_gig":
-        confirmed = input_data.get("confirmed", False)
-        fields = {
-            "header": input_data.get("header", ""),
-            "organisation": input_data.get("organisation") or "",
-            "locality": input_data.get("locality") or "",
-            "date": input_data.get("date", ""),
-            "time": input_data.get("time", ""),
-            "fee": input_data.get("fee") or "not specified",
-        }
-        if not confirmed:
-            return (
-                "*Please confirm the following gig:*\n"
-                f"• *Title:* {fields['header']}\n"
-                f"• *Organisation:* {fields['organisation']}\n"
-                f"• *Locality:* {fields['locality']}\n"
-                f"• *Date:* {fields['date']}\n"
-                f"• *Time:* {fields['time']}\n"
-                f"• *Fee:* {fields['fee']}\n\n"
-                "Reply *yes* to add to calendar, or tell me what to change."
-            )
-        try:
-            cal = _make_calendar_client()
-            if cal is None:
-                return json.dumps({"error": "Google Calendar not configured."})
-            gig = Gig(
-                header=fields["header"],
-                organisation=fields["organisation"],
-                locality=fields["locality"],
-                date=fields["date"],
-                time=fields["time"],
-                fee=fields["fee"] if fields["fee"] != "not specified" else None,
-                link="",
-            )
-            event_id = cal.add_gig(gig)
-            url = input_data.get("url") or None
-            # Travel buffers (non-fatal — gig event already created)
-            try:
-                postcode = input_data.get("postcode", "")
-                yyyymmdd_buf = normalize_to_yyyymmdd(fields["date"])
-                start_time_buf = parse_start_time(fields["time"])
-                if yyyymmdd_buf and start_time_buf:
-                    buf_date = datetime.datetime.strptime(yyyymmdd_buf, "%Y%m%d").date()
-                    buf_start = datetime.datetime.combine(buf_date, start_time_buf)
-                    buf_end = buf_start + datetime.timedelta(hours=1)
-                    travel_mins = travel.get_travel_minutes(postcode) or settings.max_travel_minutes
-                    before_id, after_id = cal.add_travel_buffers(
-                        gig_summary=f"{fields['header']} — {fields['organisation']}",
-                        start_dt=buf_start,
-                        end_dt=buf_end,
-                        travel_minutes=travel_mins,
-                    )
-                    if url:
-                        application_store.update_travel_buffer_ids(url, before_id, after_id)
-            except Exception as buf_exc:
-                logger.warning("add_gig: travel buffer creation failed: %s", buf_exc)
-            yyyymmdd = normalize_to_yyyymmdd(fields["date"])
-            if yyyymmdd:
-                try:
-                    date_str = datetime.datetime.strptime(yyyymmdd, "%Y%m%d").strftime("%Y-%m-%d")
-                    filter_store.add_period("unavailable_periods", date_str)
-                except Exception:
-                    logger.warning(
-                        "Failed to add gig date to unavailable periods",
-                        extra={"date": fields["date"]},
-                    )
-            try:
-                application_store.upsert_accepted(
-                    url=url,
-                    header=fields["header"],
-                    organisation=fields.get("organisation", ""),
-                    date=fields["date"],
-                    fee=fields["fee"] if fields["fee"] != "not specified" else "",
-                    postcode=input_data.get("postcode", ""),
-                    time=fields.get("time", ""),
-                )
-            except Exception:
-                logger.warning(
-                    "add_gig: upsert_accepted failed",
-                    extra={"url": url},
-                    exc_info=True,
-                )
-            return json.dumps({"result": f"Added to calendar. Event ID: {event_id}"})
-        except Exception as exc:
-            return json.dumps({"error": str(exc)})
-
-    # ── list_upcoming_gigs ──────────────────────────────────────────────────
-    if name == "list_upcoming_gigs":
-        cal = _make_calendar_client()
-        if cal is None:
-            return json.dumps({"error": "Google Calendar not configured."})
-        max_results = input_data.get("max_results", 10)
-        events = cal.list_upcoming_events(max_results=max_results)
-        events = [e for e in events if e.get("summary", "").strip() != "Unavailable"]
-        events = sorted(events, key=lambda e: e["start_dt"])
-        _last_gig_listing[chat_id] = events
-        if not events:
-            return json.dumps({"result": "No upcoming gigs found."})
-        lines = [f"🎵 *Upcoming Gigs* ({len(events)})"]
-        for i, ev in enumerate(events, start=1):
-            start_dt = ev["start_dt"]
-            time_str = start_dt.strftime("%I:%M%p").lstrip("0").lower()
-            date_str = start_dt.strftime("%a %d %b %Y").replace(" 0", " ")
-            lines.append(f"{i}. *{ev['summary']}*\n   {date_str} · {time_str}")
-        return json.dumps({"result": "\n\n".join(lines)})
-
-    # ── delete_gig ──────────────────────────────────────────────────────────
-    if name == "delete_gig":
-        n = input_data["number"]
-        listing = _last_gig_listing.get(chat_id)
-        if not listing:
-            return json.dumps({"error": "No gig listing cached. Ask me to list your gigs first."})
-        if n < 1 or n > len(listing):
-            return json.dumps(
-                {"error": f"No gig number {n}. There are {len(listing)} gigs in the last listing."}
-            )
-        cal = _make_calendar_client()
-        if cal is None:
-            return json.dumps({"error": "Google Calendar not configured."})
-        event = listing[n - 1]
-        try:
-            cal.delete_event(event["id"])
-        except Exception as exc:
-            return json.dumps({"error": str(exc)})
-        filter_store.remove_period("unavailable_periods", event["date_str"])
-        _last_gig_listing[chat_id] = [e for i, e in enumerate(listing) if i != n - 1]
-        return json.dumps(
-            {"result": f"Deleted {event['summary']}. Date removed from unavailable if present."}
-        )
-
-    # ── edit_gig ─────────────────────────────────────────────────────────────
-    if name == "edit_gig":
-        n = input_data["number"]
-        listing = _last_gig_listing.get(chat_id)
-        if not listing:
-            return json.dumps({"error": "No gig listing cached. Ask me to list your gigs first."})
-        if n < 1 or n > len(listing):
-            return json.dumps(
-                {"error": f"No gig number {n}. There are {len(listing)} gigs listed."}
-            )
-        event = listing[n - 1]
-        cal = _make_calendar_client()
-        if cal is None:
-            return json.dumps({"error": "Google Calendar not configured."})
-
-        new_summary = input_data.get("summary")
-        new_date_str = input_data.get("date")
-        new_time_str = input_data.get("time")
-
-        new_start_dt = None
-        old_date_str = event["date_str"]
-
-        if new_date_str or new_time_str:
-            if new_date_str:
-                normalized = normalize_to_yyyymmdd(new_date_str)
-                if not normalized:
-                    return json.dumps({"error": f"Cannot parse date: {new_date_str!r}"})
-                base_date = datetime.datetime.strptime(normalized, "%Y%m%d").date()
-            else:
-                base_date = event["start_dt"].date()
-
-            if new_time_str:
-                parsed_time = parse_start_time(new_time_str)
-                if not parsed_time:
-                    return json.dumps({"error": f"Cannot parse time: {new_time_str!r}"})
-            else:
-                parsed_time = event["start_dt"].time()
-
-            assert parsed_time is not None  # guarded by early return above
-            new_start_dt = datetime.datetime.combine(base_date, parsed_time, tzinfo=datetime.UTC)
-
-        try:
-            cal.update_event(event["id"], summary=new_summary, start_dt=new_start_dt)
-        except Exception as exc:
-            return json.dumps({"error": str(exc)})
-
-        if new_start_dt:
-            new_date_iso = new_start_dt.date().isoformat()
-            if new_date_iso != old_date_str:
-                filter_store.remove_period("unavailable_periods", old_date_str)
-                filter_store.add_period("unavailable_periods", new_date_iso)
-            updated = {**event, "start_dt": new_start_dt, "date_str": new_date_iso}
-        else:
-            updated = {**event}
-        if new_summary:
-            updated["summary"] = new_summary
-        listing[n - 1] = updated
-
-        return json.dumps({"result": "✓ Gig updated."})
-
-    # ── list_clients ────────────────────────────────────────────────────────
-    if name == "list_clients":
-        clients = load_clients()
-        if not clients:
-            return json.dumps(
-                {"result": "No clients found. Add one with a natural language request."}
-            )
-        return json.dumps(clients, indent=2)
-
-    if name == "get_client":
-        clients = load_clients()
-        key = input_data["client_key"]
-        if key not in clients:
-            return json.dumps(
-                {"error": f"Client '{key}' not found. Available: {', '.join(clients.keys())}"}
-            )
-        return json.dumps({key: clients[key]}, indent=2)
-
-    if name == "add_client":
-        add_client(
-            key=input_data["key"],
-            name=input_data["name"],
-            address=input_data["address"],
-            email=input_data.get("email", ""),
-            cc=input_data.get("cc", []),
-        )
-        return json.dumps({"result": f"Client '{input_data['key']}' added successfully."})
-
-    if name == "edit_client":
-        try:
-            edit_client(
-                key=input_data["key"],
-                name=input_data.get("name"),
-                address=input_data.get("address"),
-                email=input_data.get("email"),
-                cc=input_data.get("cc"),
-            )
-            return json.dumps({"result": f"Client '{input_data['key']}' updated successfully."})
-        except ValueError as e:
-            return json.dumps({"error": str(e)})
-
-    if name == "delete_client":
-        try:
-            delete_client(input_data["key"])
-            return json.dumps({"result": f"Client '{input_data['key']}' deleted."})
-        except ValueError as e:
-            return json.dumps({"error": str(e)})
-
-    if name == "generate_invoice":
-        try:
-            result = await generate_invoice(
-                client_key=input_data["client_key"],
-                items=input_data["items"],
-            )
-        except (ValueError, KeyError) as e:
-            return json.dumps({"error": str(e)})
-        _last_invoice[chat_id] = result
-        return json.dumps(
-            {
-                "result": "Invoice generated successfully.",
-                "pdf_path": str(result["pdf_path"]),
-                "client_name": result["client_name"],
-                "client_email": result["client_email"],
-                "invoice_number": result["invoice_number"],
-                "total": result["total"],
-                "currency": result["currency"],
-            }
-        )
-
-    if name == "duplicate_invoice":
-        invoices = load_invoices()
-        inv_num = input_data["invoice_number"]
-        if inv_num not in invoices:
-            return json.dumps({"error": f"Invoice '{inv_num}' not found in history."})
-        original = invoices[inv_num]
-        result = await generate_invoice(
-            client_key=original["client_key"],
-            items=original["items"],
-        )
-        _last_invoice[chat_id] = result
-        return json.dumps(
-            {
-                "result": f"Duplicate invoice created (original: {inv_num}).",
-                "pdf_path": str(result["pdf_path"]),
-                "invoice_number": result["invoice_number"],
-                "client_name": result["client_name"],
-                "total": result["total"],
-                "currency": result["currency"],
-            }
-        )
-
-    if name == "send_invoice_email":
-        inv = _last_invoice.get(chat_id)
-        if not inv:
-            return json.dumps({"error": "No invoice has been generated yet in this session."})
-        email_result = send_invoice_email(inv)
-        if email_result["success"]:
-            mark_invoice_emailed(inv["invoice_number"])
-            cc_list = inv.get("client_cc", [])
-            cc_msg = f" (CC: {', '.join(cc_list)})" if cc_list else ""
-            return json.dumps({"result": f"Invoice emailed to {inv['client_email']}{cc_msg}."})
-        return json.dumps({"error": email_result["error"]})
-
-    if name == "resend_invoice":
-        invoices = load_invoices()
-        inv_num = input_data["invoice_number"]
-        if inv_num not in invoices:
-            return json.dumps({"error": f"Invoice '{inv_num}' not found in history."})
-        inv = cast(dict, invoices[inv_num])
-        email_result = send_invoice_email(inv)
-        if email_result["success"]:
-            mark_invoice_emailed(inv_num)
-            return json.dumps({"result": f"Invoice {inv_num} re-sent to {inv['client_email']}."})
-        return json.dumps({"error": email_result["error"]})
-
-    if name == "mark_invoice_paid":
-        inv_num = input_data["invoice_number"]
-        ok = mark_invoice_paid(inv_num)
-        if not ok:
-            return json.dumps({"error": f"Invoice {inv_num} not found."})
-        return json.dumps({"result": f"✅ Invoice {inv_num} marked as paid."})
-
-    if name == "list_invoices":
-        invoices = load_invoices()
-        if not invoices:
-            return json.dumps({"result": "No invoices found."})
-
-        import datetime as _dt
-
-        now = _dt.datetime.now(_dt.UTC)
-
-        def _payment_status(r: dict) -> str:
-            if r.get("paid_at"):
-                return "✅ paid"
-            emailed_at_str = r.get("emailed_at")
-            if not r.get("emailed") or not emailed_at_str:
-                return "not sent"
-            try:
-                emailed_at = _dt.datetime.fromisoformat(emailed_at_str.replace("Z", "+00:00"))
-                days = (now - emailed_at).days
-                if days >= 5:
-                    return f"⏰ overdue ({days}d)"
-                return f"emailed {days}d ago"
-            except ValueError:
-                return "emailed"
-
-        records = list(invoices.values())
-        records.sort(key=lambda r: r.get("created_at", ""), reverse=True)
-        lines = ["📄 Invoices (most recent first)", ""]
-        for r in records[:20]:
-            pay_status = _payment_status(r)
-            lines.append(
-                f"{r['invoice_number']}  {r.get('client_name', '?'):<20}"
-                f"  £{r.get('total', 0):.2f}  {r.get('date', '?')}  {pay_status}"
-            )
-        return json.dumps({"result": "\n".join(lines)})
-
-    if name == "get_invoice":
-        invoices = load_invoices()
-        inv_num = input_data["invoice_number"]
-        if inv_num not in invoices:
-            return json.dumps({"error": f"Invoice '{inv_num}' not found in history."})
-        inv = cast(dict, invoices[inv_num])
-        _last_invoice[chat_id] = inv
-        return json.dumps(
-            {
-                "result": "Invoice found.",
-                "invoice_number": inv["invoice_number"],
-                "client_name": inv["client_name"],
-                "date": inv["date"],
-                "total": inv["total"],
-                "currency": inv["currency"],
-                "emailed": inv.get("emailed", False),
-                "pdf_path": inv["pdf_path"],
-            }
-        )
-
-    # ── manage_blacklist ────────────────────────────────────────────────────
-    if name == "manage_blacklist":
-        action = input_data["action"]
-        if action == "list":
-            emails = filter_store.blacklist_emails()
-            return (
-                json.dumps({"blacklist": emails})
-                if emails
-                else json.dumps({"result": "Blacklist is empty."})
-            )
-        email = input_data.get("email", "")
-        if action == "add":
-            added = filter_store.add_blacklist_email(email)
-            msg = (
-                f"Added '{email}' to blacklist."
-                if added
-                else f"'{email}' is already in the blacklist."
-            )
-            return json.dumps({"result": msg})
-        if action == "remove":
-            removed = filter_store.remove_blacklist_email(email)
-            msg = (
-                f"Removed '{email}' from blacklist."
-                if removed
-                else f"'{email}' not found in blacklist."
-            )
-            return json.dumps({"result": msg})
-        return json.dumps({"error": f"Unknown action: {action}"})
-
-    # ── manage_unavailable ──────────────────────────────────────────────────
-    if name == "manage_unavailable":
-        action = input_data["action"]
-        if action == "list":
-            periods = filter_store.unavailable_periods()
-            return (
-                json.dumps({"unavailable_periods": periods})
-                if periods
-                else json.dumps({"result": "No unavailable periods set."})
-            )
-        period = _resolve_period(input_data.get("period", ""))
-        if action == "add":
-            added = filter_store.add_period("unavailable_periods", period)
-            msg = (
-                f"Marked '{period}' as unavailable."
-                if added
-                else f"'{period}' already in unavailable list."
-            )
-            cal = _make_calendar_client()
-            if cal:
-                try:
-                    cal.block_period(period)
-                except Exception:
-                    logger.warning(
-                        "manage_unavailable: failed to block calendar for %r", period, exc_info=True
-                    )
-            return json.dumps({"result": msg})
-        if action == "remove":
-            removed = filter_store.remove_period("unavailable_periods", period)
-            msg = (
-                f"Removed '{period}' from unavailable periods."
-                if removed
-                else f"'{period}' not found."
-            )
-            cal = _make_calendar_client()
-            if cal:
-                try:
-                    cal.unblock_period(period)
-                except Exception:
-                    logger.warning(
-                        "manage_unavailable: failed to unblock calendar for %r",
-                        period,
-                        exc_info=True,
-                    )
-            return json.dumps({"result": msg})
-        return json.dumps({"error": f"Unknown action: {action}"})
-
-    # ── manage_available ────────────────────────────────────────────────────
-    if name == "manage_available":
-        action = input_data["action"]
-        if action == "list":
-            periods = filter_store.available_only_periods()
-            return (
-                json.dumps({"available_only_periods": periods})
-                if periods
-                else json.dumps({"result": "No available-only periods set."})
-            )
-        period = input_data.get("period", "")
-        if action == "add":
-            added = filter_store.add_period("available_only_periods", period)
-            msg = (
-                f"Added '{period}' to available-only periods."
-                if added
-                else f"'{period}' already present."
-            )
-            return json.dumps({"result": msg})
-        if action == "remove":
-            removed = filter_store.remove_period("available_only_periods", period)
-            msg = (
-                f"Removed '{period}' from available-only periods."
-                if removed
-                else f"'{period}' not found."
-            )
-            return json.dumps({"result": msg})
-        return json.dumps({"error": f"Unknown action: {action}"})
-
-    # ── get_income_forecast ──────────────────────────────────────────────────
-    if name == "get_income_forecast":
-        from_date = input_data.get("from_date", "")
-        to_date = input_data.get("to_date", "")
-        try:
-            income_summary: dict = application_store.get_income(from_date, to_date)
-        except Exception as exc:
-            return json.dumps({"error": f"Failed to retrieve income: {exc}"})
-
-        try:
-            from_dt = datetime.date.fromisoformat(from_date)
-            to_dt = datetime.date.fromisoformat(to_date)
-            header = f"💰 Income — {from_dt.day} {from_dt.strftime('%b')} to {to_dt.day} {to_dt.strftime('%b %Y')}"
-        except ValueError:
-            header = f"💰 Income — {from_date} to {to_date}"
-
-        if income_summary["count"] == 0:
-            return json.dumps({"result": f"{header}\n\nNo accepted gigs in this period."})
-
-        lines = [
-            header,
-            "",
-            f"Confirmed gigs:   {income_summary['count']}",
-            f"Total income:     £{income_summary['total']:.2f}",
-        ]
-        if income_summary["no_fee_count"] > 0:
-            lines.append(
-                f"No fee recorded:  {income_summary['no_fee_count']} gig(s) (not included in total)"
-            )
-
-        lines.append("")
-        for i, r in enumerate(income_summary["records"], start=1):
-            org = r.get("organisation") or r.get("header") or "Unknown"
-            try:
-                d = datetime.date.fromisoformat(r.get("date", ""))
-                date_str = f"{d.day} {d.strftime('%b')}"
-            except ValueError:
-                date_str = r.get("date", "")
-            fee_str = r.get("fee", "").strip()
-            fee_display = fee_str if fee_str else "(no fee)"
-            lines.append(f"{i}. {org} — {date_str}  {fee_display}")
-
-        return json.dumps({"result": "\n".join(lines)})
-
-    # ── get_application_analytics ────────────────────────────────────────────
-    if name == "get_application_analytics":
-        days = min(max(int(input_data.get("days", 365)), 1), 730)
-        m = analytics.get_success_metrics(days)
-        lines = [
-            f"📊 Application Analytics (last {days} days)",
-            "",
-            f"Total applications: {m['total']}",
-            f"✅ Accepted:      {m['accepted']:>4}",
-            f"❌ Rejected/declined: {m['rejected']:>4}",
-            f"💤 No response:   {m['no_response']:>4}",
-            f"⏳ Still pending: {m['applied']:>4}",
-            "",
-            f"Acceptance rate: {m['acceptance_rate']}% (of resolved)",
-            f"Response rate:   {m['response_rate']}% (of resolved)",
-        ]
-        if m["avg_response_days"] is not None:
-            lines.append(f"Avg response time: {m['avg_response_days']} days")
-        else:
-            lines.append("Avg response time: not enough data")
-        return json.dumps({"result": "\n".join(lines)})
-
-    # ── get_gig_breakdown ─────────────────────────────────────────────────────
-    if name == "get_gig_breakdown":
-        days = min(max(int(input_data.get("days", 365)), 1), 730)
-        breakdown = analytics.get_gig_type_breakdown(days)
-        if not breakdown:
-            return json.dumps({"result": f"No applications in the last {days} days."})
-        sorted_types = sorted(breakdown.items(), key=lambda kv: kv[1]["count"], reverse=True)
-        max_label = max(len(t) for t, _ in sorted_types)
-        lines = [f"🎹 Gig Type Breakdown (last {days} days)", ""]
-        for gig_type, data in sorted_types:
-            label = f"{gig_type}:"
-            lines.append(
-                f"{label:<{max_label + 1}}  {data['count']:>3} applied"
-                f" | {data['accepted']:>2} accepted ({data['acceptance_rate']:.0f}%)"
-            )
-        return json.dumps({"result": "\n".join(lines)})
-
-    # ── manage_applications ──────────────────────────────────────────────────
-    if name == "manage_applications":
-        action = input_data.get("action", "summary")
-        days = input_data.get("days", 30)
-        records = application_store.list_applications(days)
-        if action in ("summary", "list"):
-            _last_application_listing[chat_id] = records
-
-        if action == "summary":
-            counts = {
-                "accepted": sum(1 for r in records if r["status"] == "accepted"),
-                "applied": sum(1 for r in records if r["status"] == "applied"),
-                "no_response": sum(1 for r in records if r["status"] == "no_response"),
-                "declined": sum(1 for r in records if r["status"] == "declined"),
-                "rejected": sum(1 for r in records if r["status"] == "rejected"),
-            }
-            total = len(records)
-            lines = [
-                f"📋 Applications — last {days} days",
-                "",
-                f"Applied:      {total}",
-                f"Accepted:     {counts['accepted']}",
-                f"No response:  {counts['no_response']}",
-                f"Declined:     {counts['declined']}",
-                f"Rejected:     {counts['rejected']}",
-                f"Pending:      {counts['applied']}",
-            ]
-            today = datetime.date.today()
-            from_date = (today - datetime.timedelta(days=days)).isoformat()
-            to_date = today.isoformat()
-            income = application_store.get_income(from_date, to_date)
-            income_line = f"Income (accepted):  £{income['total']:.2f}"
-            if income["no_fee_count"] > 0:
-                if income["no_fee_count"] == income["count"] and income["count"] > 0:
-                    income_line += f"  · all {income['count']} gig(s) have no fee recorded"
-                else:
-                    n = income["no_fee_count"]
-                    income_line += f"  · {n} gig{'s' if n != 1 else ''} have no fee recorded"
-            lines.append("")
-            lines.append(income_line)
-            return json.dumps({"result": "\n".join(lines)})
-
-        if action == "list":
-            if not records:
-                return json.dumps({"result": f"No applications in the last {days} days."})
-            _last_application_listing[chat_id] = records
-            _status_emoji = {
-                "accepted": "✅",
-                "applied": "⏳",
-                "no_response": "🔕",
-                "declined": "❌",
-                "rejected": "🚫",
-            }
-            lines = [f"📋 Applications — last {days} days", ""]
-            for i, r in enumerate(records, start=1):
-                emoji = _status_emoji.get(r["status"], "❓")
-                org_part = f" — {r['organisation']}" if r.get("organisation") else ""
-                date_part = _fmt_application_date(r.get("date", ""))
-                fee_part = f"  {r['fee']}" if r.get("fee") else ""
-                lines.append(f"{i}. {emoji} {r['header']}{org_part}  ({date_part}){fee_part}")
-            return json.dumps({"result": "\n".join(lines)}, ensure_ascii=False)
-
-        if action == "update":
-            n = input_data.get("number")
-            status: str = input_data.get("status") or ""
-            listing = _last_application_listing.get(chat_id)
-            if not listing:
-                return json.dumps(
-                    {"error": "No application listing cached. Ask to list applications first."}
-                )
-            if n is None or n < 1 or n > len(listing):
-                return json.dumps({"error": f"No application number {n}."})
-            record = listing[n - 1]
-            url = record.get("url", "")
-            if not url:
-                return json.dumps({"error": "Cannot update a manual entry with no URL."})
-            original_status = record.get("status", "")
-            ok = application_store.update_status(url, status)
-            if ok:
-                listing[n - 1]["status"] = status
-                msg = f"Updated application {n} to '{status}'."
-                if original_status == "accepted" and status == "declined":
-                    org = record.get("organisation") or record.get("header", "")
-                    date = record.get("date", "")
-                    # Delete travel buffer events
-                    cal = _make_calendar_client()
-                    if cal:
-                        for field in ("travel_before_event_id", "travel_after_event_id"):
-                            evt_id = record.get(field)
-                            if evt_id:
-                                try:
-                                    cal.delete_event(evt_id)
-                                except Exception as del_exc:
-                                    logger.warning(
-                                        "manage_applications: failed to delete travel buffer %s: %s",
-                                        evt_id,
-                                        del_exc,
-                                    )
-                    msg += (
-                        f"\n\nThis was a confirmed booking ({org} on {date}). "
-                        "Do you want to delete the calendar event?"
-                    )
-                return json.dumps({"result": msg})
-            return json.dumps({"error": "Application not found in store."})
-
-        if action == "detail":
-            n = input_data.get("number")
-            listing = _last_application_listing.get(chat_id)
-            if not listing:
-                return json.dumps(
-                    {
-                        "error": "No application listing cached. Ask to list or summarise applications first."
-                    }
-                )
-            if n is None or n < 1 or n > len(listing):
-                return json.dumps({"error": f"No application number {n}."})
-            r = listing[n - 1]
-            lines = [
-                f"📋 Application {n} — full details",
-                "",
-                f"Header:        {r.get('header') or '—'}",
-                f"Organisation:  {r.get('organisation') or '—'}",
-                f"Date:          {r.get('date') or '—'}",
-                f"Fee:           {r.get('fee') or '—'}",
-                f"Status:        {r.get('status') or '—'}",
-                f"Email:         {r.get('email') or '—'}",
-                f"URL:           {r.get('url') or '—'}",
-                f"Applied at:    {r.get('applied_at') or '—'}",
-                f"Updated at:    {r.get('updated_at') or '—'}",
-            ]
-            return json.dumps({"result": "\n".join(lines)})
-
-        return json.dumps({"error": f"Unknown action: {action}"})
-
-    # ── clear_conversation ──────────────────────────────────────────────────
-    if name == "clear_conversation":
-        reset_conversation(chat_id)
-        return json.dumps({"result": "Conversation cleared."})
-
-    # ── get_gig_stats ────────────────────────────────────────────────────────
-    if name == "get_gig_stats":
-        days = min(max(int(input_data.get("days", 7)), 1), 90)
-        sl = _make_sheets_logger()
-        if sl is None:
-            return json.dumps(
-                {"result": "Google Sheets is not configured (GOOGLE_SHEETS_ID missing)."}
-            )
-        try:
-            runs = sl.query_run_stats(days)
-        except Exception as exc:
-            return json.dumps({"result": f"Could not reach Google Sheets: {exc}"})
-
-        if not runs:
-            return json.dumps({"result": f"No pipeline runs logged in the last {days} days."})
-
-        total_runs = len(runs)
-        total_listed = sum(r.get("listed", 0) for r in runs)
-        total_pre = sum(r.get("pre_filter_passed", 0) for r in runs)
-        total_valid = sum(r.get("valid", 0) for r in runs)
-        total_errors = sum(r.get("gig_errors", 0) for r in runs)
-        avg_listed = round(total_listed / total_runs, 1)
-        avg_pre = round(total_pre / total_runs, 1)
-        avg_valid = round(total_valid / total_runs, 1)
-
-        # Aggregate filter breakdown, stripping repr params and deduplicating.
-        # e.g. "AvailabilityFilter(mode='block', periods=7)" → "AvailabilityFilter"
-        name_totals: dict[str, int] = {}
-        for r in runs:
-            for k, v in r.get("filter_breakdown", {}).items():
-                name = k.split("(")[0]
-                name_totals[name] = name_totals.get(name, 0) + v
-        active_filters = [
-            (k, v)
-            for k, v in sorted(name_totals.items(), key=lambda x: x[1], reverse=True)
-            if v > 0
-        ]
-
-        def _fmt_elapsed(ms: int) -> str:
-            return f"{ms / 1000:.1f}s" if ms >= 1000 else f"{ms}ms"
-
-        lines = [
-            f"📊 *Pipeline stats — last {days} days*",
-            "",
-            f"*Runs:* {total_runs}",
-            f"*Listed:*      {total_listed:>5}  ({avg_listed}/run)",
-            f"*Pre-filter:*  {total_pre:>5}  ({avg_pre}/run)",
-            f"*Valid:*       {total_valid:>5}  ({avg_valid}/run)",
-            f"*Errors:* {total_errors}",
-        ]
-
-        if active_filters:
-            max_len = max(len(k) for k, _ in active_filters)
-            lines += ["", "*🔍 Filter rejections:*"]
-            for k, v in active_filters:
-                pct = round(v / total_listed * 100) if total_listed else 0
-                lines.append(f"`{k:<{max_len}}  {v:>4}  ({pct}%)`")
-
-        lines += ["", "*📅 Recent runs:*"]
-        for r in runs[:5]:
-            ts = r["timestamp"][:16].replace("T", " ")
-            listed = r.get("listed", 0)
-            pre = r.get("pre_filter_passed", 0)
-            valid = r.get("valid", 0)
-            t = _fmt_elapsed(r.get("elapsed_ms", 0))
-            lines.append(f"`{ts}  {listed}→{pre}→{valid}  {t}`")
-
-        return json.dumps({"result": "\n".join(lines)})
-
-    # ── manage_config ────────────────────────────────────────────────────────
-    if name == "manage_config":
-        action = input_data["action"]
-
-        _RANGES: dict[str, tuple[int, int]] = {
-            "min_fee": (0, 100_000),
-            "max_travel_minutes": (1, 300),
-            "poll_minutes": (1, 60),
-        }
-        _DEFAULTS = {
-            "min_fee": settings.min_fee,
-            "max_travel_minutes": settings.max_travel_minutes,
-            "poll_minutes": settings.poll_minutes,
-        }
-
-        if action == "get":
-            overrides = runtime_config.all()
-            lines = []
-            for key, default in _DEFAULTS.items():
-                if key in overrides:
-                    lines.append(f"{key:<20} {overrides[key]}  (override, default: {default})")
-                else:
-                    lines.append(f"{key:<20} {default}  (default)")
-            return json.dumps({"result": "\n".join(lines)})
-
-        if action == "set":
-            key = input_data.get("key", "")
-            value = input_data.get("value")
-            if key not in _RANGES:
-                return json.dumps(
-                    {"result": f"Unknown key '{key}'. Valid keys: {', '.join(_RANGES)}."}
-                )
-            if value is None:
-                return json.dumps({"result": "value is required for set."})
-            lo, hi = _RANGES[key]
-            if not (lo <= int(value) <= hi):
-                return json.dumps(
-                    {"result": f"Invalid value {value} for {key}. Must be between {lo} and {hi}."}
-                )
-            runtime_config.set(key, int(value))
-            return json.dumps(
-                {"result": f"{key} set to {value}. Takes effect on the next polling tick."}
-            )
-
-        if action == "reset":
-            key = input_data.get("key", "")
-            if key not in _DEFAULTS:
-                return json.dumps(
-                    {"result": f"Unknown key '{key}'. Valid keys: {', '.join(_DEFAULTS)}."}
-                )
-            existed = runtime_config.reset(key)
-            if existed:
-                return json.dumps({"result": f"{key} reset to default ({_DEFAULTS[key]})."})
-            return json.dumps(
-                {"result": f"{key} was already using the default ({_DEFAULTS[key]})."}
-            )
-
-        return json.dumps({"error": f"Unknown action: {action}"})
+    handler = _TOOL_HANDLERS.get(name)
+    if handler is not None:
+        return await handler(input_data, chat_id)
 
     return json.dumps({"error": f"Tool not implemented: {name}"})
+
+
+# ── Gig tools ──────────────────────────────────────────────────────────────
+
+
+@_handler("fetch_gig_details")
+async def _handle_fetch_gig_details(input_data: dict, chat_id: int) -> str:
+    try:
+        scraper = Scraper()
+        html = scraper.fetch(input_data["url"])
+        basic = scraper.extract_basic_from_detail(html, input_data["url"])
+        full = scraper.extract_full_details(html)
+        details = {**basic, **full}
+        scraper.session.close()
+        return json.dumps({k: v for k, v in details.items() if v is not None})
+    except Exception as exc:
+        return json.dumps({"error": str(exc)})
+
+
+@_handler("add_gig")
+async def _handle_add_gig(input_data: dict, chat_id: int) -> str:
+    confirmed = input_data.get("confirmed", False)
+    fields = {
+        "header": input_data.get("header", ""),
+        "organisation": input_data.get("organisation") or "",
+        "locality": input_data.get("locality") or "",
+        "date": input_data.get("date", ""),
+        "time": input_data.get("time", ""),
+        "fee": input_data.get("fee") or "not specified",
+    }
+    if not confirmed:
+        return (
+            "*Please confirm the following gig:*\n"
+            f"• *Title:* {fields['header']}\n"
+            f"• *Organisation:* {fields['organisation']}\n"
+            f"• *Locality:* {fields['locality']}\n"
+            f"• *Date:* {fields['date']}\n"
+            f"• *Time:* {fields['time']}\n"
+            f"• *Fee:* {fields['fee']}\n\n"
+            "Reply *yes* to add to calendar, or tell me what to change."
+        )
+    try:
+        cal = _make_calendar_client()
+        if cal is None:
+            return json.dumps({"error": "Google Calendar not configured."})
+        gig = Gig(
+            header=fields["header"],
+            organisation=fields["organisation"],
+            locality=fields["locality"],
+            date=fields["date"],
+            time=fields["time"],
+            fee=fields["fee"] if fields["fee"] != "not specified" else None,
+            link="",
+        )
+        event_id = cal.add_gig(gig)
+        url = input_data.get("url") or None
+        # Travel buffers (non-fatal — gig event already created)
+        try:
+            postcode = input_data.get("postcode", "")
+            yyyymmdd_buf = normalize_to_yyyymmdd(fields["date"])
+            start_time_buf = parse_start_time(fields["time"])
+            if yyyymmdd_buf and start_time_buf:
+                buf_date = datetime.datetime.strptime(yyyymmdd_buf, "%Y%m%d").date()
+                buf_start = datetime.datetime.combine(buf_date, start_time_buf)
+                buf_end = buf_start + datetime.timedelta(hours=1)
+                travel_mins = travel.get_travel_minutes(postcode) or settings.max_travel_minutes
+                before_id, after_id = cal.add_travel_buffers(
+                    gig_summary=f"{fields['header']} — {fields['organisation']}",
+                    start_dt=buf_start,
+                    end_dt=buf_end,
+                    travel_minutes=travel_mins,
+                )
+                if url:
+                    application_store.update_travel_buffer_ids(url, before_id, after_id)
+        except Exception as buf_exc:
+            logger.warning("add_gig: travel buffer creation failed: %s", buf_exc)
+        yyyymmdd = normalize_to_yyyymmdd(fields["date"])
+        if yyyymmdd:
+            try:
+                date_str = datetime.datetime.strptime(yyyymmdd, "%Y%m%d").strftime("%Y-%m-%d")
+                filter_store.add_period("unavailable_periods", date_str)
+            except Exception:
+                logger.warning(
+                    "Failed to add gig date to unavailable periods",
+                    extra={"date": fields["date"]},
+                )
+        try:
+            application_store.upsert_accepted(
+                url=url,
+                header=fields["header"],
+                organisation=fields.get("organisation", ""),
+                date=fields["date"],
+                fee=fields["fee"] if fields["fee"] != "not specified" else "",
+                postcode=input_data.get("postcode", ""),
+                time=fields.get("time", ""),
+            )
+        except Exception:
+            logger.warning(
+                "add_gig: upsert_accepted failed",
+                extra={"url": url},
+                exc_info=True,
+            )
+        return json.dumps({"result": f"Added to calendar. Event ID: {event_id}"})
+    except Exception as exc:
+        return json.dumps({"error": str(exc)})
+
+
+@_handler("list_upcoming_gigs")
+async def _handle_list_upcoming_gigs(input_data: dict, chat_id: int) -> str:
+    cal = _make_calendar_client()
+    if cal is None:
+        return json.dumps({"error": "Google Calendar not configured."})
+    max_results = input_data.get("max_results", 10)
+    events = cal.list_upcoming_events(max_results=max_results)
+    events = [e for e in events if e.get("summary", "").strip() != "Unavailable"]
+    events = sorted(events, key=lambda e: e["start_dt"])
+    _last_gig_listing[chat_id] = events
+    if not events:
+        return json.dumps({"result": "No upcoming gigs found."})
+    lines = [f"🎵 *Upcoming Gigs* ({len(events)})"]
+    for i, ev in enumerate(events, start=1):
+        start_dt = ev["start_dt"]
+        time_str = start_dt.strftime("%I:%M%p").lstrip("0").lower()
+        date_str = start_dt.strftime("%a %d %b %Y").replace(" 0", " ")
+        lines.append(f"{i}. *{ev['summary']}*\n   {date_str} · {time_str}")
+    return json.dumps({"result": "\n\n".join(lines)})
+
+
+@_handler("delete_gig")
+async def _handle_delete_gig(input_data: dict, chat_id: int) -> str:
+    n = input_data["number"]
+    listing = _last_gig_listing.get(chat_id)
+    if not listing:
+        return json.dumps({"error": "No gig listing cached. Ask me to list your gigs first."})
+    if n < 1 or n > len(listing):
+        return json.dumps(
+            {"error": f"No gig number {n}. There are {len(listing)} gigs in the last listing."}
+        )
+    cal = _make_calendar_client()
+    if cal is None:
+        return json.dumps({"error": "Google Calendar not configured."})
+    event = listing[n - 1]
+    try:
+        cal.delete_event(event["id"])
+    except Exception as exc:
+        return json.dumps({"error": str(exc)})
+    filter_store.remove_period("unavailable_periods", event["date_str"])
+    _last_gig_listing[chat_id] = [e for i, e in enumerate(listing) if i != n - 1]
+    return json.dumps(
+        {"result": f"Deleted {event['summary']}. Date removed from unavailable if present."}
+    )
+
+
+@_handler("edit_gig")
+async def _handle_edit_gig(input_data: dict, chat_id: int) -> str:
+    n = input_data["number"]
+    listing = _last_gig_listing.get(chat_id)
+    if not listing:
+        return json.dumps({"error": "No gig listing cached. Ask me to list your gigs first."})
+    if n < 1 or n > len(listing):
+        return json.dumps({"error": f"No gig number {n}. There are {len(listing)} gigs listed."})
+    event = listing[n - 1]
+    cal = _make_calendar_client()
+    if cal is None:
+        return json.dumps({"error": "Google Calendar not configured."})
+
+    new_summary = input_data.get("summary")
+    new_date_str = input_data.get("date")
+    new_time_str = input_data.get("time")
+
+    new_start_dt = None
+    old_date_str = event["date_str"]
+
+    if new_date_str or new_time_str:
+        if new_date_str:
+            normalized = normalize_to_yyyymmdd(new_date_str)
+            if not normalized:
+                return json.dumps({"error": f"Cannot parse date: {new_date_str!r}"})
+            base_date = datetime.datetime.strptime(normalized, "%Y%m%d").date()
+        else:
+            base_date = event["start_dt"].date()
+
+        if new_time_str:
+            parsed_time = parse_start_time(new_time_str)
+            if not parsed_time:
+                return json.dumps({"error": f"Cannot parse time: {new_time_str!r}"})
+        else:
+            parsed_time = event["start_dt"].time()
+
+        assert parsed_time is not None  # guarded by early return above
+        new_start_dt = datetime.datetime.combine(base_date, parsed_time, tzinfo=datetime.UTC)
+
+    try:
+        cal.update_event(event["id"], summary=new_summary, start_dt=new_start_dt)
+    except Exception as exc:
+        return json.dumps({"error": str(exc)})
+
+    if new_start_dt:
+        new_date_iso = new_start_dt.date().isoformat()
+        if new_date_iso != old_date_str:
+            filter_store.remove_period("unavailable_periods", old_date_str)
+            filter_store.add_period("unavailable_periods", new_date_iso)
+        updated = {**event, "start_dt": new_start_dt, "date_str": new_date_iso}
+    else:
+        updated = {**event}
+    if new_summary:
+        updated["summary"] = new_summary
+    listing[n - 1] = updated
+
+    return json.dumps({"result": "✓ Gig updated."})
+
+
+# ── Client tools ────────────────────────────────────────────────────────────
+
+
+@_handler("list_clients")
+async def _handle_list_clients(input_data: dict, chat_id: int) -> str:
+    clients = load_clients()
+    if not clients:
+        return json.dumps({"result": "No clients found. Add one with a natural language request."})
+    return json.dumps(clients, indent=2)
+
+
+@_handler("get_client")
+async def _handle_get_client(input_data: dict, chat_id: int) -> str:
+    clients = load_clients()
+    key = input_data["client_key"]
+    if key not in clients:
+        return json.dumps(
+            {"error": f"Client '{key}' not found. Available: {', '.join(clients.keys())}"}
+        )
+    return json.dumps({key: clients[key]}, indent=2)
+
+
+@_handler("add_client")
+async def _handle_add_client(input_data: dict, chat_id: int) -> str:
+    add_client(
+        key=input_data["key"],
+        name=input_data["name"],
+        address=input_data["address"],
+        email=input_data.get("email", ""),
+        cc=input_data.get("cc", []),
+    )
+    return json.dumps({"result": f"Client '{input_data['key']}' added successfully."})
+
+
+@_handler("edit_client")
+async def _handle_edit_client(input_data: dict, chat_id: int) -> str:
+    try:
+        edit_client(
+            key=input_data["key"],
+            name=input_data.get("name"),
+            address=input_data.get("address"),
+            email=input_data.get("email"),
+            cc=input_data.get("cc"),
+        )
+        return json.dumps({"result": f"Client '{input_data['key']}' updated successfully."})
+    except ValueError as e:
+        return json.dumps({"error": str(e)})
+
+
+@_handler("delete_client")
+async def _handle_delete_client(input_data: dict, chat_id: int) -> str:
+    try:
+        delete_client(input_data["key"])
+        return json.dumps({"result": f"Client '{input_data['key']}' deleted."})
+    except ValueError as e:
+        return json.dumps({"error": str(e)})
+
+
+# ── Invoice tools ────────────────────────────────────────────────────────────
+
+
+@_handler("generate_invoice")
+async def _handle_generate_invoice(input_data: dict, chat_id: int) -> str:
+    try:
+        result = await generate_invoice(
+            client_key=input_data["client_key"],
+            items=input_data["items"],
+        )
+    except (ValueError, KeyError) as e:
+        return json.dumps({"error": str(e)})
+    _last_invoice[chat_id] = result
+    return json.dumps(
+        {
+            "result": "Invoice generated successfully.",
+            "pdf_path": str(result["pdf_path"]),
+            "client_name": result["client_name"],
+            "client_email": result["client_email"],
+            "invoice_number": result["invoice_number"],
+            "total": result["total"],
+            "currency": result["currency"],
+        }
+    )
+
+
+@_handler("duplicate_invoice")
+async def _handle_duplicate_invoice(input_data: dict, chat_id: int) -> str:
+    invoices = load_invoices()
+    inv_num = input_data["invoice_number"]
+    if inv_num not in invoices:
+        return json.dumps({"error": f"Invoice '{inv_num}' not found in history."})
+    original = invoices[inv_num]
+    result = await generate_invoice(
+        client_key=original["client_key"],
+        items=original["items"],
+    )
+    _last_invoice[chat_id] = result
+    return json.dumps(
+        {
+            "result": f"Duplicate invoice created (original: {inv_num}).",
+            "pdf_path": str(result["pdf_path"]),
+            "invoice_number": result["invoice_number"],
+            "client_name": result["client_name"],
+            "total": result["total"],
+            "currency": result["currency"],
+        }
+    )
+
+
+@_handler("send_invoice_email")
+async def _handle_send_invoice_email(input_data: dict, chat_id: int) -> str:
+    inv = _last_invoice.get(chat_id)
+    if not inv:
+        return json.dumps({"error": "No invoice has been generated yet in this session."})
+    email_result = send_invoice_email(inv)
+    if email_result["success"]:
+        mark_invoice_emailed(inv["invoice_number"])
+        cc_list = inv.get("client_cc", [])
+        cc_msg = f" (CC: {', '.join(cc_list)})" if cc_list else ""
+        return json.dumps({"result": f"Invoice emailed to {inv['client_email']}{cc_msg}."})
+    return json.dumps({"error": email_result["error"]})
+
+
+@_handler("resend_invoice")
+async def _handle_resend_invoice(input_data: dict, chat_id: int) -> str:
+    invoices = load_invoices()
+    inv_num = input_data["invoice_number"]
+    if inv_num not in invoices:
+        return json.dumps({"error": f"Invoice '{inv_num}' not found in history."})
+    inv = cast(dict, invoices[inv_num])
+    email_result = send_invoice_email(inv)
+    if email_result["success"]:
+        mark_invoice_emailed(inv_num)
+        return json.dumps({"result": f"Invoice {inv_num} re-sent to {inv['client_email']}."})
+    return json.dumps({"error": email_result["error"]})
+
+
+@_handler("mark_invoice_paid")
+async def _handle_mark_invoice_paid(input_data: dict, chat_id: int) -> str:
+    inv_num = input_data["invoice_number"]
+    ok = mark_invoice_paid(inv_num)
+    if not ok:
+        return json.dumps({"error": f"Invoice {inv_num} not found."})
+    return json.dumps({"result": f"✅ Invoice {inv_num} marked as paid."})
+
+
+@_handler("list_invoices")
+async def _handle_list_invoices(input_data: dict, chat_id: int) -> str:
+    invoices = load_invoices()
+    if not invoices:
+        return json.dumps({"result": "No invoices found."})
+
+    import datetime as _dt
+
+    now = _dt.datetime.now(_dt.UTC)
+
+    def _payment_status(r: dict) -> str:
+        if r.get("paid_at"):
+            return "✅ paid"
+        emailed_at_str = r.get("emailed_at")
+        if not r.get("emailed") or not emailed_at_str:
+            return "not sent"
+        try:
+            emailed_at = _dt.datetime.fromisoformat(emailed_at_str.replace("Z", "+00:00"))
+            days = (now - emailed_at).days
+            if days >= 5:
+                return f"⏰ overdue ({days}d)"
+            return f"emailed {days}d ago"
+        except ValueError:
+            return "emailed"
+
+    records = list(invoices.values())
+    records.sort(key=lambda r: r.get("created_at", ""), reverse=True)
+    lines = ["📄 Invoices (most recent first)", ""]
+    for r in records[:20]:
+        pay_status = _payment_status(r)
+        lines.append(
+            f"{r['invoice_number']}  {r.get('client_name', '?'):<20}"
+            f"  £{r.get('total', 0):.2f}  {r.get('date', '?')}  {pay_status}"
+        )
+    return json.dumps({"result": "\n".join(lines)})
+
+
+@_handler("get_invoice")
+async def _handle_get_invoice(input_data: dict, chat_id: int) -> str:
+    invoices = load_invoices()
+    inv_num = input_data["invoice_number"]
+    if inv_num not in invoices:
+        return json.dumps({"error": f"Invoice '{inv_num}' not found in history."})
+    inv = cast(dict, invoices[inv_num])
+    _last_invoice[chat_id] = inv
+    return json.dumps(
+        {
+            "result": "Invoice found.",
+            "invoice_number": inv["invoice_number"],
+            "client_name": inv["client_name"],
+            "date": inv["date"],
+            "total": inv["total"],
+            "currency": inv["currency"],
+            "emailed": inv.get("emailed", False),
+            "pdf_path": inv["pdf_path"],
+        }
+    )
+
+
+# ── Filter tools ────────────────────────────────────────────────────────────
+
+
+@_handler("manage_blacklist")
+async def _handle_manage_blacklist(input_data: dict, chat_id: int) -> str:
+    action = input_data["action"]
+    if action == "list":
+        emails = filter_store.blacklist_emails()
+        return (
+            json.dumps({"blacklist": emails})
+            if emails
+            else json.dumps({"result": "Blacklist is empty."})
+        )
+    email = input_data.get("email", "")
+    if action == "add":
+        added = filter_store.add_blacklist_email(email)
+        msg = (
+            f"Added '{email}' to blacklist." if added else f"'{email}' is already in the blacklist."
+        )
+        return json.dumps({"result": msg})
+    if action == "remove":
+        removed = filter_store.remove_blacklist_email(email)
+        msg = (
+            f"Removed '{email}' from blacklist."
+            if removed
+            else f"'{email}' not found in blacklist."
+        )
+        return json.dumps({"result": msg})
+    return json.dumps({"error": f"Unknown action: {action}"})
+
+
+@_handler("manage_unavailable")
+async def _handle_manage_unavailable(input_data: dict, chat_id: int) -> str:
+    action = input_data["action"]
+    if action == "list":
+        periods = filter_store.unavailable_periods()
+        return (
+            json.dumps({"unavailable_periods": periods})
+            if periods
+            else json.dumps({"result": "No unavailable periods set."})
+        )
+    period = _resolve_period(input_data.get("period", ""))
+    if action == "add":
+        added = filter_store.add_period("unavailable_periods", period)
+        msg = (
+            f"Marked '{period}' as unavailable."
+            if added
+            else f"'{period}' already in unavailable list."
+        )
+        cal = _make_calendar_client()
+        if cal:
+            try:
+                cal.block_period(period)
+            except Exception:
+                logger.warning(
+                    "manage_unavailable: failed to block calendar for %r", period, exc_info=True
+                )
+        return json.dumps({"result": msg})
+    if action == "remove":
+        removed = filter_store.remove_period("unavailable_periods", period)
+        msg = (
+            f"Removed '{period}' from unavailable periods." if removed else f"'{period}' not found."
+        )
+        cal = _make_calendar_client()
+        if cal:
+            try:
+                cal.unblock_period(period)
+            except Exception:
+                logger.warning(
+                    "manage_unavailable: failed to unblock calendar for %r",
+                    period,
+                    exc_info=True,
+                )
+        return json.dumps({"result": msg})
+    return json.dumps({"error": f"Unknown action: {action}"})
+
+
+@_handler("manage_available")
+async def _handle_manage_available(input_data: dict, chat_id: int) -> str:
+    action = input_data["action"]
+    if action == "list":
+        periods = filter_store.available_only_periods()
+        return (
+            json.dumps({"available_only_periods": periods})
+            if periods
+            else json.dumps({"result": "No available-only periods set."})
+        )
+    period = input_data.get("period", "")
+    if action == "add":
+        added = filter_store.add_period("available_only_periods", period)
+        msg = (
+            f"Added '{period}' to available-only periods."
+            if added
+            else f"'{period}' already present."
+        )
+        return json.dumps({"result": msg})
+    if action == "remove":
+        removed = filter_store.remove_period("available_only_periods", period)
+        msg = (
+            f"Removed '{period}' from available-only periods."
+            if removed
+            else f"'{period}' not found."
+        )
+        return json.dumps({"result": msg})
+    return json.dumps({"error": f"Unknown action: {action}"})
+
+
+# ── Analytics tools ──────────────────────────────────────────────────────────
+
+
+@_handler("get_income_forecast")
+async def _handle_get_income_forecast(input_data: dict, chat_id: int) -> str:
+    from_date = input_data.get("from_date", "")
+    to_date = input_data.get("to_date", "")
+    try:
+        income_summary: dict = application_store.get_income(from_date, to_date)
+    except Exception as exc:
+        return json.dumps({"error": f"Failed to retrieve income: {exc}"})
+
+    try:
+        from_dt = datetime.date.fromisoformat(from_date)
+        to_dt = datetime.date.fromisoformat(to_date)
+        header = f"💰 Income — {from_dt.day} {from_dt.strftime('%b')} to {to_dt.day} {to_dt.strftime('%b %Y')}"
+    except ValueError:
+        header = f"💰 Income — {from_date} to {to_date}"
+
+    if income_summary["count"] == 0:
+        return json.dumps({"result": f"{header}\n\nNo accepted gigs in this period."})
+
+    lines = [
+        header,
+        "",
+        f"Confirmed gigs:   {income_summary['count']}",
+        f"Total income:     £{income_summary['total']:.2f}",
+    ]
+    if income_summary["no_fee_count"] > 0:
+        lines.append(
+            f"No fee recorded:  {income_summary['no_fee_count']} gig(s) (not included in total)"
+        )
+
+    lines.append("")
+    for i, r in enumerate(income_summary["records"], start=1):
+        org = r.get("organisation") or r.get("header") or "Unknown"
+        try:
+            d = datetime.date.fromisoformat(r.get("date", ""))
+            date_str = f"{d.day} {d.strftime('%b')}"
+        except ValueError:
+            date_str = r.get("date", "")
+        fee_str = r.get("fee", "").strip()
+        fee_display = fee_str if fee_str else "(no fee)"
+        lines.append(f"{i}. {org} — {date_str}  {fee_display}")
+
+    return json.dumps({"result": "\n".join(lines)})
+
+
+@_handler("get_application_analytics")
+async def _handle_get_application_analytics(input_data: dict, chat_id: int) -> str:
+    days = min(max(int(input_data.get("days", 365)), 1), 730)
+    m = analytics.get_success_metrics(days)
+    lines = [
+        f"📊 Application Analytics (last {days} days)",
+        "",
+        f"Total applications: {m['total']}",
+        f"✅ Accepted:      {m['accepted']:>4}",
+        f"❌ Rejected/declined: {m['rejected']:>4}",
+        f"💤 No response:   {m['no_response']:>4}",
+        f"⏳ Still pending: {m['applied']:>4}",
+        "",
+        f"Acceptance rate: {m['acceptance_rate']}% (of resolved)",
+        f"Response rate:   {m['response_rate']}% (of resolved)",
+    ]
+    if m["avg_response_days"] is not None:
+        lines.append(f"Avg response time: {m['avg_response_days']} days")
+    else:
+        lines.append("Avg response time: not enough data")
+    return json.dumps({"result": "\n".join(lines)})
+
+
+@_handler("get_gig_breakdown")
+async def _handle_get_gig_breakdown(input_data: dict, chat_id: int) -> str:
+    days = min(max(int(input_data.get("days", 365)), 1), 730)
+    breakdown = analytics.get_gig_type_breakdown(days)
+    if not breakdown:
+        return json.dumps({"result": f"No applications in the last {days} days."})
+    sorted_types = sorted(breakdown.items(), key=lambda kv: kv[1]["count"], reverse=True)
+    max_label = max(len(t) for t, _ in sorted_types)
+    lines = [f"🎹 Gig Type Breakdown (last {days} days)", ""]
+    for gig_type, data in sorted_types:
+        label = f"{gig_type}:"
+        lines.append(
+            f"{label:<{max_label + 1}}  {data['count']:>3} applied"
+            f" | {data['accepted']:>2} accepted ({data['acceptance_rate']:.0f}%)"
+        )
+    return json.dumps({"result": "\n".join(lines)})
+
+
+@_handler("manage_applications")
+async def _handle_manage_applications(input_data: dict, chat_id: int) -> str:
+    action = input_data.get("action", "summary")
+    days = input_data.get("days", 30)
+    records = application_store.list_applications(days)
+    if action in ("summary", "list"):
+        _last_application_listing[chat_id] = records
+
+    if action == "summary":
+        counts = {
+            "accepted": sum(1 for r in records if r["status"] == "accepted"),
+            "applied": sum(1 for r in records if r["status"] == "applied"),
+            "no_response": sum(1 for r in records if r["status"] == "no_response"),
+            "declined": sum(1 for r in records if r["status"] == "declined"),
+            "rejected": sum(1 for r in records if r["status"] == "rejected"),
+        }
+        total = len(records)
+        lines = [
+            f"📋 Applications — last {days} days",
+            "",
+            f"Applied:      {total}",
+            f"Accepted:     {counts['accepted']}",
+            f"No response:  {counts['no_response']}",
+            f"Declined:     {counts['declined']}",
+            f"Rejected:     {counts['rejected']}",
+            f"Pending:      {counts['applied']}",
+        ]
+        today = datetime.date.today()
+        from_date = (today - datetime.timedelta(days=days)).isoformat()
+        to_date = today.isoformat()
+        income = application_store.get_income(from_date, to_date)
+        income_line = f"Income (accepted):  £{income['total']:.2f}"
+        if income["no_fee_count"] > 0:
+            if income["no_fee_count"] == income["count"] and income["count"] > 0:
+                income_line += f"  · all {income['count']} gig(s) have no fee recorded"
+            else:
+                n = income["no_fee_count"]
+                income_line += f"  · {n} gig{'s' if n != 1 else ''} have no fee recorded"
+        lines.append("")
+        lines.append(income_line)
+        return json.dumps({"result": "\n".join(lines)})
+
+    if action == "list":
+        if not records:
+            return json.dumps({"result": f"No applications in the last {days} days."})
+        _last_application_listing[chat_id] = records
+        _status_emoji = {
+            "accepted": "✅",
+            "applied": "⏳",
+            "no_response": "🔕",
+            "declined": "❌",
+            "rejected": "🚫",
+        }
+        lines = [f"📋 Applications — last {days} days", ""]
+        for i, r in enumerate(records, start=1):
+            emoji = _status_emoji.get(r["status"], "❓")
+            org_part = f" — {r['organisation']}" if r.get("organisation") else ""
+            date_part = _fmt_application_date(r.get("date", ""))
+            fee_part = f"  {r['fee']}" if r.get("fee") else ""
+            lines.append(f"{i}. {emoji} {r['header']}{org_part}  ({date_part}){fee_part}")
+        return json.dumps({"result": "\n".join(lines)}, ensure_ascii=False)
+
+    if action == "update":
+        n = input_data.get("number")
+        status: str = input_data.get("status") or ""
+        listing = _last_application_listing.get(chat_id)
+        if not listing:
+            return json.dumps(
+                {"error": "No application listing cached. Ask to list applications first."}
+            )
+        if n is None or n < 1 or n > len(listing):
+            return json.dumps({"error": f"No application number {n}."})
+        record = listing[n - 1]
+        url = record.get("url", "")
+        if not url:
+            return json.dumps({"error": "Cannot update a manual entry with no URL."})
+        original_status = record.get("status", "")
+        ok = application_store.update_status(url, status)
+        if ok:
+            listing[n - 1]["status"] = status
+            msg = f"Updated application {n} to '{status}'."
+            if original_status == "accepted" and status == "declined":
+                org = record.get("organisation") or record.get("header", "")
+                date = record.get("date", "")
+                # Delete travel buffer events
+                cal = _make_calendar_client()
+                if cal:
+                    for field in ("travel_before_event_id", "travel_after_event_id"):
+                        evt_id = record.get(field)
+                        if evt_id:
+                            try:
+                                cal.delete_event(evt_id)
+                            except Exception as del_exc:
+                                logger.warning(
+                                    "manage_applications: failed to delete travel buffer %s: %s",
+                                    evt_id,
+                                    del_exc,
+                                )
+                msg += (
+                    f"\n\nThis was a confirmed booking ({org} on {date}). "
+                    "Do you want to delete the calendar event?"
+                )
+            return json.dumps({"result": msg})
+        return json.dumps({"error": "Application not found in store."})
+
+    if action == "detail":
+        n = input_data.get("number")
+        listing = _last_application_listing.get(chat_id)
+        if not listing:
+            return json.dumps(
+                {
+                    "error": "No application listing cached. Ask to list or summarise applications first."
+                }
+            )
+        if n is None or n < 1 or n > len(listing):
+            return json.dumps({"error": f"No application number {n}."})
+        r = listing[n - 1]
+        lines = [
+            f"📋 Application {n} — full details",
+            "",
+            f"Header:        {r.get('header') or '—'}",
+            f"Organisation:  {r.get('organisation') or '—'}",
+            f"Date:          {r.get('date') or '—'}",
+            f"Fee:           {r.get('fee') or '—'}",
+            f"Status:        {r.get('status') or '—'}",
+            f"Email:         {r.get('email') or '—'}",
+            f"URL:           {r.get('url') or '—'}",
+            f"Applied at:    {r.get('applied_at') or '—'}",
+            f"Updated at:    {r.get('updated_at') or '—'}",
+        ]
+        return json.dumps({"result": "\n".join(lines)})
+
+    return json.dumps({"error": f"Unknown action: {action}"})
+
+
+@_handler("get_gig_stats")
+async def _handle_get_gig_stats(input_data: dict, chat_id: int) -> str:
+    days = min(max(int(input_data.get("days", 7)), 1), 90)
+    sl = _make_sheets_logger()
+    if sl is None:
+        return json.dumps({"result": "Google Sheets is not configured (GOOGLE_SHEETS_ID missing)."})
+    try:
+        runs = sl.query_run_stats(days)
+    except Exception as exc:
+        return json.dumps({"result": f"Could not reach Google Sheets: {exc}"})
+
+    if not runs:
+        return json.dumps({"result": f"No pipeline runs logged in the last {days} days."})
+
+    total_runs = len(runs)
+    total_listed = sum(r.get("listed", 0) for r in runs)
+    total_pre = sum(r.get("pre_filter_passed", 0) for r in runs)
+    total_valid = sum(r.get("valid", 0) for r in runs)
+    total_errors = sum(r.get("gig_errors", 0) for r in runs)
+    avg_listed = round(total_listed / total_runs, 1)
+    avg_pre = round(total_pre / total_runs, 1)
+    avg_valid = round(total_valid / total_runs, 1)
+
+    # Aggregate filter breakdown, stripping repr params and deduplicating.
+    # e.g. "AvailabilityFilter(mode='block', periods=7)" → "AvailabilityFilter"
+    name_totals: dict[str, int] = {}
+    for r in runs:
+        for k, v in r.get("filter_breakdown", {}).items():
+            name = k.split("(")[0]
+            name_totals[name] = name_totals.get(name, 0) + v
+    active_filters = [
+        (k, v) for k, v in sorted(name_totals.items(), key=lambda x: x[1], reverse=True) if v > 0
+    ]
+
+    def _fmt_elapsed(ms: int) -> str:
+        return f"{ms / 1000:.1f}s" if ms >= 1000 else f"{ms}ms"
+
+    lines = [
+        f"📊 *Pipeline stats — last {days} days*",
+        "",
+        f"*Runs:* {total_runs}",
+        f"*Listed:*      {total_listed:>5}  ({avg_listed}/run)",
+        f"*Pre-filter:*  {total_pre:>5}  ({avg_pre}/run)",
+        f"*Valid:*       {total_valid:>5}  ({avg_valid}/run)",
+        f"*Errors:* {total_errors}",
+    ]
+
+    if active_filters:
+        max_len = max(len(k) for k, _ in active_filters)
+        lines += ["", "*🔍 Filter rejections:*"]
+        for k, v in active_filters:
+            pct = round(v / total_listed * 100) if total_listed else 0
+            lines.append(f"`{k:<{max_len}}  {v:>4}  ({pct}%)`")
+
+    lines += ["", "*📅 Recent runs:*"]
+    for r in runs[:5]:
+        ts = r["timestamp"][:16].replace("T", " ")
+        listed = r.get("listed", 0)
+        pre = r.get("pre_filter_passed", 0)
+        valid = r.get("valid", 0)
+        t = _fmt_elapsed(r.get("elapsed_ms", 0))
+        lines.append(f"`{ts}  {listed}→{pre}→{valid}  {t}`")
+
+    return json.dumps({"result": "\n".join(lines)})
+
+
+# ── Config tools ─────────────────────────────────────────────────────────────
+
+
+@_handler("clear_conversation")
+async def _handle_clear_conversation(input_data: dict, chat_id: int) -> str:
+    reset_conversation(chat_id)
+    return json.dumps({"result": "Conversation cleared."})
+
+
+@_handler("manage_config")
+async def _handle_manage_config(input_data: dict, chat_id: int) -> str:
+    action = input_data["action"]
+
+    _RANGES: dict[str, tuple[int, int]] = {
+        "min_fee": (0, 100_000),
+        "max_travel_minutes": (1, 300),
+        "poll_minutes": (1, 60),
+    }
+    _DEFAULTS = {
+        "min_fee": settings.min_fee,
+        "max_travel_minutes": settings.max_travel_minutes,
+        "poll_minutes": settings.poll_minutes,
+    }
+
+    if action == "get":
+        overrides = runtime_config.all()
+        lines = []
+        for key, default in _DEFAULTS.items():
+            if key in overrides:
+                lines.append(f"{key:<20} {overrides[key]}  (override, default: {default})")
+            else:
+                lines.append(f"{key:<20} {default}  (default)")
+        return json.dumps({"result": "\n".join(lines)})
+
+    if action == "set":
+        key = input_data.get("key", "")
+        value = input_data.get("value")
+        if key not in _RANGES:
+            return json.dumps({"result": f"Unknown key '{key}'. Valid keys: {', '.join(_RANGES)}."})
+        if value is None:
+            return json.dumps({"result": "value is required for set."})
+        lo, hi = _RANGES[key]
+        if not (lo <= int(value) <= hi):
+            return json.dumps(
+                {"result": f"Invalid value {value} for {key}. Must be between {lo} and {hi}."}
+            )
+        runtime_config.set(key, int(value))
+        return json.dumps(
+            {"result": f"{key} set to {value}. Takes effect on the next polling tick."}
+        )
+
+    if action == "reset":
+        key = input_data.get("key", "")
+        if key not in _DEFAULTS:
+            return json.dumps(
+                {"result": f"Unknown key '{key}'. Valid keys: {', '.join(_DEFAULTS)}."}
+            )
+        existed = runtime_config.reset(key)
+        if existed:
+            return json.dumps({"result": f"{key} reset to default ({_DEFAULTS[key]})."})
+        return json.dumps({"result": f"{key} was already using the default ({_DEFAULTS[key]})."})
+
+    return json.dumps({"error": f"Unknown action: {action}"})
 
 
 async def process_message(chat_id: int, text: str) -> list[AgentResponse]:
