@@ -7,11 +7,15 @@ import sys
 
 src = open(sys.argv[1]).read()
 
-# Locate TOOLS = [...] using bracket-depth counting
-tools_marker = "TOOLS = ["
-ts = src.index(tools_marker)
+# Locate the TOOLS list using bracket-depth counting. Allow an optional type
+# annotation, e.g. `TOOLS: list[dict] = [`. Exit quietly if there's no TOOLS
+# list in this file so the hook can never crash on an unrelated edit.
+m = re.search(r"^TOOLS\b[^\n=]*=\s*\[", src, re.MULTILINE)
+if m is None:
+    sys.exit(0)
+ts = m.start()
 depth = 0
-pos = ts + len(tools_marker)
+pos = m.end()
 te = pos
 for i, c in enumerate(src[pos:]):
     if c == "[":

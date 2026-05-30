@@ -133,7 +133,7 @@ def build_message() -> str:
             num = inv.get("invoice_number", "?")
             client = inv.get("client_name", inv.get("client", "?"))
             total = inv.get("total", "")
-            total_str = f"£{total:.2f}" if isinstance(total, (int, float)) else str(total)
+            total_str = f"£{total:.2f}" if isinstance(total, int | float) else str(total)
             lines.append(f"  • #{num} — {client} ({total_str})")
         if len(outstanding) > 5:
             lines.append(f"  … and {len(outstanding) - 5} more")
