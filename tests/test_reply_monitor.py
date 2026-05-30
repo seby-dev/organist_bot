@@ -1,7 +1,9 @@
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
+
+import anthropic  # used to construct real TextBlock instances in classify tests
 
 import organist_bot.reply_monitor  # noqa: F401 — ensures module is resolvable by patch()
-from organist_bot.reply_monitor import check_replies
+from organist_bot.reply_monitor import _classify_reply, check_replies
 
 
 def _make_record(url, email, status, reply_message_id=None):
@@ -311,8 +313,6 @@ class TestCancellationDeletesBuffers:
         }
 
     def test_cancellation_deletes_travel_buffer_events(self):
-        from unittest.mock import MagicMock
-
         records = [self._make_record("http://a.com/1", "church@example.com")]
         messages = [
             {
@@ -349,3 +349,94 @@ class TestCancellationDeletesBuffers:
         deleted_ids = [c.args[0] for c in mock_cal.delete_event.call_args_list]
         assert "before_abc" in deleted_ids
         assert "after_def" in deleted_ids
+
+
+# ── _classify_reply unit tests ────────────────────────────────────────────────
+
+
+def _make_text_block(text: str) -> anthropic.types.TextBlock:
+    """Return a real anthropic.types.TextBlock with the given text."""
+    return anthropic.types.TextBlock(type="text", text=text)
+
+
+def _make_anthropic_response(text: str) -> MagicMock:
+    """Return a mock whose .content[0] is a real TextBlock."""
+    resp = MagicMock()
+    resp.content = [_make_text_block(text)]
+    return resp
+
+
+class TestClassifyReply:
+    """Unit tests for _classify_reply — patches anthropic.Anthropic at the module level."""
+
+    _MSG = {"sender": "church@example.com", "body": "We'd love to book you."}
+    _REC = {"organisation": "St John", "date": "2026-06-15"}
+
+    def _patch_client(self, response):
+        """Patch anthropic.Anthropic in reply_monitor so .messages.create returns *response*."""
+        mock_client = MagicMock()
+        mock_client.messages.create.return_value = response
+        mock_anthropic_cls = MagicMock(return_value=mock_client)
+        return patch(
+            "organist_bot.reply_monitor.anthropic.Anthropic", mock_anthropic_cls
+        ), mock_client
+
+    # (a) valid label "accepted" is returned as-is
+    def test_accepted_label_returned(self):
+        ctx, mock_client = self._patch_client(_make_anthropic_response("accepted"))
+        with (
+            ctx,
+            patch("organist_bot.reply_monitor.settings") as s,
+        ):
+            s.anthropic_api_key = "key"
+            result = _classify_reply(self._MSG, self._REC)
+        assert result == "accepted"
+        mock_client.messages.create.assert_called_once()
+
+    # (a) second valid label: "rejected"
+    def test_rejected_label_returned(self):
+        ctx, _mock_client = self._patch_client(_make_anthropic_response("rejected"))
+        with (
+            ctx,
+            patch("organist_bot.reply_monitor.settings") as s,
+        ):
+            s.anthropic_api_key = "key"
+            result = _classify_reply(self._MSG, self._REC)
+        assert result == "rejected"
+
+    # (b) an unexpected label from the model normalises to "unclear"
+    def test_unexpected_label_normalises_to_unclear(self):
+        ctx, _mock_client = self._patch_client(_make_anthropic_response("DEFINITELY_NOT_A_LABEL"))
+        with (
+            ctx,
+            patch("organist_bot.reply_monitor.settings") as s,
+        ):
+            s.anthropic_api_key = "key"
+            result = _classify_reply(self._MSG, self._REC)
+        # Must be exactly "unclear", NOT the raw unexpected label
+        assert result == "unclear"
+
+    # (b) whitespace / mixed-case in unexpected label still normalises to "unclear"
+    def test_unexpected_label_with_extra_whitespace_normalises_to_unclear(self):
+        ctx, _mock_client = self._patch_client(_make_anthropic_response("  MAYBE  "))
+        with (
+            ctx,
+            patch("organist_bot.reply_monitor.settings") as s,
+        ):
+            s.anthropic_api_key = "key"
+            result = _classify_reply(self._MSG, self._REC)
+        assert result == "unclear"
+
+    # (c) API exception does not propagate and returns "unclear"
+    def test_api_exception_returns_unclear_without_raising(self):
+        mock_client = MagicMock()
+        mock_client.messages.create.side_effect = Exception("network timeout")
+        mock_anthropic_cls = MagicMock(return_value=mock_client)
+        with (
+            patch("organist_bot.reply_monitor.anthropic.Anthropic", mock_anthropic_cls),
+            patch("organist_bot.reply_monitor.settings") as s,
+        ):
+            s.anthropic_api_key = "key"
+            result = _classify_reply(self._MSG, self._REC)
+        # Must not raise; must fall back to "unclear"
+        assert result == "unclear"
