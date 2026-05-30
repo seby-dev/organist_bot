@@ -29,13 +29,26 @@
     ]
   },
   "hooks": {
-    "PostToolUse": [
+    "PreToolUse": [
       {
-        "matcher": "mcp__github__create_pull_request",
+        "matcher": "Bash",
         "hooks": [
           {
             "type": "command",
-            "command": "python /home/user/organist_bot/.claude/hooks/post_pr_created.py"
+            "command": "bash \"${CLAUDE_PROJECT_DIR}/.claude/hooks/require_pr_reviewers.sh\"",
+            "if": "Bash(gh pr create:*)"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PROJECT_DIR}/.claude/hooks/post_pr_created.py\"",
+            "if": "Bash(gh pr create:*)"
           }
         ]
       },
@@ -44,15 +57,15 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python /home/user/organist_bot/.claude/hooks/validate_filter_registration.py"
+            "command": "python3 \"${CLAUDE_PROJECT_DIR}/.claude/hooks/validate_filter_registration.py\""
           },
           {
             "type": "command",
-            "command": "python /home/user/organist_bot/.claude/hooks/validate_invoice_tools.py /home/user/organist_bot/organist_bot/integrations/unified_agent.py"
+            "command": "python3 \"${CLAUDE_PROJECT_DIR}/.claude/hooks/validate_invoice_tools.py\" \"${CLAUDE_PROJECT_DIR}/organist_bot/integrations/unified_agent.py\""
           },
           {
             "type": "command",
-            "command": "python /home/user/organist_bot/.claude/hooks/post_edit_lint.py"
+            "command": "python3 \"${CLAUDE_PROJECT_DIR}/.claude/hooks/post_edit_lint.py\""
           }
         ]
       }
@@ -62,7 +75,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python /home/user/organist_bot/.claude/hooks/stop_quality_check.py"
+            "command": "python3 \"${CLAUDE_PROJECT_DIR}/.claude/hooks/stop_quality_check.py\""
           }
         ]
       }
