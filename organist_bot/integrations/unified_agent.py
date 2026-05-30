@@ -703,135 +703,6 @@ async def _execute_tool(name: str, input_data: dict, chat_id: int) -> str:
     if handler is not None:
         return await handler(input_data, chat_id)
 
-    if name == "generate_invoice":
-        try:
-            result = await generate_invoice(
-                client_key=input_data["client_key"],
-                items=input_data["items"],
-            )
-        except (ValueError, KeyError) as e:
-            return json.dumps({"error": str(e)})
-        _last_invoice[chat_id] = result
-        return json.dumps(
-            {
-                "result": "Invoice generated successfully.",
-                "pdf_path": str(result["pdf_path"]),
-                "client_name": result["client_name"],
-                "client_email": result["client_email"],
-                "invoice_number": result["invoice_number"],
-                "total": result["total"],
-                "currency": result["currency"],
-            }
-        )
-
-    if name == "duplicate_invoice":
-        invoices = load_invoices()
-        inv_num = input_data["invoice_number"]
-        if inv_num not in invoices:
-            return json.dumps({"error": f"Invoice '{inv_num}' not found in history."})
-        original = invoices[inv_num]
-        result = await generate_invoice(
-            client_key=original["client_key"],
-            items=original["items"],
-        )
-        _last_invoice[chat_id] = result
-        return json.dumps(
-            {
-                "result": f"Duplicate invoice created (original: {inv_num}).",
-                "pdf_path": str(result["pdf_path"]),
-                "invoice_number": result["invoice_number"],
-                "client_name": result["client_name"],
-                "total": result["total"],
-                "currency": result["currency"],
-            }
-        )
-
-    if name == "send_invoice_email":
-        inv = _last_invoice.get(chat_id)
-        if not inv:
-            return json.dumps({"error": "No invoice has been generated yet in this session."})
-        email_result = send_invoice_email(inv)
-        if email_result["success"]:
-            mark_invoice_emailed(inv["invoice_number"])
-            cc_list = inv.get("client_cc", [])
-            cc_msg = f" (CC: {', '.join(cc_list)})" if cc_list else ""
-            return json.dumps({"result": f"Invoice emailed to {inv['client_email']}{cc_msg}."})
-        return json.dumps({"error": email_result["error"]})
-
-    if name == "resend_invoice":
-        invoices = load_invoices()
-        inv_num = input_data["invoice_number"]
-        if inv_num not in invoices:
-            return json.dumps({"error": f"Invoice '{inv_num}' not found in history."})
-        inv = cast(dict, invoices[inv_num])
-        email_result = send_invoice_email(inv)
-        if email_result["success"]:
-            mark_invoice_emailed(inv_num)
-            return json.dumps({"result": f"Invoice {inv_num} re-sent to {inv['client_email']}."})
-        return json.dumps({"error": email_result["error"]})
-
-    if name == "mark_invoice_paid":
-        inv_num = input_data["invoice_number"]
-        ok = mark_invoice_paid(inv_num)
-        if not ok:
-            return json.dumps({"error": f"Invoice {inv_num} not found."})
-        return json.dumps({"result": f"✅ Invoice {inv_num} marked as paid."})
-
-    if name == "list_invoices":
-        invoices = load_invoices()
-        if not invoices:
-            return json.dumps({"result": "No invoices found."})
-
-        import datetime as _dt
-
-        now = _dt.datetime.now(_dt.UTC)
-
-        def _payment_status(r: dict) -> str:
-            if r.get("paid_at"):
-                return "✅ paid"
-            emailed_at_str = r.get("emailed_at")
-            if not r.get("emailed") or not emailed_at_str:
-                return "not sent"
-            try:
-                emailed_at = _dt.datetime.fromisoformat(emailed_at_str.replace("Z", "+00:00"))
-                days = (now - emailed_at).days
-                if days >= 5:
-                    return f"⏰ overdue ({days}d)"
-                return f"emailed {days}d ago"
-            except ValueError:
-                return "emailed"
-
-        records = list(invoices.values())
-        records.sort(key=lambda r: r.get("created_at", ""), reverse=True)
-        lines = ["📄 Invoices (most recent first)", ""]
-        for r in records[:20]:
-            pay_status = _payment_status(r)
-            lines.append(
-                f"{r['invoice_number']}  {r.get('client_name', '?'):<20}"
-                f"  £{r.get('total', 0):.2f}  {r.get('date', '?')}  {pay_status}"
-            )
-        return json.dumps({"result": "\n".join(lines)})
-
-    if name == "get_invoice":
-        invoices = load_invoices()
-        inv_num = input_data["invoice_number"]
-        if inv_num not in invoices:
-            return json.dumps({"error": f"Invoice '{inv_num}' not found in history."})
-        inv = cast(dict, invoices[inv_num])
-        _last_invoice[chat_id] = inv
-        return json.dumps(
-            {
-                "result": "Invoice found.",
-                "invoice_number": inv["invoice_number"],
-                "client_name": inv["client_name"],
-                "date": inv["date"],
-                "total": inv["total"],
-                "currency": inv["currency"],
-                "emailed": inv.get("emailed", False),
-                "pdf_path": inv["pdf_path"],
-            }
-        )
-
     # ── manage_blacklist ────────────────────────────────────────────────────
     if name == "manage_blacklist":
         action = input_data["action"]
@@ -1556,6 +1427,152 @@ async def _handle_delete_client(input_data: dict, chat_id: int) -> str:
         return json.dumps({"result": f"Client '{input_data['key']}' deleted."})
     except ValueError as e:
         return json.dumps({"error": str(e)})
+
+
+# ── Invoice tools ────────────────────────────────────────────────────────────
+
+
+@_handler("generate_invoice")
+async def _handle_generate_invoice(input_data: dict, chat_id: int) -> str:
+    try:
+        result = await generate_invoice(
+            client_key=input_data["client_key"],
+            items=input_data["items"],
+        )
+    except (ValueError, KeyError) as e:
+        return json.dumps({"error": str(e)})
+    _last_invoice[chat_id] = result
+    return json.dumps(
+        {
+            "result": "Invoice generated successfully.",
+            "pdf_path": str(result["pdf_path"]),
+            "client_name": result["client_name"],
+            "client_email": result["client_email"],
+            "invoice_number": result["invoice_number"],
+            "total": result["total"],
+            "currency": result["currency"],
+        }
+    )
+
+
+@_handler("duplicate_invoice")
+async def _handle_duplicate_invoice(input_data: dict, chat_id: int) -> str:
+    invoices = load_invoices()
+    inv_num = input_data["invoice_number"]
+    if inv_num not in invoices:
+        return json.dumps({"error": f"Invoice '{inv_num}' not found in history."})
+    original = invoices[inv_num]
+    result = await generate_invoice(
+        client_key=original["client_key"],
+        items=original["items"],
+    )
+    _last_invoice[chat_id] = result
+    return json.dumps(
+        {
+            "result": f"Duplicate invoice created (original: {inv_num}).",
+            "pdf_path": str(result["pdf_path"]),
+            "invoice_number": result["invoice_number"],
+            "client_name": result["client_name"],
+            "total": result["total"],
+            "currency": result["currency"],
+        }
+    )
+
+
+@_handler("send_invoice_email")
+async def _handle_send_invoice_email(input_data: dict, chat_id: int) -> str:
+    inv = _last_invoice.get(chat_id)
+    if not inv:
+        return json.dumps({"error": "No invoice has been generated yet in this session."})
+    email_result = send_invoice_email(inv)
+    if email_result["success"]:
+        mark_invoice_emailed(inv["invoice_number"])
+        cc_list = inv.get("client_cc", [])
+        cc_msg = f" (CC: {', '.join(cc_list)})" if cc_list else ""
+        return json.dumps({"result": f"Invoice emailed to {inv['client_email']}{cc_msg}."})
+    return json.dumps({"error": email_result["error"]})
+
+
+@_handler("resend_invoice")
+async def _handle_resend_invoice(input_data: dict, chat_id: int) -> str:
+    invoices = load_invoices()
+    inv_num = input_data["invoice_number"]
+    if inv_num not in invoices:
+        return json.dumps({"error": f"Invoice '{inv_num}' not found in history."})
+    inv = cast(dict, invoices[inv_num])
+    email_result = send_invoice_email(inv)
+    if email_result["success"]:
+        mark_invoice_emailed(inv_num)
+        return json.dumps({"result": f"Invoice {inv_num} re-sent to {inv['client_email']}."})
+    return json.dumps({"error": email_result["error"]})
+
+
+@_handler("mark_invoice_paid")
+async def _handle_mark_invoice_paid(input_data: dict, chat_id: int) -> str:
+    inv_num = input_data["invoice_number"]
+    ok = mark_invoice_paid(inv_num)
+    if not ok:
+        return json.dumps({"error": f"Invoice {inv_num} not found."})
+    return json.dumps({"result": f"✅ Invoice {inv_num} marked as paid."})
+
+
+@_handler("list_invoices")
+async def _handle_list_invoices(input_data: dict, chat_id: int) -> str:
+    invoices = load_invoices()
+    if not invoices:
+        return json.dumps({"result": "No invoices found."})
+
+    import datetime as _dt
+
+    now = _dt.datetime.now(_dt.UTC)
+
+    def _payment_status(r: dict) -> str:
+        if r.get("paid_at"):
+            return "✅ paid"
+        emailed_at_str = r.get("emailed_at")
+        if not r.get("emailed") or not emailed_at_str:
+            return "not sent"
+        try:
+            emailed_at = _dt.datetime.fromisoformat(emailed_at_str.replace("Z", "+00:00"))
+            days = (now - emailed_at).days
+            if days >= 5:
+                return f"⏰ overdue ({days}d)"
+            return f"emailed {days}d ago"
+        except ValueError:
+            return "emailed"
+
+    records = list(invoices.values())
+    records.sort(key=lambda r: r.get("created_at", ""), reverse=True)
+    lines = ["📄 Invoices (most recent first)", ""]
+    for r in records[:20]:
+        pay_status = _payment_status(r)
+        lines.append(
+            f"{r['invoice_number']}  {r.get('client_name', '?'):<20}"
+            f"  £{r.get('total', 0):.2f}  {r.get('date', '?')}  {pay_status}"
+        )
+    return json.dumps({"result": "\n".join(lines)})
+
+
+@_handler("get_invoice")
+async def _handle_get_invoice(input_data: dict, chat_id: int) -> str:
+    invoices = load_invoices()
+    inv_num = input_data["invoice_number"]
+    if inv_num not in invoices:
+        return json.dumps({"error": f"Invoice '{inv_num}' not found in history."})
+    inv = cast(dict, invoices[inv_num])
+    _last_invoice[chat_id] = inv
+    return json.dumps(
+        {
+            "result": "Invoice found.",
+            "invoice_number": inv["invoice_number"],
+            "client_name": inv["client_name"],
+            "date": inv["date"],
+            "total": inv["total"],
+            "currency": inv["currency"],
+            "emailed": inv.get("emailed", False),
+            "pdf_path": inv["pdf_path"],
+        }
+    )
 
 
 async def process_message(chat_id: int, text: str) -> list[AgentResponse]:
