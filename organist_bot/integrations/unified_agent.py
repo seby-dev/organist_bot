@@ -703,111 +703,6 @@ async def _execute_tool(name: str, input_data: dict, chat_id: int) -> str:
     if handler is not None:
         return await handler(input_data, chat_id)
 
-    # ── manage_blacklist ────────────────────────────────────────────────────
-    if name == "manage_blacklist":
-        action = input_data["action"]
-        if action == "list":
-            emails = filter_store.blacklist_emails()
-            return (
-                json.dumps({"blacklist": emails})
-                if emails
-                else json.dumps({"result": "Blacklist is empty."})
-            )
-        email = input_data.get("email", "")
-        if action == "add":
-            added = filter_store.add_blacklist_email(email)
-            msg = (
-                f"Added '{email}' to blacklist."
-                if added
-                else f"'{email}' is already in the blacklist."
-            )
-            return json.dumps({"result": msg})
-        if action == "remove":
-            removed = filter_store.remove_blacklist_email(email)
-            msg = (
-                f"Removed '{email}' from blacklist."
-                if removed
-                else f"'{email}' not found in blacklist."
-            )
-            return json.dumps({"result": msg})
-        return json.dumps({"error": f"Unknown action: {action}"})
-
-    # ── manage_unavailable ──────────────────────────────────────────────────
-    if name == "manage_unavailable":
-        action = input_data["action"]
-        if action == "list":
-            periods = filter_store.unavailable_periods()
-            return (
-                json.dumps({"unavailable_periods": periods})
-                if periods
-                else json.dumps({"result": "No unavailable periods set."})
-            )
-        period = _resolve_period(input_data.get("period", ""))
-        if action == "add":
-            added = filter_store.add_period("unavailable_periods", period)
-            msg = (
-                f"Marked '{period}' as unavailable."
-                if added
-                else f"'{period}' already in unavailable list."
-            )
-            cal = _make_calendar_client()
-            if cal:
-                try:
-                    cal.block_period(period)
-                except Exception:
-                    logger.warning(
-                        "manage_unavailable: failed to block calendar for %r", period, exc_info=True
-                    )
-            return json.dumps({"result": msg})
-        if action == "remove":
-            removed = filter_store.remove_period("unavailable_periods", period)
-            msg = (
-                f"Removed '{period}' from unavailable periods."
-                if removed
-                else f"'{period}' not found."
-            )
-            cal = _make_calendar_client()
-            if cal:
-                try:
-                    cal.unblock_period(period)
-                except Exception:
-                    logger.warning(
-                        "manage_unavailable: failed to unblock calendar for %r",
-                        period,
-                        exc_info=True,
-                    )
-            return json.dumps({"result": msg})
-        return json.dumps({"error": f"Unknown action: {action}"})
-
-    # ── manage_available ────────────────────────────────────────────────────
-    if name == "manage_available":
-        action = input_data["action"]
-        if action == "list":
-            periods = filter_store.available_only_periods()
-            return (
-                json.dumps({"available_only_periods": periods})
-                if periods
-                else json.dumps({"result": "No available-only periods set."})
-            )
-        period = input_data.get("period", "")
-        if action == "add":
-            added = filter_store.add_period("available_only_periods", period)
-            msg = (
-                f"Added '{period}' to available-only periods."
-                if added
-                else f"'{period}' already present."
-            )
-            return json.dumps({"result": msg})
-        if action == "remove":
-            removed = filter_store.remove_period("available_only_periods", period)
-            msg = (
-                f"Removed '{period}' from available-only periods."
-                if removed
-                else f"'{period}' not found."
-            )
-            return json.dumps({"result": msg})
-        return json.dumps({"error": f"Unknown action: {action}"})
-
     # ── get_income_forecast ──────────────────────────────────────────────────
     if name == "get_income_forecast":
         from_date = input_data.get("from_date", "")
@@ -1573,6 +1468,113 @@ async def _handle_get_invoice(input_data: dict, chat_id: int) -> str:
             "pdf_path": inv["pdf_path"],
         }
     )
+
+
+# ── Filter tools ────────────────────────────────────────────────────────────
+
+
+@_handler("manage_blacklist")
+async def _handle_manage_blacklist(input_data: dict, chat_id: int) -> str:
+    action = input_data["action"]
+    if action == "list":
+        emails = filter_store.blacklist_emails()
+        return (
+            json.dumps({"blacklist": emails})
+            if emails
+            else json.dumps({"result": "Blacklist is empty."})
+        )
+    email = input_data.get("email", "")
+    if action == "add":
+        added = filter_store.add_blacklist_email(email)
+        msg = (
+            f"Added '{email}' to blacklist." if added else f"'{email}' is already in the blacklist."
+        )
+        return json.dumps({"result": msg})
+    if action == "remove":
+        removed = filter_store.remove_blacklist_email(email)
+        msg = (
+            f"Removed '{email}' from blacklist."
+            if removed
+            else f"'{email}' not found in blacklist."
+        )
+        return json.dumps({"result": msg})
+    return json.dumps({"error": f"Unknown action: {action}"})
+
+
+@_handler("manage_unavailable")
+async def _handle_manage_unavailable(input_data: dict, chat_id: int) -> str:
+    action = input_data["action"]
+    if action == "list":
+        periods = filter_store.unavailable_periods()
+        return (
+            json.dumps({"unavailable_periods": periods})
+            if periods
+            else json.dumps({"result": "No unavailable periods set."})
+        )
+    period = _resolve_period(input_data.get("period", ""))
+    if action == "add":
+        added = filter_store.add_period("unavailable_periods", period)
+        msg = (
+            f"Marked '{period}' as unavailable."
+            if added
+            else f"'{period}' already in unavailable list."
+        )
+        cal = _make_calendar_client()
+        if cal:
+            try:
+                cal.block_period(period)
+            except Exception:
+                logger.warning(
+                    "manage_unavailable: failed to block calendar for %r", period, exc_info=True
+                )
+        return json.dumps({"result": msg})
+    if action == "remove":
+        removed = filter_store.remove_period("unavailable_periods", period)
+        msg = (
+            f"Removed '{period}' from unavailable periods." if removed else f"'{period}' not found."
+        )
+        cal = _make_calendar_client()
+        if cal:
+            try:
+                cal.unblock_period(period)
+            except Exception:
+                logger.warning(
+                    "manage_unavailable: failed to unblock calendar for %r",
+                    period,
+                    exc_info=True,
+                )
+        return json.dumps({"result": msg})
+    return json.dumps({"error": f"Unknown action: {action}"})
+
+
+@_handler("manage_available")
+async def _handle_manage_available(input_data: dict, chat_id: int) -> str:
+    action = input_data["action"]
+    if action == "list":
+        periods = filter_store.available_only_periods()
+        return (
+            json.dumps({"available_only_periods": periods})
+            if periods
+            else json.dumps({"result": "No available-only periods set."})
+        )
+    period = input_data.get("period", "")
+    if action == "add":
+        added = filter_store.add_period("available_only_periods", period)
+        msg = (
+            f"Added '{period}' to available-only periods."
+            if added
+            else f"'{period}' already present."
+        )
+        return json.dumps({"result": msg})
+    if action == "remove":
+        removed = filter_store.remove_period("available_only_periods", period)
+        msg = (
+            f"Removed '{period}' from available-only periods."
+            if removed
+            else f"'{period}' not found."
+        )
+        return json.dumps({"result": msg})
+    return json.dumps({"error": f"Unknown action: {action}"})
 
 
 async def process_message(chat_id: int, text: str) -> list[AgentResponse]:
