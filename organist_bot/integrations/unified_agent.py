@@ -703,210 +703,6 @@ async def _execute_tool(name: str, input_data: dict, chat_id: int) -> str:
     if handler is not None:
         return await handler(input_data, chat_id)
 
-    # ── fetch_gig_details ───────────────────────────────────────────────────
-    if name == "fetch_gig_details":
-        try:
-            scraper = Scraper()
-            html = scraper.fetch(input_data["url"])
-            basic = scraper.extract_basic_from_detail(html, input_data["url"])
-            full = scraper.extract_full_details(html)
-            details = {**basic, **full}
-            scraper.session.close()
-            return json.dumps({k: v for k, v in details.items() if v is not None})
-        except Exception as exc:
-            return json.dumps({"error": str(exc)})
-
-    # ── add_gig ─────────────────────────────────────────────────────────────
-    if name == "add_gig":
-        confirmed = input_data.get("confirmed", False)
-        fields = {
-            "header": input_data.get("header", ""),
-            "organisation": input_data.get("organisation") or "",
-            "locality": input_data.get("locality") or "",
-            "date": input_data.get("date", ""),
-            "time": input_data.get("time", ""),
-            "fee": input_data.get("fee") or "not specified",
-        }
-        if not confirmed:
-            return (
-                "*Please confirm the following gig:*\n"
-                f"• *Title:* {fields['header']}\n"
-                f"• *Organisation:* {fields['organisation']}\n"
-                f"• *Locality:* {fields['locality']}\n"
-                f"• *Date:* {fields['date']}\n"
-                f"• *Time:* {fields['time']}\n"
-                f"• *Fee:* {fields['fee']}\n\n"
-                "Reply *yes* to add to calendar, or tell me what to change."
-            )
-        try:
-            cal = _make_calendar_client()
-            if cal is None:
-                return json.dumps({"error": "Google Calendar not configured."})
-            gig = Gig(
-                header=fields["header"],
-                organisation=fields["organisation"],
-                locality=fields["locality"],
-                date=fields["date"],
-                time=fields["time"],
-                fee=fields["fee"] if fields["fee"] != "not specified" else None,
-                link="",
-            )
-            event_id = cal.add_gig(gig)
-            url = input_data.get("url") or None
-            # Travel buffers (non-fatal — gig event already created)
-            try:
-                postcode = input_data.get("postcode", "")
-                yyyymmdd_buf = normalize_to_yyyymmdd(fields["date"])
-                start_time_buf = parse_start_time(fields["time"])
-                if yyyymmdd_buf and start_time_buf:
-                    buf_date = datetime.datetime.strptime(yyyymmdd_buf, "%Y%m%d").date()
-                    buf_start = datetime.datetime.combine(buf_date, start_time_buf)
-                    buf_end = buf_start + datetime.timedelta(hours=1)
-                    travel_mins = travel.get_travel_minutes(postcode) or settings.max_travel_minutes
-                    before_id, after_id = cal.add_travel_buffers(
-                        gig_summary=f"{fields['header']} — {fields['organisation']}",
-                        start_dt=buf_start,
-                        end_dt=buf_end,
-                        travel_minutes=travel_mins,
-                    )
-                    if url:
-                        application_store.update_travel_buffer_ids(url, before_id, after_id)
-            except Exception as buf_exc:
-                logger.warning("add_gig: travel buffer creation failed: %s", buf_exc)
-            yyyymmdd = normalize_to_yyyymmdd(fields["date"])
-            if yyyymmdd:
-                try:
-                    date_str = datetime.datetime.strptime(yyyymmdd, "%Y%m%d").strftime("%Y-%m-%d")
-                    filter_store.add_period("unavailable_periods", date_str)
-                except Exception:
-                    logger.warning(
-                        "Failed to add gig date to unavailable periods",
-                        extra={"date": fields["date"]},
-                    )
-            try:
-                application_store.upsert_accepted(
-                    url=url,
-                    header=fields["header"],
-                    organisation=fields.get("organisation", ""),
-                    date=fields["date"],
-                    fee=fields["fee"] if fields["fee"] != "not specified" else "",
-                    postcode=input_data.get("postcode", ""),
-                    time=fields.get("time", ""),
-                )
-            except Exception:
-                logger.warning(
-                    "add_gig: upsert_accepted failed",
-                    extra={"url": url},
-                    exc_info=True,
-                )
-            return json.dumps({"result": f"Added to calendar. Event ID: {event_id}"})
-        except Exception as exc:
-            return json.dumps({"error": str(exc)})
-
-    # ── list_upcoming_gigs ──────────────────────────────────────────────────
-    if name == "list_upcoming_gigs":
-        cal = _make_calendar_client()
-        if cal is None:
-            return json.dumps({"error": "Google Calendar not configured."})
-        max_results = input_data.get("max_results", 10)
-        events = cal.list_upcoming_events(max_results=max_results)
-        events = [e for e in events if e.get("summary", "").strip() != "Unavailable"]
-        events = sorted(events, key=lambda e: e["start_dt"])
-        _last_gig_listing[chat_id] = events
-        if not events:
-            return json.dumps({"result": "No upcoming gigs found."})
-        lines = [f"🎵 *Upcoming Gigs* ({len(events)})"]
-        for i, ev in enumerate(events, start=1):
-            start_dt = ev["start_dt"]
-            time_str = start_dt.strftime("%I:%M%p").lstrip("0").lower()
-            date_str = start_dt.strftime("%a %d %b %Y").replace(" 0", " ")
-            lines.append(f"{i}. *{ev['summary']}*\n   {date_str} · {time_str}")
-        return json.dumps({"result": "\n\n".join(lines)})
-
-    # ── delete_gig ──────────────────────────────────────────────────────────
-    if name == "delete_gig":
-        n = input_data["number"]
-        listing = _last_gig_listing.get(chat_id)
-        if not listing:
-            return json.dumps({"error": "No gig listing cached. Ask me to list your gigs first."})
-        if n < 1 or n > len(listing):
-            return json.dumps(
-                {"error": f"No gig number {n}. There are {len(listing)} gigs in the last listing."}
-            )
-        cal = _make_calendar_client()
-        if cal is None:
-            return json.dumps({"error": "Google Calendar not configured."})
-        event = listing[n - 1]
-        try:
-            cal.delete_event(event["id"])
-        except Exception as exc:
-            return json.dumps({"error": str(exc)})
-        filter_store.remove_period("unavailable_periods", event["date_str"])
-        _last_gig_listing[chat_id] = [e for i, e in enumerate(listing) if i != n - 1]
-        return json.dumps(
-            {"result": f"Deleted {event['summary']}. Date removed from unavailable if present."}
-        )
-
-    # ── edit_gig ─────────────────────────────────────────────────────────────
-    if name == "edit_gig":
-        n = input_data["number"]
-        listing = _last_gig_listing.get(chat_id)
-        if not listing:
-            return json.dumps({"error": "No gig listing cached. Ask me to list your gigs first."})
-        if n < 1 or n > len(listing):
-            return json.dumps(
-                {"error": f"No gig number {n}. There are {len(listing)} gigs listed."}
-            )
-        event = listing[n - 1]
-        cal = _make_calendar_client()
-        if cal is None:
-            return json.dumps({"error": "Google Calendar not configured."})
-
-        new_summary = input_data.get("summary")
-        new_date_str = input_data.get("date")
-        new_time_str = input_data.get("time")
-
-        new_start_dt = None
-        old_date_str = event["date_str"]
-
-        if new_date_str or new_time_str:
-            if new_date_str:
-                normalized = normalize_to_yyyymmdd(new_date_str)
-                if not normalized:
-                    return json.dumps({"error": f"Cannot parse date: {new_date_str!r}"})
-                base_date = datetime.datetime.strptime(normalized, "%Y%m%d").date()
-            else:
-                base_date = event["start_dt"].date()
-
-            if new_time_str:
-                parsed_time = parse_start_time(new_time_str)
-                if not parsed_time:
-                    return json.dumps({"error": f"Cannot parse time: {new_time_str!r}"})
-            else:
-                parsed_time = event["start_dt"].time()
-
-            assert parsed_time is not None  # guarded by early return above
-            new_start_dt = datetime.datetime.combine(base_date, parsed_time, tzinfo=datetime.UTC)
-
-        try:
-            cal.update_event(event["id"], summary=new_summary, start_dt=new_start_dt)
-        except Exception as exc:
-            return json.dumps({"error": str(exc)})
-
-        if new_start_dt:
-            new_date_iso = new_start_dt.date().isoformat()
-            if new_date_iso != old_date_str:
-                filter_store.remove_period("unavailable_periods", old_date_str)
-                filter_store.add_period("unavailable_periods", new_date_iso)
-            updated = {**event, "start_dt": new_start_dt, "date_str": new_date_iso}
-        else:
-            updated = {**event}
-        if new_summary:
-            updated["summary"] = new_summary
-        listing[n - 1] = updated
-
-        return json.dumps({"result": "✓ Gig updated."})
-
     # ── list_clients ────────────────────────────────────────────────────────
     if name == "list_clients":
         clients = load_clients()
@@ -1540,6 +1336,216 @@ async def _execute_tool(name: str, input_data: dict, chat_id: int) -> str:
         return json.dumps({"error": f"Unknown action: {action}"})
 
     return json.dumps({"error": f"Tool not implemented: {name}"})
+
+
+# ── Gig tools ──────────────────────────────────────────────────────────────
+
+
+@_handler("fetch_gig_details")
+async def _handle_fetch_gig_details(input_data: dict, chat_id: int) -> str:
+    try:
+        scraper = Scraper()
+        html = scraper.fetch(input_data["url"])
+        basic = scraper.extract_basic_from_detail(html, input_data["url"])
+        full = scraper.extract_full_details(html)
+        details = {**basic, **full}
+        scraper.session.close()
+        return json.dumps({k: v for k, v in details.items() if v is not None})
+    except Exception as exc:
+        return json.dumps({"error": str(exc)})
+
+
+@_handler("add_gig")
+async def _handle_add_gig(input_data: dict, chat_id: int) -> str:
+    confirmed = input_data.get("confirmed", False)
+    fields = {
+        "header": input_data.get("header", ""),
+        "organisation": input_data.get("organisation") or "",
+        "locality": input_data.get("locality") or "",
+        "date": input_data.get("date", ""),
+        "time": input_data.get("time", ""),
+        "fee": input_data.get("fee") or "not specified",
+    }
+    if not confirmed:
+        return (
+            "*Please confirm the following gig:*\n"
+            f"• *Title:* {fields['header']}\n"
+            f"• *Organisation:* {fields['organisation']}\n"
+            f"• *Locality:* {fields['locality']}\n"
+            f"• *Date:* {fields['date']}\n"
+            f"• *Time:* {fields['time']}\n"
+            f"• *Fee:* {fields['fee']}\n\n"
+            "Reply *yes* to add to calendar, or tell me what to change."
+        )
+    try:
+        cal = _make_calendar_client()
+        if cal is None:
+            return json.dumps({"error": "Google Calendar not configured."})
+        gig = Gig(
+            header=fields["header"],
+            organisation=fields["organisation"],
+            locality=fields["locality"],
+            date=fields["date"],
+            time=fields["time"],
+            fee=fields["fee"] if fields["fee"] != "not specified" else None,
+            link="",
+        )
+        event_id = cal.add_gig(gig)
+        url = input_data.get("url") or None
+        # Travel buffers (non-fatal — gig event already created)
+        try:
+            postcode = input_data.get("postcode", "")
+            yyyymmdd_buf = normalize_to_yyyymmdd(fields["date"])
+            start_time_buf = parse_start_time(fields["time"])
+            if yyyymmdd_buf and start_time_buf:
+                buf_date = datetime.datetime.strptime(yyyymmdd_buf, "%Y%m%d").date()
+                buf_start = datetime.datetime.combine(buf_date, start_time_buf)
+                buf_end = buf_start + datetime.timedelta(hours=1)
+                travel_mins = travel.get_travel_minutes(postcode) or settings.max_travel_minutes
+                before_id, after_id = cal.add_travel_buffers(
+                    gig_summary=f"{fields['header']} — {fields['organisation']}",
+                    start_dt=buf_start,
+                    end_dt=buf_end,
+                    travel_minutes=travel_mins,
+                )
+                if url:
+                    application_store.update_travel_buffer_ids(url, before_id, after_id)
+        except Exception as buf_exc:
+            logger.warning("add_gig: travel buffer creation failed: %s", buf_exc)
+        yyyymmdd = normalize_to_yyyymmdd(fields["date"])
+        if yyyymmdd:
+            try:
+                date_str = datetime.datetime.strptime(yyyymmdd, "%Y%m%d").strftime("%Y-%m-%d")
+                filter_store.add_period("unavailable_periods", date_str)
+            except Exception:
+                logger.warning(
+                    "Failed to add gig date to unavailable periods",
+                    extra={"date": fields["date"]},
+                )
+        try:
+            application_store.upsert_accepted(
+                url=url,
+                header=fields["header"],
+                organisation=fields.get("organisation", ""),
+                date=fields["date"],
+                fee=fields["fee"] if fields["fee"] != "not specified" else "",
+                postcode=input_data.get("postcode", ""),
+                time=fields.get("time", ""),
+            )
+        except Exception:
+            logger.warning(
+                "add_gig: upsert_accepted failed",
+                extra={"url": url},
+                exc_info=True,
+            )
+        return json.dumps({"result": f"Added to calendar. Event ID: {event_id}"})
+    except Exception as exc:
+        return json.dumps({"error": str(exc)})
+
+
+@_handler("list_upcoming_gigs")
+async def _handle_list_upcoming_gigs(input_data: dict, chat_id: int) -> str:
+    cal = _make_calendar_client()
+    if cal is None:
+        return json.dumps({"error": "Google Calendar not configured."})
+    max_results = input_data.get("max_results", 10)
+    events = cal.list_upcoming_events(max_results=max_results)
+    events = [e for e in events if e.get("summary", "").strip() != "Unavailable"]
+    events = sorted(events, key=lambda e: e["start_dt"])
+    _last_gig_listing[chat_id] = events
+    if not events:
+        return json.dumps({"result": "No upcoming gigs found."})
+    lines = [f"🎵 *Upcoming Gigs* ({len(events)})"]
+    for i, ev in enumerate(events, start=1):
+        start_dt = ev["start_dt"]
+        time_str = start_dt.strftime("%I:%M%p").lstrip("0").lower()
+        date_str = start_dt.strftime("%a %d %b %Y").replace(" 0", " ")
+        lines.append(f"{i}. *{ev['summary']}*\n   {date_str} · {time_str}")
+    return json.dumps({"result": "\n\n".join(lines)})
+
+
+@_handler("delete_gig")
+async def _handle_delete_gig(input_data: dict, chat_id: int) -> str:
+    n = input_data["number"]
+    listing = _last_gig_listing.get(chat_id)
+    if not listing:
+        return json.dumps({"error": "No gig listing cached. Ask me to list your gigs first."})
+    if n < 1 or n > len(listing):
+        return json.dumps(
+            {"error": f"No gig number {n}. There are {len(listing)} gigs in the last listing."}
+        )
+    cal = _make_calendar_client()
+    if cal is None:
+        return json.dumps({"error": "Google Calendar not configured."})
+    event = listing[n - 1]
+    try:
+        cal.delete_event(event["id"])
+    except Exception as exc:
+        return json.dumps({"error": str(exc)})
+    filter_store.remove_period("unavailable_periods", event["date_str"])
+    _last_gig_listing[chat_id] = [e for i, e in enumerate(listing) if i != n - 1]
+    return json.dumps(
+        {"result": f"Deleted {event['summary']}. Date removed from unavailable if present."}
+    )
+
+
+@_handler("edit_gig")
+async def _handle_edit_gig(input_data: dict, chat_id: int) -> str:
+    n = input_data["number"]
+    listing = _last_gig_listing.get(chat_id)
+    if not listing:
+        return json.dumps({"error": "No gig listing cached. Ask me to list your gigs first."})
+    if n < 1 or n > len(listing):
+        return json.dumps({"error": f"No gig number {n}. There are {len(listing)} gigs listed."})
+    event = listing[n - 1]
+    cal = _make_calendar_client()
+    if cal is None:
+        return json.dumps({"error": "Google Calendar not configured."})
+
+    new_summary = input_data.get("summary")
+    new_date_str = input_data.get("date")
+    new_time_str = input_data.get("time")
+
+    new_start_dt = None
+    old_date_str = event["date_str"]
+
+    if new_date_str or new_time_str:
+        if new_date_str:
+            normalized = normalize_to_yyyymmdd(new_date_str)
+            if not normalized:
+                return json.dumps({"error": f"Cannot parse date: {new_date_str!r}"})
+            base_date = datetime.datetime.strptime(normalized, "%Y%m%d").date()
+        else:
+            base_date = event["start_dt"].date()
+
+        if new_time_str:
+            parsed_time = parse_start_time(new_time_str)
+            if not parsed_time:
+                return json.dumps({"error": f"Cannot parse time: {new_time_str!r}"})
+        else:
+            parsed_time = event["start_dt"].time()
+
+        assert parsed_time is not None  # guarded by early return above
+        new_start_dt = datetime.datetime.combine(base_date, parsed_time, tzinfo=datetime.UTC)
+
+    try:
+        cal.update_event(event["id"], summary=new_summary, start_dt=new_start_dt)
+    except Exception as exc:
+        return json.dumps({"error": str(exc)})
+
+    if new_start_dt:
+        new_date_iso = new_start_dt.date().isoformat()
+        if new_date_iso != old_date_str:
+            filter_store.remove_period("unavailable_periods", old_date_str)
+            filter_store.add_period("unavailable_periods", new_date_iso)
+        updated = {**event, "start_dt": new_start_dt, "date_str": new_date_iso}
+    else:
+        updated = {**event}
+    if new_summary:
+        updated["summary"] = new_summary
+    listing[n - 1] = updated
+
+    return json.dumps({"result": "✓ Gig updated."})
 
 
 async def process_message(chat_id: int, text: str) -> list[AgentResponse]:
