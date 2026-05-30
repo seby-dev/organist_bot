@@ -303,9 +303,19 @@ def _run(
                     "elapsed_ms": int((time.perf_counter() - t0) * 1000),
                 },
             )
-            save_seen_gigs(seen=seen_gigs_set | set(gig.link for gig in valid_gigs))
     else:
         logger.info("No new gigs passed the filters — notifications skipped")
+
+    # Record every gig we evaluated at detail level (valid OR rejected by a
+    # Phase-2-only filter) so blacklist/postcode rejections are not re-fetched on
+    # the next listings change. Trade-off (accepted): un-blacklisting an email or
+    # raising max_travel_minutes will not re-surface a gig already marked seen.
+    # (gig_list is empty when the listings-hash short-circuit returns early, so
+    # this block is only reached on a changed-page run.)
+    if not dry_run:
+        newly_seen = {g.link for g in gig_list if g.link}
+        if newly_seen:
+            save_seen_gigs(seen=seen_gigs_set | newly_seen)
 
     try:
         expired = application_store.expire_past_applied()

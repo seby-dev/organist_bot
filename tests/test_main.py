@@ -465,6 +465,79 @@ class TestHashChangeDetection:
 # ── expire_past_applied called each tick ──────────────────────────────────────
 
 
+class TestPhase2RejectedGigsSeen:
+    """Phase-2-only rejections (BlacklistFilter) must be recorded as seen so they
+    are not re-fetched on the next listings change."""
+
+    def _make_minimal_settings(self):
+        s = MagicMock()
+        s.target_url = "https://organistsonline.org/required/"
+        s.min_fee = 100
+        s.poll_minutes = 2
+        # All pre-filter (Phase-1) filters disabled so the gig reaches Phase 2.
+        s.enable_seen_filter = False
+        s.enable_fee_filter = False
+        s.enable_sunday_time_filter = False
+        s.enable_calendar_filter = False
+        s.enable_availability_filter = False
+        s.enable_booked_date_filter = False
+        # BlacklistFilter enabled — this is the Phase-2-only rejection we're testing.
+        s.enable_blacklist_filter = True
+        s.enable_postcode_filter = False
+        s.email_password = "pass"
+        return s
+
+    def test_blacklist_rejected_gig_is_recorded_as_seen(self):
+        """A gig rejected by BlacklistFilter at Phase 2 must have its URL saved
+        to the seen set so it is not re-fetched on every subsequent listings change."""
+        blacklisted_email = "organist@blacklisted.org"
+        gig_link = "https://organistsonline.org/required/blacklisted-gig"
+
+        mock_settings = self._make_minimal_settings()
+        mock_scraper = MagicMock()
+        mock_scraper.fetch.return_value = "<html></html>"
+        mock_scraper.parse_gig_listings.return_value = [MagicMock()]
+        mock_scraper.extract_basic_details.return_value = dict(
+            header="Blacklisted Org Gig",
+            organisation="Blacklisted Church",
+            locality="London",
+            date="Sunday, March 1, 2026",
+            time="10:00 AM",
+            fee="£120",
+            link=gig_link,
+        )
+        # Detail page yields the blacklisted contact email.
+        mock_scraper.extract_full_details.return_value = {"email": blacklisted_email}
+
+        with (
+            patch("main.settings", mock_settings),
+            patch("main.Notifier"),
+            patch("main.SMTPTransport"),
+            patch("main.load_seen_gigs", return_value=set()),
+            patch("main.save_seen_gigs") as mock_save,
+            patch("main.load_listings_hash", return_value=None),
+            patch("main.save_listings_hash"),
+            patch("main.set_run_id"),
+            patch("main.filter_store") as mock_filter_store,
+            patch("main.application_store") as mock_store,
+            patch("organist_bot.reply_monitor.check_replies"),
+            patch("organist_bot.invoice_monitor.check_invoice_reminders_and_replies"),
+        ):
+            # Inject the blacklisted email so BlacklistFilter rejects the gig.
+            mock_filter_store.blacklist_emails.return_value = [blacklisted_email]
+            mock_filter_store.unavailable_periods.return_value = []
+            mock_filter_store.available_only_periods.return_value = []
+            mock_store.expire_past_applied.return_value = 0
+            main_module._run(mock_scraper, dry_run=False)
+
+        # The gig was rejected at Phase 2 — but its URL must still be saved.
+        mock_save.assert_called_once()
+        saved_seen = mock_save.call_args[1]["seen"]
+        assert (
+            gig_link in saved_seen
+        ), f"Expected {gig_link!r} in saved seen set, got {saved_seen!r}"
+
+
 class TestExpirePastApplied:
     def _make_minimal_settings(self):
         s = MagicMock()
