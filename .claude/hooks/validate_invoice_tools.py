@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Hook helper: every tool in TOOLS must have an elif branch in _execute_tool."""
+"""Hook helper: every tool in TOOLS must have a registered dispatch handler."""
 
 import json
 import re
@@ -28,13 +28,16 @@ for i, c in enumerate(src[pos:]):
 
 names = set(re.findall(r'"name":\s*"([^"]+)"', src[ts:te]))
 
-fn = src.index("async def _execute_tool(")
-handlers = set(re.findall(r'(?:if|elif) name == "([^"]+)"', src[fn:]))
+# A tool is "handled" if it is registered via the @_handler("name") dispatch
+# decorator, a direct _TOOL_HANDLERS["name"] = ... assignment, or the legacy
+# `if name == "name"` chain — accept all so the hook works before and after the
+# dispatch-dict refactor.
+handlers = (
+    set(re.findall(r'@_handler\(\s*"([^"]+)"\s*\)', src))
+    | set(re.findall(r'_TOOL_HANDLERS\[\s*"([^"]+)"\s*\]', src))
+    | set(re.findall(r'(?:if|elif) name == "([^"]+)"', src))
+)
 
 missing = sorted(names - handlers)
 if missing:
-    print(
-        json.dumps(
-            {"systemMessage": f"⚠️ Tools missing handlers in _execute_tool: {', '.join(missing)}"}
-        )
-    )
+    print(json.dumps({"systemMessage": f"⚠️ Tools missing dispatch handlers: {', '.join(missing)}"}))
