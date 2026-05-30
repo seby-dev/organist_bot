@@ -128,6 +128,52 @@ class TestDrainMechanics:
         assert sheets_logger.drain() == 1
 
 
+# ── Buffer cap ──────────────────────────────────────────────────────────────────
+
+
+class TestBufferCap:
+    def test_emit_bounds_buffer_and_drops_oldest(self, sheets_logger, monkeypatch):
+        """Once the cap is exceeded, emit() drops the OLDEST rows and counts them."""
+        monkeypatch.setattr("organist_bot.integrations.sheets_logger._MAX_BUFFER_ROWS", 10)
+        for i in range(25):
+            sheets_logger.emit(_make_record(msg=f"line {i}"))
+        assert len(sheets_logger._buffer) == 10
+        assert sheets_logger._dropped == 15
+        # The 10 retained rows are the most recent (lines 15..24) — message is col index 4.
+        retained = [row[4] for row in sheets_logger._buffer]
+        assert retained == [f"line {i}" for i in range(15, 25)]
+
+    def test_drain_alerts_and_resets_dropped_count(self, sheets_logger, monkeypatch):
+        """drain() reports the dropped count once via alert, then resets it."""
+        monkeypatch.setattr("organist_bot.integrations.sheets_logger._MAX_BUFFER_ROWS", 5)
+        calls: list[str] = []
+        monkeypatch.setattr(
+            "organist_bot.integrations.sheets_logger.alert.send_alert",
+            lambda m: calls.append(m),
+        )
+        for _ in range(8):  # 3 over the cap → 3 dropped
+            sheets_logger.emit(_make_record())
+        assert sheets_logger._dropped == 3
+        sheets_logger.drain()
+        assert any("dropped 3" in c for c in calls)
+        assert sheets_logger._dropped == 0  # reset after reporting
+
+    def test_restore_path_stays_bounded_on_persistent_failure(
+        self, sheets_logger, mock_service, monkeypatch
+    ):
+        """If the API keeps failing, the restore path must not grow the buffer past the cap."""
+        monkeypatch.setattr("organist_bot.integrations.sheets_logger._MAX_BUFFER_ROWS", 10)
+        mock_service.spreadsheets().values().get().execute.side_effect = RuntimeError("down")
+        for _ in range(10):
+            sheets_logger.emit(_make_record())
+        with pytest.raises(RuntimeError):
+            sheets_logger.drain()  # rows restored
+        # Emit more while still "down" — buffer must stay capped.
+        for _ in range(10):
+            sheets_logger.emit(_make_record())
+        assert len(sheets_logger._buffer) <= 10
+
+
 # ── Header row ────────────────────────────────────────────────────────────────
 
 
