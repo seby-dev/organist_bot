@@ -577,3 +577,111 @@ class TestExpirePastApplied:
             main_module.main(mock_scraper)
 
         mock_store.expire_past_applied.assert_called_once()
+
+
+# ── Sheets drain path ─────────────────────────────────────────────────────────
+
+
+class TestSheetsDrain:
+    """Tests for the SheetsLogger.drain() call at the end of _run."""
+
+    def _make_minimal_settings(self):
+        s = MagicMock()
+        s.target_url = "https://organistsonline.org/required/"
+        s.min_fee = 100
+        s.poll_minutes = 2
+        s.enable_seen_filter = False
+        s.enable_fee_filter = False
+        s.enable_sunday_time_filter = False
+        s.enable_blacklist_filter = False
+        s.enable_booked_date_filter = False
+        s.enable_postcode_filter = False
+        s.enable_calendar_filter = False
+        s.enable_availability_filter = False
+        s.email_password = "pass"
+        s.dry_run = False
+        return s
+
+    def _run_with_sheets(
+        self, mock_scraper, mock_settings, mock_sheets, dry_run=False, extra_patches=None
+    ):
+        """Run _run() with all live-I/O patched out, returning after completion."""
+        mock_store = MagicMock()
+        mock_store.expire_past_applied.return_value = 0
+        patches = [
+            patch("main.settings", mock_settings),
+            patch("main.Notifier"),
+            patch("main.SMTPTransport"),
+            patch("main.load_seen_gigs", return_value=set()),
+            patch("main.save_seen_gigs"),
+            patch("main.load_listings_hash", return_value=None),
+            patch("main.save_listings_hash"),
+            patch("main.set_run_id"),
+            patch("main.filter_store"),
+            patch("main.application_store", mock_store),
+            patch("organist_bot.reply_monitor.check_replies"),
+            patch("organist_bot.invoice_monitor.check_invoice_reminders_and_replies"),
+        ]
+        if extra_patches:
+            patches.extend(extra_patches)
+        from contextlib import ExitStack
+
+        with ExitStack() as stack:
+            mocks = {
+                p.attribute if hasattr(p, "attribute") else str(i): stack.enter_context(p)
+                for i, p in enumerate(patches)
+            }
+            main_module._run(mock_scraper, sheets_logger=mock_sheets, dry_run=dry_run)
+        return mocks
+
+    def test_drain_called_once_on_successful_non_dry_run(self):
+        """sheets_logger.drain() is called exactly once on a successful non-dry-run _run."""
+        mock_settings = self._make_minimal_settings()
+        mock_scraper = MagicMock()
+        mock_scraper.fetch.return_value = "<html></html>"
+        mock_scraper.parse_gig_listings.return_value = []
+
+        mock_sheets = MagicMock()
+        mock_sheets.drain.return_value = 0
+
+        self._run_with_sheets(mock_scraper, mock_settings, mock_sheets, dry_run=False)
+
+        mock_sheets.drain.assert_called_once()
+
+    def test_drain_not_called_in_dry_run(self):
+        """sheets_logger.drain() is NOT called when dry_run=True."""
+        mock_settings = self._make_minimal_settings()
+        mock_scraper = MagicMock()
+        mock_scraper.fetch.return_value = "<html></html>"
+        mock_scraper.parse_gig_listings.return_value = []
+
+        mock_sheets = MagicMock()
+
+        self._run_with_sheets(mock_scraper, mock_settings, mock_sheets, dry_run=True)
+
+        mock_sheets.drain.assert_not_called()
+
+    def test_drain_failure_does_not_raise_and_sends_alert(self):
+        """When sheets_logger.drain() raises, _run does NOT propagate the error
+        and alert.send_alert is called with the failure message."""
+        mock_settings = self._make_minimal_settings()
+        mock_scraper = MagicMock()
+        mock_scraper.fetch.return_value = "<html></html>"
+        mock_scraper.parse_gig_listings.return_value = []
+
+        mock_sheets = MagicMock()
+        mock_sheets.drain.side_effect = RuntimeError("spreadsheet quota exceeded")
+
+        mock_alert = MagicMock()
+        extra = [patch("main.alert", mock_alert)]
+
+        # Must not raise despite drain() throwing
+        self._run_with_sheets(
+            mock_scraper, mock_settings, mock_sheets, dry_run=False, extra_patches=extra
+        )
+
+        # Alert must have been sent with the exception message
+        mock_alert.send_alert.assert_called_once()
+        alert_msg = mock_alert.send_alert.call_args.args[0]
+        assert "Sheets flush failed" in alert_msg
+        assert "spreadsheet quota exceeded" in alert_msg

@@ -369,6 +369,7 @@ def _run(
                 exc_info=True,
                 extra={"error": str(exc)},
             )
+            alert.send_alert(f"⚠️ Sheets flush failed — {exc}")
 
 
 if __name__ == "__main__":
