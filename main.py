@@ -310,6 +310,8 @@ def _run(
     # Phase-2-only filter) so blacklist/postcode rejections are not re-fetched on
     # the next listings change. Trade-off (accepted): un-blacklisting an email or
     # raising max_travel_minutes will not re-surface a gig already marked seen.
+    # (gig_list is empty when the listings-hash short-circuit returns early, so
+    # this block is only reached on a changed-page run.)
     if not dry_run:
         newly_seen = {g.link for g in gig_list if g.link}
         if newly_seen:

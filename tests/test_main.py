@@ -519,12 +519,16 @@ class TestPhase2RejectedGigsSeen:
             patch("main.save_listings_hash"),
             patch("main.set_run_id"),
             patch("main.filter_store") as mock_filter_store,
+            patch("main.application_store") as mock_store,
+            patch("organist_bot.reply_monitor.check_replies"),
+            patch("organist_bot.invoice_monitor.check_invoice_reminders_and_replies"),
         ):
             # Inject the blacklisted email so BlacklistFilter rejects the gig.
             mock_filter_store.blacklist_emails.return_value = [blacklisted_email]
             mock_filter_store.unavailable_periods.return_value = []
             mock_filter_store.available_only_periods.return_value = []
-            main_module.main(mock_scraper)
+            mock_store.expire_past_applied.return_value = 0
+            main_module._run(mock_scraper, dry_run=False)
 
         # The gig was rejected at Phase 2 — but its URL must still be saved.
         mock_save.assert_called_once()
