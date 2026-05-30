@@ -7,12 +7,10 @@ Backed by data/applications.json — a flat JSON array, one object per applicati
 from __future__ import annotations
 
 import datetime
-import json
 import logging
-import os
-import tempfile
 from pathlib import Path
 
+from organist_bot import atomic_store
 from organist_bot.models import Gig
 
 logger = logging.getLogger(__name__)
@@ -25,29 +23,11 @@ def _now_iso() -> str:
 
 
 def _read() -> list[dict]:
-    if not _PATH.exists():
-        return []
-    try:
-        return json.loads(_PATH.read_text())
-    except Exception:
-        logger.exception("application_store: failed to read %s", _PATH)
-        return []
+    return atomic_store.read_json(_PATH, [])
 
 
 def _write(records: list[dict]) -> None:
-    _PATH.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=str(_PATH.parent))
-    try:
-        with os.fdopen(fd, "w") as f:
-            json.dump(records, f, indent=2)
-            f.write("\n")
-        os.replace(tmp, str(_PATH))
-    except Exception:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
+    atomic_store.write_json(_PATH, records)
 
 
 def record_application(gig: Gig) -> bool:
