@@ -104,6 +104,25 @@ def _run(
     # so this cuts Phase 1 from N+1 HTTP requests down to just 1.
     seen_gigs_set = load_seen_gigs() if settings.enable_seen_filter else set()
 
+    # Build shared filter instances once — the same object is added to both
+    # pre_filter (Phase 1) and filter_chain (Phase 2) to avoid config-drift.
+    # Each GigFilterChain keeps its own rejection-count dict keyed by the filter
+    # object, and these filters are stateless (config only), so sharing is safe.
+    _fee_filter = (
+        FeeFilter(min_fee=runtime_config.get("min_fee", settings.min_fee))
+        if settings.enable_fee_filter
+        else None
+    )
+    _sunday_time_filter = SundayTimeFilter() if settings.enable_sunday_time_filter else None
+    _avail_filters: list = []
+    if settings.enable_availability_filter:
+        unavail = filter_store.unavailable_periods()
+        avail_only = filter_store.available_only_periods()
+        if unavail:
+            _avail_filters.append(AvailabilityFilter(unavail, mode="block"))
+        if avail_only:
+            _avail_filters.append(AvailabilityFilter(avail_only, mode="only"))
+
     # Pre-filter chain: filters that only need basic details (fee, date, time, link).
     # SeenFilter (link in seen_gigs.csv) and CalendarFilter (date in Google Calendar)
     # are both included here so we skip the detail-page HTTP fetch for gigs that
@@ -112,10 +131,10 @@ def _run(
     pre_filter = GigFilterChain()
     if settings.enable_seen_filter:
         pre_filter.add(SeenFilter(seen_gigs_set))
-    if settings.enable_fee_filter:
-        pre_filter.add(FeeFilter(min_fee=runtime_config.get("min_fee", settings.min_fee)))
-    if settings.enable_sunday_time_filter:
-        pre_filter.add(SundayTimeFilter())
+    if _fee_filter is not None:
+        pre_filter.add(_fee_filter)
+    if _sunday_time_filter is not None:
+        pre_filter.add(_sunday_time_filter)
     if (
         settings.enable_calendar_filter
         and settings.google_calendar_id
@@ -132,13 +151,8 @@ def _run(
         logger.info(
             "CalendarFilter disabled — google_calendar_id or google_calendar_credentials_file not set"
         )
-    if settings.enable_availability_filter:
-        unavail = filter_store.unavailable_periods()
-        avail_only = filter_store.available_only_periods()
-        if unavail:
-            pre_filter.add(AvailabilityFilter(unavail, mode="block"))
-        if avail_only:
-            pre_filter.add(AvailabilityFilter(avail_only, mode="only"))
+    for _af in _avail_filters:
+        pre_filter.add(_af)
 
     gigs_div: list = []
     pre_filter_passed: int = 0
@@ -209,13 +223,13 @@ def _run(
 
     filter_chain = GigFilterChain()
 
-    if settings.enable_fee_filter:
-        filter_chain.add(FeeFilter(min_fee=runtime_config.get("min_fee", settings.min_fee)))
+    if _fee_filter is not None:
+        filter_chain.add(_fee_filter)
     else:
         logger.info("FeeFilter disabled")
 
-    if settings.enable_sunday_time_filter:
-        filter_chain.add(SundayTimeFilter())
+    if _sunday_time_filter is not None:
+        filter_chain.add(_sunday_time_filter)
     else:
         logger.info("SundayTimeFilter disabled")
 
@@ -224,14 +238,10 @@ def _run(
     else:
         logger.info("BlacklistFilter disabled")
 
-    if settings.enable_availability_filter:
-        unavail = filter_store.unavailable_periods()
-        avail_only = filter_store.available_only_periods()
-        if unavail:
-            filter_chain.add(AvailabilityFilter(unavail, mode="block"))
-        if avail_only:
-            filter_chain.add(AvailabilityFilter(avail_only, mode="only"))
-    else:
+    if _avail_filters:
+        for _af in _avail_filters:
+            filter_chain.add(_af)
+    elif not settings.enable_availability_filter:
         logger.info("AvailabilityFilter disabled")
 
     if settings.enable_postcode_filter and settings.home_postcode and settings.google_maps_api_key:
