@@ -42,12 +42,23 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
 from organist_bot import alert
+from organist_bot.config import settings
 from organist_bot.filters import normalize_to_yyyymmdd, parse_start_time
 from organist_bot.models import Gig
 
 logger = logging.getLogger(__name__)
 
 _SCOPES = ["https://www.googleapis.com/auth/calendar"]
+
+
+def make_calendar_client() -> "GoogleCalendarClient | None":
+    """Return a GoogleCalendarClient if configured, else None."""
+    if settings.google_calendar_id and settings.google_calendar_credentials_file:
+        return GoogleCalendarClient(
+            credentials_file=settings.google_calendar_credentials_file,
+            calendar_id=settings.google_calendar_id,
+        )
+    return None
 
 
 def _parse_period_dates(period: str) -> tuple[datetime.date, datetime.date] | None:

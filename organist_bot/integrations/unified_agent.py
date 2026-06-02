@@ -10,7 +10,12 @@ from typing import cast
 from organist_bot import analytics, application_store, filter_store, travel
 from organist_bot.config import settings
 from organist_bot.filters import normalize_to_yyyymmdd, parse_start_time
-from organist_bot.integrations.calendar_client import GoogleCalendarClient
+from organist_bot.integrations.calendar_client import (
+    GoogleCalendarClient,
+)
+from organist_bot.integrations.calendar_client import (
+    make_calendar_client as _make_calendar_client,
+)
 from organist_bot.integrations.email_sender import send_invoice_email
 from organist_bot.integrations.invoice_generator import (
     add_client,
@@ -571,15 +576,6 @@ _VERBATIM_RESPONSE_TOOLS = {
     "get_application_analytics",
     "get_gig_breakdown",
 }
-
-
-def _make_calendar_client() -> GoogleCalendarClient | None:
-    if settings.google_calendar_id and settings.google_calendar_credentials_file:
-        return GoogleCalendarClient(
-            credentials_file=settings.google_calendar_credentials_file,
-            calendar_id=settings.google_calendar_id,
-        )
-    return None
 
 
 def sync_calendar_blocks(cal: GoogleCalendarClient) -> None:
@@ -1597,7 +1593,7 @@ async def process_message(chat_id: int, text: str) -> list[AgentResponse]:
     while True:
         response = await client.messages.create(
             model="claude-sonnet-4-6",
-            max_tokens=1024,
+            max_tokens=4096,
             system=SYSTEM_PROMPT,
             tools=TOOLS,  # type: ignore[arg-type]
             messages=_histories[chat_id],  # type: ignore[arg-type]

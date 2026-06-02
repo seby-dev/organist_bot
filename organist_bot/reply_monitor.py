@@ -9,7 +9,12 @@ import anthropic
 import organist_bot.application_store as application_store
 from organist_bot import travel
 from organist_bot.config import settings
-from organist_bot.integrations.calendar_client import GoogleCalendarClient
+from organist_bot.integrations.calendar_client import (
+    GoogleCalendarClient,
+)
+from organist_bot.integrations.calendar_client import (
+    make_calendar_client as _make_calendar_client,
+)
 from organist_bot.integrations.gmail_client import GmailClient
 
 logger = logging.getLogger(__name__)
@@ -149,16 +154,6 @@ def _create_calendar_event(record: dict) -> bool:
     except Exception as exc:
         logger.warning("reply_monitor: calendar event creation failed: %s", exc)
         return False
-
-
-def _make_calendar_client():
-    """Return a GoogleCalendarClient if configured, else None."""
-    if not settings.google_calendar_id or not settings.google_calendar_credentials_file:
-        return None
-    return GoogleCalendarClient(
-        credentials_file=settings.google_calendar_credentials_file,
-        calendar_id=settings.google_calendar_id,
-    )
 
 
 def _extract_email_address(header: str) -> str:
