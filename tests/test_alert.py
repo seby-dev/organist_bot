@@ -3,10 +3,40 @@
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
+import organist_bot.alert as _alert_module
 from organist_bot.alert import send_alert
 
 
+def test_autouse_fixture_silences_module_level_send_alert():
+    """Regression guard for the "test suite floods Telegram" problem.
+
+    Production modules call ``alert.send_alert(...)`` via the module attribute,
+    which the conftest autouse fixture patches to a no-op. This proves that even
+    with Telegram "configured", a module-attribute call performs no POST. If the
+    autouse fixture is ever removed, this fails (the real send_alert would POST).
+    """
+    posted: list = []
+    with (
+        patch("organist_bot.alert.settings") as mock_settings,
+        patch("organist_bot.alert._requests.post", lambda *a, **k: posted.append(1)),
+    ):
+        mock_settings.telegram_bot_token = "fake-token"
+        mock_settings.telegram_chat_id = 123
+        _alert_module.send_alert("this must not reach Telegram during tests")
+
+    assert posted == []
+
+
 class TestSendAlert:
+    @pytest.fixture(autouse=True)
+    def _block_real_post(self, monkeypatch):
+        """Safety net: these tests exercise the REAL send_alert (direct import),
+        so even if a future test here forgets to mock the HTTP call, never hit the
+        real Telegram endpoint. Individual tests re-patch _requests.post and win."""
+        monkeypatch.setattr("organist_bot.alert._requests.post", MagicMock())
+
     def test_posts_to_telegram_when_configured(self):
         """Sends a POST to the Telegram Bot API with the correct payload."""
         mock_post = MagicMock()
