@@ -76,7 +76,7 @@ A single python-telegram-bot polling bot, gated by `TELEGRAM_CHAT_ID`. **Every f
 - **Pipeline observability** — `get_gig_stats` (queries Sheets via `SheetsLogger.query_run_stats`)
 - **Applications & income** — `manage_applications`, `get_income_forecast` (reads from `application_store`)
 
-Per-chat history, last-invoice context, and last-gig-listing context live in process memory keyed by `chat_id`. On startup the bot calls `sync_calendar_blocks` (mirrors `filter_store.unavailable_periods()` into Google Calendar) and fires `alert.send_alert("🤖 Telegram bot started")`. The old 7-step `ConversationHandler` and the separate `invoice_agent.py` no longer exist — all interactions go through the unified agent.
+Per-chat history, last-invoice context, and last-gig-listing context live in process memory keyed by `chat_id`. The reference-context fields (last invoice / gig-listing / application-listing — but **not** history) are also persisted to `data/agent_state.json` via `integrations/agent_state.py`: `process_message` lazily hydrates a chat's context on its first message (so it survives a bot restart) and saves it after each turn. On startup the bot calls `sync_calendar_blocks` (mirrors `filter_store.unavailable_periods()` into Google Calendar) and fires `alert.send_alert("🤖 Telegram bot started")`. The old 7-step `ConversationHandler` and the separate `invoice_agent.py` no longer exist — all interactions go through the unified agent.
 
 ### `organist_bot/` — top-level modules
 
@@ -130,6 +130,7 @@ Optional sections in `.env`:
 | `data/applications.json` | Application lifecycle store (written by `application_store`) |
 | `data/filter_config.json` | Runtime filter values: blacklist, unavail/avail periods |
 | `data/runtime_config.json` | Runtime pipeline overrides: min_fee, max_travel_minutes, poll_minutes |
+| `data/agent_state.json` | Per-chat agent reference-context (last invoice/gig-listing/application-listing) persisted across restarts by `integrations/agent_state.py` |
 | `data/listings_hash.txt` | Hash of last-seen listings HTML for short-circuit detection |
 | `data/gmail_token.json` | OAuth2 token for Gmail reply monitoring (gitignored) |
 | `clients.json` | Invoice client database (project root) |
