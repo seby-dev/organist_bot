@@ -143,6 +143,31 @@ def mark_invoice_paid(invoice_number: str) -> bool:
     return True
 
 
+def unmark_invoice_paid(invoice_number: str) -> bool:
+    """Clear paid_at on the matching invoice record. Returns False if not found."""
+    invoices = load_invoices()
+    if invoice_number not in invoices:
+        return False
+    invoices[invoice_number]["paid_at"] = None
+    with open(INVOICES_FILE, "w") as f:
+        json.dump(invoices, f, indent=2)
+    return True
+
+
+def delete_invoice(invoice_number: str) -> bool:
+    """Remove an invoice record and best-effort unlink its PDF. Returns False if not found."""
+    invoices = load_invoices()
+    if invoice_number not in invoices:
+        return False
+    pdf_path = invoices[invoice_number].get("pdf_path")
+    del invoices[invoice_number]
+    with open(INVOICES_FILE, "w") as f:
+        json.dump(invoices, f, indent=2)
+    if pdf_path:
+        Path(pdf_path).unlink(missing_ok=True)
+    return True
+
+
 def save_invoice_field(invoice_number: str, field: str, value: object) -> None:
     """Update a single field on an invoice record. Silently ignores unknown invoice numbers."""
     invoices = load_invoices()
