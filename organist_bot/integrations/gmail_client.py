@@ -31,6 +31,18 @@ class GmailClient:
     def __init__(self, credentials_file: str, token_file: str) -> None:
         self._credentials_file = credentials_file
         self._token_file = token_file
+        self._service = None
+
+    def _get_service(self):
+        """Return the Gmail service, building it once per instance.
+
+        A fresh GmailClient is created per check_replies tick, so the OAuth token
+        is still refreshed once per tick (in _build_service) — caching here just
+        avoids rebuilding the service for each method call within the same tick.
+        """
+        if self._service is None:
+            self._service = self._build_service()
+        return self._service
 
     def _build_service(self):
         """Build authenticated Gmail API service. Refreshes token if expired."""
@@ -102,7 +114,7 @@ class GmailClient:
         Deduplicates by message_id. Fails open — returns [] on API errors.
         """
         try:
-            service = self._build_service()
+            service = self._get_service()
         except Exception as exc:
             logger.warning("Gmail: could not build service: %s", exc)
             return []
@@ -150,7 +162,7 @@ class GmailClient:
         Fails open — returns [] on any error.
         """
         try:
-            service = self._build_service()
+            service = self._get_service()
         except Exception as exc:
             logger.warning("Gmail: could not build service for invoice replies: %s", exc)
             return []
