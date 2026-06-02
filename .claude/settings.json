@@ -49,6 +49,11 @@
             "type": "command",
             "command": "python3 \"${CLAUDE_PROJECT_DIR}/.claude/hooks/post_pr_created.py\"",
             "if": "Bash(gh pr create:*)"
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PROJECT_DIR}/.claude/hooks/post_merge_docs_update.py\"",
+            "if": "Bash(gh pr merge:*)"
           }
         ]
       },
