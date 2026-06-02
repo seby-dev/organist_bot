@@ -1693,6 +1693,87 @@ class TestMarkInvoicePaidTool:
         assert "error" in data
 
 
+class TestUnmarkInvoicePaidTool:
+    async def test_unmarks_invoice_and_returns_success(self):
+        with patch(
+            "organist_bot.integrations.unified_agent.unmark_invoice_paid", return_value=True
+        ) as mock_unmark:
+            agent = UnifiedAgent()
+            result = await agent._execute_tool(
+                "unmark_invoice_paid", {"invoice_number": "INV-2026-001"}, chat_id=1
+            )
+        import json
+
+        data = json.loads(result)
+        assert "INV-2026-001" in data["result"]
+        assert "no longer" in data["result"].lower()
+        mock_unmark.assert_called_once_with("INV-2026-001")
+
+    async def test_returns_error_for_unknown_invoice(self):
+        with patch(
+            "organist_bot.integrations.unified_agent.unmark_invoice_paid", return_value=False
+        ):
+            agent = UnifiedAgent()
+            result = await agent._execute_tool(
+                "unmark_invoice_paid", {"invoice_number": "INV-9999-999"}, chat_id=1
+            )
+        import json
+
+        data = json.loads(result)
+        assert "error" in data
+
+
+class TestDeleteInvoiceTool:
+    async def test_deletes_invoice_and_returns_success(self):
+        with patch(
+            "organist_bot.integrations.unified_agent.delete_invoice", return_value=True
+        ) as mock_delete:
+            agent = UnifiedAgent()
+            result = await agent._execute_tool(
+                "delete_invoice", {"invoice_number": "INV-2026-001"}, chat_id=1
+            )
+        import json
+
+        data = json.loads(result)
+        assert "INV-2026-001" in data["result"]
+        assert "deleted" in data["result"].lower()
+        mock_delete.assert_called_once_with("INV-2026-001")
+
+    async def test_returns_error_for_unknown_invoice(self):
+        with patch("organist_bot.integrations.unified_agent.delete_invoice", return_value=False):
+            agent = UnifiedAgent()
+            result = await agent._execute_tool(
+                "delete_invoice", {"invoice_number": "INV-9999-999"}, chat_id=1
+            )
+        import json
+
+        data = json.loads(result)
+        assert "error" in data
+
+    async def test_clears_last_invoice_cache_when_matching(self):
+        from organist_bot.integrations.unified_agent import _last_invoice
+
+        _last_invoice[42] = {"invoice_number": "INV-2026-001", "client_name": "St Paul's"}
+        with patch("organist_bot.integrations.unified_agent.delete_invoice", return_value=True):
+            agent = UnifiedAgent()
+            await agent._execute_tool(
+                "delete_invoice", {"invoice_number": "INV-2026-001"}, chat_id=42
+            )
+        assert 42 not in _last_invoice
+
+    async def test_preserves_last_invoice_cache_when_different(self):
+        from organist_bot.integrations.unified_agent import _last_invoice
+
+        _last_invoice[42] = {"invoice_number": "INV-2026-002", "client_name": "St Mary's"}
+        with patch("organist_bot.integrations.unified_agent.delete_invoice", return_value=True):
+            agent = UnifiedAgent()
+            await agent._execute_tool(
+                "delete_invoice", {"invoice_number": "INV-2026-001"}, chat_id=42
+            )
+        assert _last_invoice.get(42, {}).get("invoice_number") == "INV-2026-002"
+        _last_invoice.pop(42, None)
+
+
 class TestListInvoicesPaymentStatus:
     async def test_shows_paid_status(self):
         invoices = {

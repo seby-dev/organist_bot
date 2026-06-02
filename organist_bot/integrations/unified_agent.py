@@ -21,12 +21,14 @@ from organist_bot.integrations.email_sender import send_invoice_email
 from organist_bot.integrations.invoice_generator import (
     add_client,
     delete_client,
+    delete_invoice,
     edit_client,
     generate_invoice,
     load_clients,
     load_invoices,
     mark_invoice_emailed,
     mark_invoice_paid,
+    unmark_invoice_paid,
 )
 from organist_bot.models import Gig
 from organist_bot.runtime_config_store import runtime_config
@@ -47,13 +49,15 @@ You are an assistant for an organist. You handle three areas:
 - "Change gig 2 to 11am" / "Rename gig 1" → call edit_gig. Tell the user to list gigs first if no listing is cached.
 
 ## Invoicing
-- Confirm before calling generate_invoice, duplicate_invoice, send_invoice_email, resend_invoice, or delete_client. Present a clear summary and ask "Shall I go ahead?"
+- Confirm before calling generate_invoice, duplicate_invoice, send_invoice_email, resend_invoice, delete_client, or delete_invoice. Present a clear summary and ask "Shall I go ahead?"
 - If missing required info (client, description, quantity, or unit price), ask for the missing details.
 - Invoices can have multiple line items — ask if the user wants to add more items before generating.
 - After generating an invoice, ask if the user wants to email it.
 - Use list_clients to look up available client keys when the user mentions a client by name.
 - Use list_invoices to look up past invoices when the user mentions a client or date.
 - "Mark INV-2026-001 as paid" / "invoice has been paid" → mark_invoice_paid.
+- "Unmark INV-2026-001 as paid" / "that invoice isn't actually paid" → unmark_invoice_paid.
+- "Delete INV-2026-001" / "remove that invoice" → delete_invoice (confirm first).
 - Use £ for money.
 
 ## Filter management
@@ -327,6 +331,34 @@ TOOLS: list[dict] = [
     {
         "name": "mark_invoice_paid",
         "description": "Mark an invoice as paid. Use when the user says an invoice has been paid or confirms payment.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "invoice_number": {
+                    "type": "string",
+                    "description": "The invoice number, e.g. INV-2026-001",
+                }
+            },
+            "required": ["invoice_number"],
+        },
+    },
+    {
+        "name": "unmark_invoice_paid",
+        "description": "Clear the paid status on an invoice. Use when the user says an invoice was marked paid by mistake or the payment was reversed.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "invoice_number": {
+                    "type": "string",
+                    "description": "The invoice number, e.g. INV-2026-001",
+                }
+            },
+            "required": ["invoice_number"],
+        },
+    },
+    {
+        "name": "delete_invoice",
+        "description": "Delete an invoice record and its PDF file. Destructive — always confirm with the user first.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -1099,6 +1131,27 @@ async def _handle_mark_invoice_paid(input_data: dict, chat_id: int) -> str:
     if not ok:
         return json.dumps({"error": f"Invoice {inv_num} not found."})
     return json.dumps({"result": f"✅ Invoice {inv_num} marked as paid."})
+
+
+@_handler("unmark_invoice_paid")
+async def _handle_unmark_invoice_paid(input_data: dict, chat_id: int) -> str:
+    inv_num = input_data["invoice_number"]
+    ok = unmark_invoice_paid(inv_num)
+    if not ok:
+        return json.dumps({"error": f"Invoice {inv_num} not found."})
+    return json.dumps({"result": f"Invoice {inv_num} is no longer marked as paid."})
+
+
+@_handler("delete_invoice")
+async def _handle_delete_invoice(input_data: dict, chat_id: int) -> str:
+    inv_num = input_data["invoice_number"]
+    ok = delete_invoice(inv_num)
+    if not ok:
+        return json.dumps({"error": f"Invoice {inv_num} not found."})
+    cached = _last_invoice.get(chat_id)
+    if cached and cached.get("invoice_number") == inv_num:
+        _last_invoice.pop(chat_id, None)
+    return json.dumps({"result": f"🗑️ Invoice {inv_num} deleted."})
 
 
 @_handler("list_invoices")
