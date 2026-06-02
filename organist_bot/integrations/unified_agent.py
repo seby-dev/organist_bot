@@ -10,6 +10,7 @@ from typing import cast
 from organist_bot import analytics, application_store, filter_store, travel
 from organist_bot.config import settings
 from organist_bot.filters import normalize_to_yyyymmdd, parse_start_time
+from organist_bot.integrations import agent_state
 from organist_bot.integrations.calendar_client import (
     GoogleCalendarClient,
 )
@@ -552,6 +553,49 @@ _histories: dict[int, list[dict]] = {}
 _last_invoice: dict[int, dict] = {}
 _last_gig_listing: dict[int, list[dict]] = {}
 _last_application_listing: dict[int, list[dict]] = {}
+
+# Chats whose persisted reference-context has been loaded this process.
+_hydrated: set[int] = set()
+
+
+def _hydrate_chat(chat_id: int) -> None:
+    """Load persisted last_* context for chat_id into the in-memory dicts, once
+    per process, so a bot restart doesn't drop the user's reference context
+    (e.g. "email that invoice" after a restart)."""
+    if chat_id in _hydrated:
+        return
+    _hydrated.add(chat_id)
+    try:
+        persisted = agent_state.load_chat(chat_id)
+    except Exception:
+        logger.warning("agent_state: failed to load chat %s context", chat_id, exc_info=True)
+        return
+    if chat_id not in _last_invoice and persisted.get("last_invoice") is not None:
+        _last_invoice[chat_id] = persisted["last_invoice"]
+    if chat_id not in _last_gig_listing and persisted.get("last_gig_listing") is not None:
+        _last_gig_listing[chat_id] = persisted["last_gig_listing"]
+    if (
+        chat_id not in _last_application_listing
+        and persisted.get("last_application_listing") is not None
+    ):
+        _last_application_listing[chat_id] = persisted["last_application_listing"]
+
+
+def _persist_chat(chat_id: int) -> None:
+    """Write the chat's current last_* reference-context to disk (best-effort —
+    a persistence failure must never break the user's reply)."""
+    try:
+        agent_state.save_chat(
+            chat_id,
+            {
+                "last_invoice": _last_invoice.get(chat_id),
+                "last_gig_listing": _last_gig_listing.get(chat_id),
+                "last_application_listing": _last_application_listing.get(chat_id),
+            },
+        )
+    except Exception:
+        logger.warning("agent_state: failed to persist chat %s context", chat_id, exc_info=True)
+
 
 _TOOL_HANDLERS: dict[str, Callable[[dict, int], Awaitable[str]]] = {}
 
@@ -1583,6 +1627,8 @@ async def process_message(chat_id: int, text: str) -> list[AgentResponse]:
 
     client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
 
+    _hydrate_chat(chat_id)
+
     if chat_id not in _histories:
         _histories[chat_id] = []
 
@@ -1649,6 +1695,7 @@ async def process_message(chat_id: int, text: str) -> list[AgentResponse]:
 
         _histories[chat_id].append({"role": "user", "content": tool_results})
 
+    _persist_chat(chat_id)
     return responses
 
 
@@ -1657,6 +1704,8 @@ def reset_conversation(chat_id: int) -> None:
     _last_invoice.pop(chat_id, None)
     _last_gig_listing.pop(chat_id, None)
     _last_application_listing.pop(chat_id, None)
+    _hydrated.discard(chat_id)
+    agent_state.save_chat(chat_id, {})
 
 
 class UnifiedAgent:

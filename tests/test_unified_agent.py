@@ -1785,3 +1785,92 @@ class TestManageApplicationsDeclinedDeletesBuffers:
             assert "after_def" in deleted_ids
         finally:
             _last_application_listing.pop(CHAT_ID, None)
+
+
+# ── Per-chat state persistence (survives bot restart) ───────────────────────────
+
+
+class TestAgentStatePersistence:
+    """_hydrate_chat / _persist_chat round-trip the last_* reference context to disk."""
+
+    def test_persist_then_hydrate_restores_last_invoice(self, tmp_path, monkeypatch):
+        from organist_bot.integrations import agent_state, unified_agent
+
+        monkeypatch.setattr(agent_state, "_PATH", tmp_path / "agent_state.json")
+        cid = 778899
+        try:
+            unified_agent._last_invoice[cid] = {"invoice_number": "INV-9", "pdf_path": "/x.pdf"}
+            unified_agent._persist_chat(cid)
+            # Simulate a restart: in-memory state and hydration marker are gone.
+            unified_agent._last_invoice.pop(cid, None)
+            unified_agent._hydrated.discard(cid)
+
+            unified_agent._hydrate_chat(cid)
+            assert unified_agent._last_invoice[cid] == {
+                "invoice_number": "INV-9",
+                "pdf_path": "/x.pdf",
+            }
+        finally:
+            unified_agent._last_invoice.pop(cid, None)
+            unified_agent._hydrated.discard(cid)
+
+    def test_hydrate_does_not_clobber_live_state(self, tmp_path, monkeypatch):
+        from organist_bot.integrations import agent_state, unified_agent
+
+        monkeypatch.setattr(agent_state, "_PATH", tmp_path / "agent_state.json")
+        cid = 887766
+        try:
+            agent_state.save_chat(cid, {"last_invoice": {"invoice_number": "OLD"}})
+            unified_agent._hydrated.discard(cid)
+            unified_agent._last_invoice[cid] = {"invoice_number": "LIVE"}
+
+            unified_agent._hydrate_chat(cid)  # must not overwrite live in-memory state
+            assert unified_agent._last_invoice[cid] == {"invoice_number": "LIVE"}
+        finally:
+            unified_agent._last_invoice.pop(cid, None)
+            unified_agent._hydrated.discard(cid)
+
+    def test_hydrate_is_idempotent(self, tmp_path, monkeypatch):
+        from organist_bot.integrations import agent_state, unified_agent
+
+        monkeypatch.setattr(agent_state, "_PATH", tmp_path / "agent_state.json")
+        cid = 665544
+        try:
+            agent_state.save_chat(cid, {"last_gig_listing": [{"id": "evt1"}]})
+            unified_agent._hydrated.discard(cid)
+            unified_agent._last_gig_listing.pop(cid, None)
+
+            unified_agent._hydrate_chat(cid)
+            assert unified_agent._last_gig_listing[cid] == [{"id": "evt1"}]
+            # Second hydrate is a no-op (chat already marked hydrated).
+            unified_agent._last_gig_listing[cid] = [{"id": "changed"}]
+            unified_agent._hydrate_chat(cid)
+            assert unified_agent._last_gig_listing[cid] == [{"id": "changed"}]
+        finally:
+            unified_agent._last_gig_listing.pop(cid, None)
+            unified_agent._hydrated.discard(cid)
+
+    def test_persist_failure_is_swallowed(self, monkeypatch):
+        """A disk error during persistence must never propagate to the user's reply."""
+        from organist_bot.integrations import unified_agent
+
+        def _boom(*a, **k):
+            raise OSError("disk full")
+
+        monkeypatch.setattr("organist_bot.integrations.unified_agent.agent_state.save_chat", _boom)
+        unified_agent._persist_chat(123456)  # must not raise
+
+    def test_hydrate_failure_is_swallowed(self, monkeypatch):
+        """A failure loading persisted context must not break message handling."""
+        from organist_bot.integrations import unified_agent
+
+        def _boom(*a, **k):
+            raise OSError("unreadable")
+
+        monkeypatch.setattr("organist_bot.integrations.unified_agent.agent_state.load_chat", _boom)
+        cid = 543210
+        try:
+            unified_agent._hydrated.discard(cid)
+            unified_agent._hydrate_chat(cid)  # must not raise
+        finally:
+            unified_agent._hydrated.discard(cid)
