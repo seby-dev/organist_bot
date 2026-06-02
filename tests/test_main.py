@@ -533,9 +533,9 @@ class TestPhase2RejectedGigsSeen:
         # The gig was rejected at Phase 2 — but its URL must still be saved.
         mock_save.assert_called_once()
         saved_seen = mock_save.call_args[1]["seen"]
-        assert (
-            gig_link in saved_seen
-        ), f"Expected {gig_link!r} in saved seen set, got {saved_seen!r}"
+        assert gig_link in saved_seen, (
+            f"Expected {gig_link!r} in saved seen set, got {saved_seen!r}"
+        )
 
 
 class TestExpirePastApplied:
