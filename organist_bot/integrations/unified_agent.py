@@ -1597,7 +1597,7 @@ async def process_message(chat_id: int, text: str) -> list[AgentResponse]:
     while True:
         response = await client.messages.create(
             model="claude-sonnet-4-6",
-            max_tokens=1024,
+            max_tokens=4096,
             system=SYSTEM_PROMPT,
             tools=TOOLS,  # type: ignore[arg-type]
             messages=_histories[chat_id],  # type: ignore[arg-type]
