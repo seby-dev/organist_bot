@@ -565,7 +565,11 @@ def _hydrate_chat(chat_id: int) -> None:
     if chat_id in _hydrated:
         return
     _hydrated.add(chat_id)
-    persisted = agent_state.load_chat(chat_id)
+    try:
+        persisted = agent_state.load_chat(chat_id)
+    except Exception:
+        logger.warning("agent_state: failed to load chat %s context", chat_id, exc_info=True)
+        return
     if chat_id not in _last_invoice and persisted.get("last_invoice") is not None:
         _last_invoice[chat_id] = persisted["last_invoice"]
     if chat_id not in _last_gig_listing and persisted.get("last_gig_listing") is not None:
@@ -578,15 +582,19 @@ def _hydrate_chat(chat_id: int) -> None:
 
 
 def _persist_chat(chat_id: int) -> None:
-    """Write the chat's current last_* reference-context to disk."""
-    agent_state.save_chat(
-        chat_id,
-        {
-            "last_invoice": _last_invoice.get(chat_id),
-            "last_gig_listing": _last_gig_listing.get(chat_id),
-            "last_application_listing": _last_application_listing.get(chat_id),
-        },
-    )
+    """Write the chat's current last_* reference-context to disk (best-effort —
+    a persistence failure must never break the user's reply)."""
+    try:
+        agent_state.save_chat(
+            chat_id,
+            {
+                "last_invoice": _last_invoice.get(chat_id),
+                "last_gig_listing": _last_gig_listing.get(chat_id),
+                "last_application_listing": _last_application_listing.get(chat_id),
+            },
+        )
+    except Exception:
+        logger.warning("agent_state: failed to persist chat %s context", chat_id, exc_info=True)
 
 
 _TOOL_HANDLERS: dict[str, Callable[[dict, int], Awaitable[str]]] = {}

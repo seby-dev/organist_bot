@@ -1849,3 +1849,28 @@ class TestAgentStatePersistence:
         finally:
             unified_agent._last_gig_listing.pop(cid, None)
             unified_agent._hydrated.discard(cid)
+
+    def test_persist_failure_is_swallowed(self, monkeypatch):
+        """A disk error during persistence must never propagate to the user's reply."""
+        from organist_bot.integrations import unified_agent
+
+        def _boom(*a, **k):
+            raise OSError("disk full")
+
+        monkeypatch.setattr("organist_bot.integrations.unified_agent.agent_state.save_chat", _boom)
+        unified_agent._persist_chat(123456)  # must not raise
+
+    def test_hydrate_failure_is_swallowed(self, monkeypatch):
+        """A failure loading persisted context must not break message handling."""
+        from organist_bot.integrations import unified_agent
+
+        def _boom(*a, **k):
+            raise OSError("unreadable")
+
+        monkeypatch.setattr("organist_bot.integrations.unified_agent.agent_state.load_chat", _boom)
+        cid = 543210
+        try:
+            unified_agent._hydrated.discard(cid)
+            unified_agent._hydrate_chat(cid)  # must not raise
+        finally:
+            unified_agent._hydrated.discard(cid)
