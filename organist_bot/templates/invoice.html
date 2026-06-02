@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Invoice — {{ from_name }}</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,500;0,600;1,300;1,400&family=Libre+Franklin:wght@300;400;500&display=swap');
+
+  @page {
+    size: A4;
+    margin: 0;
+  }
+
+  :root {
+    --paper: #FFFFFF;
+    --bg: #ECEFEA;
+    --charcoal: #2A3B33;
+    --deep: #0F2B20;
+    --accent: #2F6B4E;
+    --warm-gray: #6B7E73;
+    --rule: #DCE3DD;
+    --ivory: #F2F6F1;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: var(--bg);
+    font-family: 'Libre Franklin', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+    font-weight: 300;
+    color: var(--charcoal);
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 40px 20px;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background: url("data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' fill-rule='evenodd'%3E%3Cg fill='%230F2B20' fill-opacity='0.03'%3E%3Cpath d='M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zM6 4V0H4v4H0v2h4v4h2V6h4V4H6z'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E") repeat;
+    pointer-events: none; z-index: 0;
+  }
+
+  .invoice-container {
+    position: relative; z-index: 1;
+    width: 100%; max-width: 780px;
+    background: var(--paper);
+    box-shadow: 0 1px 3px rgba(15,43,32,0.06), 0 8px 24px rgba(15,43,32,0.08), 0 24px 80px rgba(15,43,32,0.10);
+  }
+
+  .invoice-container::before {
+    content: ''; display: block;
+    height: 4px;
+    background: linear-gradient(90deg, var(--deep), var(--accent), var(--deep));
+  }
+
+  .invoice-inner { padding: 44px 52px 36px; }
+
+  /* Header */
+  .header {
+    display: flex; justify-content: space-between; align-items: flex-start;
+    margin-bottom: 36px;
+  }
+
+  .brand h1 {
+    font-family: 'Cormorant Garamond', Georgia, serif;
+    font-weight: 300; font-size: 13px;
+    letter-spacing: 4.5px; text-transform: uppercase;
+    color: var(--accent); margin-bottom: 2px;
+  }
+
+  .brand-name {
+    font-family: 'Cormorant Garamond', Georgia, serif;
+    font-weight: 500; font-size: 30px;
+    color: var(--deep); letter-spacing: -0.3px; line-height: 1.1;
+  }
+
+  .invoice-badge { text-align: right; }
+
+  .invoice-badge .label {
+    font-family: 'Cormorant Garamond', Georgia, serif;
+    font-weight: 300; font-size: 11px;
+    letter-spacing: 5px; text-transform: uppercase;
+    color: var(--accent); margin-bottom: 4px;
+  }
+
+  .invoice-badge .number {
+    font-weight: 300; font-size: 12px;
+    color: var(--warm-gray); letter-spacing: 1px;
+  }
+
+  /* Divider */
+  .divider {
+    height: 2px;
+    background: linear-gradient(90deg, var(--accent), rgba(47, 107, 78, 0.4), transparent);
+    margin-bottom: 32px;
+    transform-origin: left;
+  }
+
+  /* Meta */
+  .meta-grid {
+    display: grid; grid-template-columns: 1fr 1fr 1fr;
+    margin-bottom: 36px;
+  }
+
+  .meta-block { padding-right: 20px; }
+  .meta-block:not(:first-child) {
+    padding-left: 20px;
+    border-left: 2px solid rgba(47, 107, 78, 0.25);
+  }
+
+  .meta-label {
+    font-weight: 300; font-size: 10px;
+    letter-spacing: 3px; text-transform: uppercase;
+    color: var(--warm-gray); margin-bottom: 8px;
+  }
+
+  .meta-value {
+    font-family: 'Cormorant Garamond', Georgia, serif;
+    font-weight: 400; font-size: 14px;
+    color: var(--charcoal); line-height: 1.6;
+  }
+
+  .meta-value strong {
+    font-weight: 500; color: var(--deep);
+    display: block; margin-bottom: 1px;
+  }
+
+  /* Items */
+  .items-section { margin-bottom: 32px; }
+
+  .items-header {
+    display: grid; grid-template-columns: 1fr 80px 120px 120px;
+    padding: 0 0 10px;
+    border-bottom: 2px solid var(--accent);
+  }
+
+  .items-header span {
+    font-weight: 300; font-size: 10px;
+    letter-spacing: 3px; text-transform: uppercase;
+    color: var(--warm-gray);
+  }
+
+  .items-header span:not(:first-child) { text-align: right; }
+
+  .item-row {
+    display: grid; grid-template-columns: 1fr 80px 120px 120px;
+    padding: 14px 0;
+    border-bottom: 1.5px solid rgba(47, 107, 78, 0.18);
+    align-items: center;
+  }
+
+  .item-desc {
+    font-family: 'Cormorant Garamond', Georgia, serif;
+    font-weight: 400; font-size: 16px; color: var(--deep);
+  }
+
+  .item-val {
+    text-align: right; font-weight: 300;
+    font-size: 13px; color: var(--charcoal); letter-spacing: 0.3px;
+  }
+
+  /* Totals */
+  .totals-section {
+    display: flex; justify-content: flex-end;
+    margin-bottom: 36px;
+  }
+
+  .totals-block { width: 260px; }
+
+  .total-row {
+    display: flex; justify-content: space-between;
+    padding: 8px 0; font-weight: 300;
+    font-size: 12px; color: var(--warm-gray); letter-spacing: 0.3px;
+  }
+
+  .total-row span:last-child { color: var(--charcoal); font-weight: 400; }
+
+  .total-row.final {
+    border-top: 3px solid var(--accent);
+    margin-top: 6px; padding-top: 12px;
+  }
+
+  .total-row.final span:first-child {
+    font-weight: 300; font-size: 10px;
+    letter-spacing: 3px; text-transform: uppercase;
+    color: var(--charcoal); align-self: center;
+  }
+
+  .total-row.final span:last-child {
+    font-family: 'Cormorant Garamond', Georgia, serif;
+    font-size: 30px; font-weight: 500;
+    color: var(--deep); letter-spacing: -0.5px;
+  }
+
+  /* Payment */
+  .payment-section {
+    background: var(--ivory); border-radius: 6px;
+    padding: 24px 28px;
+  }
+
+  .payment-section .meta-label { margin-bottom: 12px; }
+
+  .payment-grid {
+    display: grid; grid-template-columns: repeat(3, 1fr);
+  }
+
+  .pay-item { padding-right: 20px; }
+  .pay-item:not(:first-child) {
+    padding-left: 20px;
+    border-left: 2px solid rgba(47, 107, 78, 0.25);
+  }
+
+  .pay-key {
+    font-weight: 300; font-size: 10px;
+    letter-spacing: 2px; text-transform: uppercase;
+    color: var(--warm-gray); margin-bottom: 4px;
+  }
+
+  .pay-val {
+    font-family: 'Cormorant Garamond', Georgia, serif;
+    font-weight: 400; font-size: 15px;
+    color: var(--deep); letter-spacing: 0.3px;
+  }
+
+  /* Footer */
+  .footer { padding-top: 24px; text-align: center; }
+
+  .footer p {
+    font-weight: 300; font-size: 11px;
+    color: var(--warm-gray); letter-spacing: 0.5px; line-height: 1.8;
+  }
+
+  .footer .thanks {
+    font-family: 'Cormorant Garamond', Georgia, serif;
+    font-style: italic; font-weight: 300;
+    font-size: 16px; color: var(--accent);
+    margin-bottom: 4px; letter-spacing: 0.5px;
+  }
+
+  /* Print / PDF */
+  @media print {
+    body { background: var(--paper); padding: 0; margin: 0; }
+    .invoice-container { box-shadow: none; max-width: 100%; }
+    .item-row, .totals-section, .payment-section { break-inside: avoid; }
+  }
+
+  @media (max-width: 680px) {
+    .invoice-inner { padding: 36px 28px 32px; }
+    .meta-grid { grid-template-columns: 1fr; gap: 24px; }
+    .meta-block:not(:first-child) { padding-left: 0; border-left: none; border-top: 1px solid var(--rule); padding-top: 24px; }
+    .items-header, .item-row { grid-template-columns: 1fr 60px 80px 80px; }
+    .payment-section { padding: 24px; }
+    .payment-grid { grid-template-columns: 1fr; gap: 16px; }
+    .pay-item:not(:first-child) { padding-left: 0; border-left: none; border-top: 1px solid var(--rule); padding-top: 16px; }
+    .header { flex-direction: column; gap: 20px; }
+    .invoice-badge { text-align: left; }
+    .brand-name { font-size: 26px; }
+    .total-row.final span:last-child { font-size: 26px; }
+  }
+</style>
+</head>
+<body>
+<div>
+  <div class="invoice-container">
+    <div class="invoice-inner">
+      <div class="header">
+        <div class="brand">
+          <h1>Invoice</h1>
+          <div class="brand-name">{{ from_name }}</div>
+        </div>
+        <div class="invoice-badge">
+          <div class="label">Invoice No.</div>
+          <div class="number">{{ invoice_number }}</div>
+        </div>
+      </div>
+      <div class="divider"></div>
+      <div class="meta-grid">
+        <div class="meta-block">
+          <div class="meta-label">From</div>
+          <div class="meta-value">
+            <strong>{{ from_name }}</strong>
+            {{ from_address }}
+          </div>
+        </div>
+        <div class="meta-block">
+          <div class="meta-label">Bill To</div>
+          <div class="meta-value">
+            <strong>{{ bill_to_name }}</strong>
+            {{ bill_to_address }}
+          </div>
+        </div>
+        <div class="meta-block">
+          <div class="meta-label">Date</div>
+          <div class="meta-value"><strong>{{ date }}</strong></div>
+        </div>
+      </div>
+      <div class="items-section">
+        <div class="items-header">
+          <span>Description</span>
+          <span>Qty</span>
+          <span>Unit Price</span>
+          <span>Total</span>
+        </div>
+        {% for item in items %}
+        <div class="item-row">
+          <div class="item-desc">{{ item.description }}</div>
+          <div class="item-val">{{ item.quantity }}</div>
+          <div class="item-val">{{ currency }}{{ "%.2f"|format(item.unit_price) }}</div>
+          <div class="item-val">{{ currency }}{{ "%.2f"|format(item.total) }}</div>
+        </div>
+        {% endfor %}
+      </div>
+      <div class="totals-section">
+        <div class="totals-block">
+          <div class="total-row">
+            <span>Subtotal</span><span>{{ currency }}{{ "%.2f"|format(subtotal) }}</span>
+          </div>
+          <div class="total-row">
+            <span>Discount</span><span>{{ currency }}0.00</span>
+          </div>
+          <div class="total-row">
+            <span>Tax (0%)</span><span>{{ currency }}0.00</span>
+          </div>
+          <div class="total-row final">
+            <span>Balance Due</span><span>{{ currency }}{{ "%.2f"|format(subtotal) }}</span>
+          </div>
+        </div>
+      </div>
+      <div class="payment-section">
+        <div class="meta-label">Payment Details</div>
+        <div class="payment-grid">
+          <div class="pay-item">
+            <div class="pay-key">Account Name</div>
+            <div class="pay-val">{{ payment_account_name }}</div>
+          </div>
+          <div class="pay-item">
+            <div class="pay-key">Account No.</div>
+            <div class="pay-val">{{ payment_account_number }}</div>
+          </div>
+          <div class="pay-item">
+            <div class="pay-key">Sort Code</div>
+            <div class="pay-val">{{ payment_sort_code }}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>
