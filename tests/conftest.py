@@ -14,11 +14,14 @@ def _silence_telegram_alerts(monkeypatch):
     live chat on every run — and the edit-triggered test hook turns that into a
     flood during development.
 
-    Every module accesses the alert function as ``alert.send_alert`` (module-
-    attribute access, never ``from organist_bot.alert import send_alert``), so
-    patching the single source ``organist_bot.alert.send_alert`` neutralises all
-    of them. Tests that assert an alert *was* sent re-patch ``send_alert`` locally
-    with a capturing callable; that patch runs after this autouse fixture and so
-    takes precedence within those tests.
+    Every PRODUCTION module in ``organist_bot/`` accesses the alert function as
+    ``alert.send_alert`` (module-attribute access), so patching the single source
+    ``organist_bot.alert.send_alert`` neutralises all of them. Tests that assert an
+    alert *was* sent re-patch ``send_alert`` locally with a capturing callable;
+    that patch runs after this autouse fixture and so takes precedence.
+
+    Exception: ``tests/test_alert.py`` deliberately imports ``send_alert`` directly
+    to test the real function, so it bypasses this patch — that file mocks
+    ``_requests.post`` itself (and has a class-scoped safety net) so it never POSTs.
     """
     monkeypatch.setattr("organist_bot.alert.send_alert", lambda *args, **kwargs: None)

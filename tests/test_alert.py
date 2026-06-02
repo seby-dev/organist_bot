@@ -3,6 +3,8 @@
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 import organist_bot.alert as _alert_module
 from organist_bot.alert import send_alert
 
@@ -28,6 +30,13 @@ def test_autouse_fixture_silences_module_level_send_alert():
 
 
 class TestSendAlert:
+    @pytest.fixture(autouse=True)
+    def _block_real_post(self, monkeypatch):
+        """Safety net: these tests exercise the REAL send_alert (direct import),
+        so even if a future test here forgets to mock the HTTP call, never hit the
+        real Telegram endpoint. Individual tests re-patch _requests.post and win."""
+        monkeypatch.setattr("organist_bot.alert._requests.post", MagicMock())
+
     def test_posts_to_telegram_when_configured(self):
         """Sends a POST to the Telegram Bot API with the correct payload."""
         mock_post = MagicMock()
