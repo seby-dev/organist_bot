@@ -3,7 +3,28 @@
 
 from unittest.mock import MagicMock, patch
 
+import organist_bot.alert as _alert_module
 from organist_bot.alert import send_alert
+
+
+def test_autouse_fixture_silences_module_level_send_alert():
+    """Regression guard for the "test suite floods Telegram" problem.
+
+    Production modules call ``alert.send_alert(...)`` via the module attribute,
+    which the conftest autouse fixture patches to a no-op. This proves that even
+    with Telegram "configured", a module-attribute call performs no POST. If the
+    autouse fixture is ever removed, this fails (the real send_alert would POST).
+    """
+    posted: list = []
+    with (
+        patch("organist_bot.alert.settings") as mock_settings,
+        patch("organist_bot.alert._requests.post", lambda *a, **k: posted.append(1)),
+    ):
+        mock_settings.telegram_bot_token = "fake-token"
+        mock_settings.telegram_chat_id = 123
+        _alert_module.send_alert("this must not reach Telegram during tests")
+
+    assert posted == []
 
 
 class TestSendAlert:
