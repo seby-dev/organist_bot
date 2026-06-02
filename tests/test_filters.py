@@ -144,6 +144,18 @@ class TestParseStartTime:
     def test_case_insensitive_pm(self):
         assert parse_start_time("2:00 Pm") == datetime.time(14, 0)
 
+    def test_24h_hour_minute(self):
+        assert parse_start_time("14:00") == datetime.time(14, 0)
+
+    def test_24h_leading_zero(self):
+        assert parse_start_time("09:30") == datetime.time(9, 30)
+
+    def test_ampm_pm_still_works(self):
+        assert parse_start_time("2:00 PM") == datetime.time(14, 0)
+
+    def test_ampm_am_still_works(self):
+        assert parse_start_time("9:30 AM") == datetime.time(9, 30)
+
 
 # ─────────────────────────────────────────────────────────
 # parse_weekday

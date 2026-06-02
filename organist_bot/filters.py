@@ -72,6 +72,14 @@ def parse_start_time(time_str: str) -> datetime.time | None:
         except ValueError:
             return None
 
+    m = re.search(r"\b(\d{1,2}):(\d{2})\b", base)
+    if m:
+        hour, minute = int(m.group(1)), int(m.group(2))
+        try:
+            return datetime.time(hour, minute)
+        except ValueError:
+            return None
+
     for fmt in ("%I:%M %p", "%I %p"):
         try:
             return datetime.datetime.strptime(base, fmt).time()
