@@ -24,8 +24,20 @@ try:
 except Exception:
     pr_num = None
 
-pr_ref = f"PR #{pr_num}" if pr_num else "the PR"
-pr_arg = pr_num or "<n>"
+if pr_num:
+    pr_ref = f"PR #{pr_num}"
+    resolve_step = f"`gh pr view {pr_num} --json state,mergedAt`"
+    diff_step = f"`gh pr diff {pr_num}` and `gh pr view {pr_num} --json files,title,body`"
+    branch_name = f"docs/post-merge-sync-{pr_num}"
+else:
+    pr_ref = "the most recently merged PR"
+    resolve_step = (
+        "first resolve the PR number with "
+        "`gh pr list --state merged --limit 1 --json number,mergedAt,title` "
+        "(call this $PR), then check state with `gh pr view $PR --json state,mergedAt`"
+    )
+    diff_step = "`gh pr diff $PR` and `gh pr view $PR --json files,title,body`"
+    branch_name = "docs/post-merge-sync-$PR"
 
 print(
     json.dumps(
@@ -33,10 +45,9 @@ print(
             "systemMessage": (
                 f"`gh pr merge` just ran for {pr_ref}. Drive the docs-sync follow-up:\n"
                 f"1. Confirm the merge actually landed (auto-merge may be waiting on CI): "
-                f"`gh pr view {pr_arg} --json state,mergedAt`.\n"
+                f"{resolve_step}.\n"
                 "2. If state != MERGED, stop here — the docs sync only runs after the merge completes.\n"
-                f"3. Read the merged diff: `gh pr diff {pr_arg}` and "
-                f"`gh pr view {pr_arg} --json files,title,body` for context.\n"
+                f"3. Read the merged diff: {diff_step} for context.\n"
                 "4. Update `README.md` if any user-facing surface changed: setup steps, env vars, "
                 "commands, feature list, prerequisites.\n"
                 "5. Update `technical-report.html` if any architectural surface changed: modules, "
@@ -46,8 +57,8 @@ print(
                 'a prompt like: "Read README.md and technical-report.html against the latest code '
                 'on main. Report any factual inconsistency in under 250 words." Address any '
                 "findings before declaring done.\n"
-                f"8. Commit on a `docs/post-merge-sync-{pr_arg}` branch with a `docs:` "
-                "conventional commit and open a PR (same workflow as any other change)."
+                f"8. Commit on a `{branch_name}` branch with a `docs:` conventional commit and "
+                "open a PR (same workflow as any other change)."
             )
         }
     )
