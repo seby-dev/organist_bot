@@ -54,12 +54,14 @@ async def main() -> None:
 
     async with async_playwright() as pw:
         browser = await pw.chromium.launch()
-        page = await browser.new_page(viewport={"width": 820, "height": 1160})
-        await page.goto(f"file://{html_path.resolve()}")
-        await page.wait_for_load_state("networkidle")
-        await page.pdf(path=str(pdf_path), format="A4", print_background=True)
-        await page.screenshot(path=str(png_path), full_page=True)
-        await browser.close()
+        try:
+            page = await browser.new_page(viewport={"width": 820, "height": 1160})
+            await page.goto(f"file://{html_path.resolve()}")
+            await page.wait_for_load_state("networkidle")
+            await page.pdf(path=str(pdf_path), format="A4", print_background=True)
+            await page.screenshot(path=str(png_path), full_page=True)
+        finally:
+            await browser.close()
 
     print(f"HTML: {html_path}")
     print(f"PDF:  {pdf_path}")
