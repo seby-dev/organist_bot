@@ -35,7 +35,7 @@ def record_application(gig: Gig) -> bool:
     """Write a new 'applied' record. Returns False if URL already exists (idempotent)."""
     with atomic_store.file_lock(_PATH):
         records = _read()
-        if any(r["url"] == gig.link for r in records):
+        if any(r.get("url") == gig.link for r in records):
             return False
         now = _now_iso()
         records.append(
@@ -62,7 +62,7 @@ def update_status(url: str, status: str) -> bool:
     with atomic_store.file_lock(_PATH):
         records = _read()
         for r in records:
-            if r["url"] == url:
+            if r.get("url") == url:
                 r["status"] = status
                 r["updated_at"] = _now_iso()
                 _write(records)
@@ -75,7 +75,7 @@ def update_reply_message_id(url: str, message_id: str) -> bool:
     with atomic_store.file_lock(_PATH):
         records = _read()
         for r in records:
-            if r["url"] == url:
+            if r.get("url") == url:
                 r["reply_message_id"] = message_id
                 r["updated_at"] = _now_iso()
                 _write(records)
@@ -104,7 +104,7 @@ def upsert_accepted(
         now = _now_iso()
         if url is not None:
             for r in records:
-                if r["url"] == url:
+                if r.get("url") == url:
                     r["status"] = "accepted"
                     r["updated_at"] = now
                     if postcode:
@@ -139,7 +139,7 @@ def update_travel_buffer_ids(url: str, before_id: str, after_id: str) -> bool:
     with atomic_store.file_lock(_PATH):
         records = _read()
         for r in records:
-            if r["url"] == url:
+            if r.get("url") == url:
                 r["travel_before_event_id"] = before_id
                 r["travel_after_event_id"] = after_id
                 r["updated_at"] = _now_iso()
@@ -158,9 +158,9 @@ def expire_past_applied() -> int:
         changed = 0
         now = _now_iso()
         for r in records:
-            if r["status"] != "applied":
+            if r.get("status") != "applied":
                 continue
-            normalized = normalize_to_yyyymmdd(r["date"])
+            normalized = normalize_to_yyyymmdd(r.get("date", ""))
             if normalized is None:
                 continue
             try:
@@ -234,11 +234,14 @@ def list_applications(days: int = 30) -> list[dict]:
     cutoff = datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=days)
     result = []
     for r in records:
+        applied_at_raw = r.get("applied_at")
+        if not applied_at_raw:
+            continue
         try:
-            applied_at = datetime.datetime.fromisoformat(r["applied_at"].replace("Z", "+00:00"))
+            applied_at = datetime.datetime.fromisoformat(applied_at_raw.replace("Z", "+00:00"))
         except Exception:
             continue
         if applied_at >= cutoff:
             result.append(r)
-    result.sort(key=lambda r: r["applied_at"], reverse=True)
+    result.sort(key=lambda r: r.get("applied_at", ""), reverse=True)
     return result
