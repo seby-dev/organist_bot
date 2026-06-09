@@ -58,6 +58,54 @@ class FakeTransport:
         self.sent.clear()
 
 
+# ── Module-level send helper (shared by Notifier.apply_to_gig and the agent) ──
+
+
+def send_application_email(
+    *,
+    transport: Transport,
+    settings: Settings,
+    subject: str,
+    body: str,
+    recipient: str,
+    cc: list[str] | None = None,
+) -> None:
+    """Build and dispatch an application email via the given transport.
+
+    Shared by Notifier.apply_to_gig (scheduler path) and the unified-agent
+    approve-tool (Telegram path) so both routes use one MIME-build/dispatch.
+    """
+    msg = MIMEText(body, "html")
+    msg["Subject"] = subject
+    msg["From"] = settings.email_sender
+    msg["To"] = recipient
+    if cc:
+        msg["Cc"] = ", ".join(cc)
+    recipients = [recipient] + (cc or [])
+
+    t0 = time.perf_counter()
+    try:
+        transport.send(settings.email_sender, recipients, msg.as_string())
+    except Exception:
+        logger.exception(
+            "Email dispatch failed",
+            extra={
+                "subject": subject,
+                "recipient": recipient,
+                "elapsed_ms": int((time.perf_counter() - t0) * 1000),
+            },
+        )
+        raise
+    logger.info(
+        "Email dispatched",
+        extra={
+            "subject": subject,
+            "recipient": recipient,
+            "elapsed_ms": int((time.perf_counter() - t0) * 1000),
+        },
+    )
+
+
 # ── Notifier ──────────────────────────────────────────────────────────────────
 
 
@@ -91,22 +139,6 @@ class Notifier:
         logger.debug("Rendering template", extra={"template": template_name})
         return self._env.get_template(template_name).render(**context)
 
-    def _build_message(
-        self,
-        subject: str,
-        body: str,
-        recipient: str,
-        cc: list[str] | None = None,
-    ) -> tuple[MIMEText, list[str]]:
-        msg = MIMEText(body, "html")
-        msg["Subject"] = subject
-        msg["From"] = self._settings.email_sender
-        msg["To"] = recipient
-        if cc:
-            msg["Cc"] = ", ".join(cc)
-        recipients = [recipient] + (cc or [])
-        return msg, recipients
-
     def _dispatch(
         self,
         subject: str,
@@ -114,36 +146,13 @@ class Notifier:
         recipient: str,
         cc: list[str] | None = None,
     ) -> None:
-        msg, recipients = self._build_message(subject, body, recipient, cc)
-        logger.debug(
-            "Dispatching email",
-            extra={
-                "subject": subject,
-                "recipient": recipient,
-                "cc": cc or [],
-                "body_bytes": len(body.encode()),
-            },
-        )
-        t0 = time.perf_counter()
-        try:
-            self._transport.send(self._settings.email_sender, recipients, msg.as_string())
-        except Exception:
-            logger.exception(
-                "Email dispatch failed",
-                extra={
-                    "subject": subject,
-                    "recipient": recipient,
-                    "elapsed_ms": int((time.perf_counter() - t0) * 1000),
-                },
-            )
-            raise
-        logger.info(
-            "Email dispatched",
-            extra={
-                "subject": subject,
-                "recipient": recipient,
-                "elapsed_ms": int((time.perf_counter() - t0) * 1000),
-            },
+        send_application_email(
+            transport=self._transport,
+            settings=self._settings,
+            subject=subject,
+            body=body,
+            recipient=recipient,
+            cc=cc,
         )
 
     # ── public API ────────────────────────────────────────────────────────────
@@ -200,3 +209,21 @@ class Notifier:
                 extra={"link": gig.link},
                 exc_info=True,
             )
+
+    def draft_negotiation(self, gig: Gig, negotiable_fee: int) -> tuple[str, str]:
+        """Render the NEG-fee application as (subject, body). Does NOT send.
+
+        Returned strings are stored on the neg_pending application_store row
+        and re-used verbatim when the user approves the draft in Telegram.
+        """
+        body = self._render(
+            "negotiation.html.j2",
+            gig=gig,
+            applicant_name=self._settings.applicant_name,
+            applicant_mobile=self._settings.applicant_mobile,
+            applicant_video_1=self._settings.applicant_video_1,
+            applicant_video_2=self._settings.applicant_video_2,
+            negotiable_fee=negotiable_fee,
+        )
+        subject = f"Application for Organist Position – {gig.date}"
+        return subject, body

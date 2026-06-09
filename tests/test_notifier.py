@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from organist_bot.models import Gig
-from organist_bot.notifier import FakeTransport, Notifier
+from organist_bot.notifier import FakeTransport, Notifier, send_application_email
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -215,3 +215,52 @@ class TestNegotiationTemplate:
         rendered = _render_negotiation()
         assert "Video 1" not in rendered
         assert "Video 2" not in rendered
+
+
+class TestDraftNegotiation:
+    def test_returns_subject_and_body(self):
+        notifier = Notifier(_make_settings(applicant_name="Alex Organist"), FakeTransport())
+        gig = _make_gig(fee="NEG", contact="Jane Smith", email="jane@stmarys.org")
+        subject, body = notifier.draft_negotiation(gig, negotiable_fee=120)
+        assert subject == f"Application for Organist Position – {gig.date}"
+        assert "£120" in body
+        assert "Jane Smith" in body
+
+    def test_uses_given_fee_value(self):
+        notifier = Notifier(_make_settings(), FakeTransport())
+        gig = _make_gig(fee="NEG", contact="Jane", email="j@e.org")
+        _, body = notifier.draft_negotiation(gig, negotiable_fee=150)
+        assert "£150" in body
+        assert "£120" not in body
+
+
+class TestSendApplicationEmail:
+    def test_dispatches_via_transport(self):
+        transport = FakeTransport()
+        settings = _make_settings(cc_email="cc@example.com")
+        send_application_email(
+            transport=transport,
+            settings=settings,
+            subject="Test Subject",
+            body="<html><body>Hi</body></html>",
+            recipient="recipient@example.com",
+            cc=["cc@example.com"],
+        )
+        assert len(transport.sent) == 1
+        sent = transport.sent[0]
+        assert sent["sender"] == settings.email_sender
+        assert "recipient@example.com" in sent["recipients"]
+        assert "cc@example.com" in sent["recipients"]
+        assert "Test Subject" in sent["message"]
+
+    def test_without_cc(self):
+        transport = FakeTransport()
+        send_application_email(
+            transport=transport,
+            settings=_make_settings(),
+            subject="No CC",
+            body="<html><body>Hi</body></html>",
+            recipient="recipient@example.com",
+            cc=None,
+        )
+        assert transport.sent[0]["recipients"] == ["recipient@example.com"]
