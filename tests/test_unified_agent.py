@@ -349,6 +349,31 @@ class TestListUpcomingGigs:
         assert "Sunday Service 3" in result
 
     @pytest.mark.asyncio
+    async def test_travel_buffers_excluded(self):
+        travel_to = {
+            "id": "tb1",
+            "summary": "🚗 Travel to Sunday Service 2",
+            "start_dt": datetime.datetime(2026, 6, 2, 9, 45, tzinfo=datetime.UTC),
+            "date_str": "2026-06-02",
+        }
+        travel_from = {
+            "id": "tb2",
+            "summary": "🚗 Travel from Sunday Service 2",
+            "start_dt": datetime.datetime(2026, 6, 2, 11, 30, tzinfo=datetime.UTC),
+            "date_str": "2026-06-02",
+        }
+        events = [travel_to, _make_event(2), travel_from]
+        with patch("organist_bot.integrations.unified_agent._make_calendar_client") as mock_factory:
+            mock_cal = MagicMock()
+            mock_cal.list_upcoming_events.return_value = events
+            mock_factory.return_value = mock_cal
+            result = await _execute_tool("list_upcoming_gigs", {}, CHAT_ID)
+        assert "🚗" not in result
+        assert "Travel to" not in result
+        assert "Travel from" not in result
+        assert "Sunday Service 2" in result
+
+    @pytest.mark.asyncio
     async def test_gig_listing_includes_markdown_formatting(self):
         events = [_make_event(1)]
         with patch("organist_bot.integrations.unified_agent._make_calendar_client") as mock_factory:
