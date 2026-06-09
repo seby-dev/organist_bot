@@ -31,6 +31,7 @@ from organist_bot.integrations.invoice_generator import (
     unmark_invoice_paid,
 )
 from organist_bot.models import Gig
+from organist_bot.notifier import Notifier, SMTPTransport, send_application_email
 from organist_bot.runtime_config_store import runtime_config
 from organist_bot.scraper import Scraper
 
@@ -86,6 +87,12 @@ You are an assistant for an organist. You handle three areas:
 - Valid statuses for update: applied, accepted, no_response, declined.
 - "What's my acceptance rate?" / "show analytics" → get_application_analytics.
 - "Break down my gigs by type" / "which gig types do I win?" → get_gig_breakdown.
+
+## NEG-fee drafts
+- "What NEG drafts are pending?" → list_neg_pending.
+- "Approve <id>" → approve_neg_application(gig_id, confirmed=false) — show draft, then confirmed=true after user confirms.
+- "Edit <id>: <new text>" or "edit <id> fee to 150" → edit_neg_application(new_body or new_fee, confirmed=false), then confirmed=true.
+- "Reject <id>" → reject_neg_application(gig_id, confirmed=false), then confirmed=true.
 
 ## Conversation
 - If the user asks to start over, reset, or forget everything → call clear_conversation.
@@ -510,6 +517,74 @@ TOOLS: list[dict] = [
             "required": ["action"],
         },
     },
+    # ── NEG-fee drafts ──────────────────────────────────────────────────────
+    {
+        "name": "list_neg_pending",
+        "description": (
+            "List all NEG-fee application drafts awaiting user review. "
+            "Returns gig_id, gig summary, and a draft-body preview for each. "
+            "Use when the user asks about pending NEG drafts or what is "
+            "awaiting their approval."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "approve_neg_application",
+        "description": (
+            "Approve a NEG-fee application draft and send it as-is to the "
+            "gig contact. Two-step: first call (confirmed=false) returns the "
+            "draft for the user to review; second call (confirmed=true) "
+            "sends and transitions the row to 'applied'."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "gig_id": {
+                    "type": "string",
+                    "description": "12-char id from the Telegram alert or list_neg_pending.",
+                },
+                "confirmed": {"type": "boolean", "default": False},
+            },
+            "required": ["gig_id"],
+        },
+    },
+    {
+        "name": "edit_neg_application",
+        "description": (
+            "Edit a NEG-fee application draft and send the revised version. "
+            "Provide either new_body (replace the whole HTML body) OR "
+            "new_fee (re-render the template with a different £ amount). "
+            "Two-step confirm pattern like approve_neg_application."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "gig_id": {"type": "string"},
+                "new_body": {"type": "string", "description": "Replacement HTML body."},
+                "new_fee": {
+                    "type": "integer",
+                    "description": "Re-render the negotiation template with this fee.",
+                },
+                "confirmed": {"type": "boolean", "default": False},
+            },
+            "required": ["gig_id"],
+        },
+    },
+    {
+        "name": "reject_neg_application",
+        "description": (
+            "Reject a NEG-fee application draft without sending any email. "
+            "Transitions the row to 'rejected'. Two-step confirm pattern."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "gig_id": {"type": "string"},
+                "confirmed": {"type": "boolean", "default": False},
+            },
+            "required": ["gig_id"],
+        },
+    },
     # ── Income forecast ─────────────────────────────────────────────────────
     {
         "name": "get_income_forecast",
@@ -652,6 +727,10 @@ _VERBATIM_RESPONSE_TOOLS = {
     "get_income_forecast",
     "get_application_analytics",
     "get_gig_breakdown",
+    "list_neg_pending",
+    "approve_neg_application",
+    "edit_neg_application",
+    "reject_neg_application",
 }
 
 
@@ -1558,6 +1637,177 @@ async def _handle_manage_applications(input_data: dict, chat_id: int) -> str:
         return json.dumps({"result": "\n".join(lines)})
 
     return json.dumps({"error": f"Unknown action: {action}"})
+
+
+# ── NEG-application tools ────────────────────────────────────────────────────
+
+
+def _find_neg_row(gig_id: str) -> dict | None:
+    for r in application_store.list_neg_pending():
+        if r.get("gig_id") == gig_id:
+            return r
+    return None
+
+
+def _find_any_row_by_gig_id(gig_id: str) -> dict | None:
+    """Search across all statuses — used to report 'already decided'."""
+    for r in application_store._read():
+        if r.get("gig_id") == gig_id:
+            return r
+    return None
+
+
+def _neg_row_lookup_error(gig_id: str) -> str:
+    existing = _find_any_row_by_gig_id(gig_id)
+    if existing is None:
+        return f"No draft found with id {gig_id}."
+    decided = existing.get("decided_at") or existing.get("updated_at") or "unknown time"
+    return f"Already {existing.get('status')} at {decided}."
+
+
+@_handler("list_neg_pending")
+async def _handle_list_neg_pending(input_data: dict, chat_id: int) -> str:
+    rows = application_store.list_neg_pending()
+    if not rows:
+        return json.dumps({"result": "No NEG drafts pending."})
+    lines = [f"{len(rows)} NEG draft(s) pending:"]
+    for r in rows:
+        preview = (r.get("draft_body") or "")[:120].replace("\n", " ")
+        lines.append(
+            f"  • {r['gig_id']}  {r.get('date', '?')}  {r.get('header', '?')[:50]}\n"
+            f"      → £{r.get('negotiable_fee')}  preview: {preview}..."
+        )
+    return json.dumps({"result": "\n".join(lines)})
+
+
+@_handler("approve_neg_application")
+async def _handle_approve_neg(input_data: dict, chat_id: int) -> str:
+    gig_id = input_data.get("gig_id", "")
+    confirmed = input_data.get("confirmed", False)
+
+    row = _find_neg_row(gig_id)
+    if row is None:
+        return json.dumps({"result": _neg_row_lookup_error(gig_id)})
+
+    if not confirmed:
+        return json.dumps(
+            {
+                "result": (
+                    f"Will send this draft to {row.get('email')}.\n\n"
+                    f"Subject: {row.get('draft_subject')}\n\n"
+                    f"{row.get('draft_body')}\n\n"
+                    f"Call again with confirmed=true to send."
+                )
+            }
+        )
+
+    try:
+        send_application_email(
+            transport=SMTPTransport(password=settings.email_password),
+            settings=settings,
+            subject=row["draft_subject"],
+            body=row["draft_body"],
+            recipient=row["email"],
+            cc=[settings.cc_email] if settings.cc_email else None,
+        )
+    except Exception as exc:
+        logger.exception("NEG approve: send failed", extra={"gig_id": gig_id})
+        return json.dumps({"result": f"Send failed: {exc}"})
+
+    ok = application_store.transition_neg_pending(gig_id, to="applied", sent_body=row["draft_body"])
+    if not ok:
+        return json.dumps(
+            {"result": "Sent, but row state was unexpected — check applications.json."}
+        )
+    logger.info("NEG application sent", extra={"gig_id": gig_id, "edited": False})
+    return json.dumps({"result": f"Sent to {row.get('email')}."})
+
+
+@_handler("edit_neg_application")
+async def _handle_edit_neg(input_data: dict, chat_id: int) -> str:
+    gig_id = input_data.get("gig_id", "")
+    new_body: str | None = input_data.get("new_body")
+    new_fee: int | None = input_data.get("new_fee")
+    confirmed = input_data.get("confirmed", False)
+
+    row = _find_neg_row(gig_id)
+    if row is None:
+        return json.dumps({"result": _neg_row_lookup_error(gig_id)})
+
+    if new_body is None and new_fee is None:
+        return json.dumps({"result": "Provide either new_body or new_fee."})
+
+    if new_fee is not None:
+        gig = Gig(
+            header=row.get("header", ""),
+            organisation=row.get("organisation", ""),
+            locality="",
+            date=row.get("date", ""),
+            time=row.get("time", ""),
+            fee=row.get("fee", ""),
+            link=row.get("url", ""),
+            contact=row.get("contact") or None,
+            email=row.get("email", ""),
+            postcode=row.get("postcode", ""),
+        )
+        notifier = Notifier(settings, SMTPTransport(password=settings.email_password))
+        _, new_body = notifier.draft_negotiation(gig, negotiable_fee=int(new_fee))
+
+    if not confirmed:
+        return json.dumps(
+            {
+                "result": (
+                    f"Will send this edited draft to {row.get('email')}.\n\n"
+                    f"Subject: {row.get('draft_subject')}\n\n"
+                    f"{new_body}\n\n"
+                    f"Call again with confirmed=true to send."
+                )
+            }
+        )
+
+    # new_body is non-None here: we returned early above if both new_body and new_fee were None,
+    # and the new_fee branch always assigns new_body.
+    assert new_body is not None
+    try:
+        send_application_email(
+            transport=SMTPTransport(password=settings.email_password),
+            settings=settings,
+            subject=row["draft_subject"],
+            body=new_body,
+            recipient=row["email"],
+            cc=[settings.cc_email] if settings.cc_email else None,
+        )
+    except Exception as exc:
+        logger.exception("NEG edit: send failed", extra={"gig_id": gig_id})
+        return json.dumps({"result": f"Send failed: {exc}"})
+
+    application_store.transition_neg_pending(gig_id, to="applied", sent_body=new_body)
+    logger.info("NEG application sent", extra={"gig_id": gig_id, "edited": True})
+    return json.dumps({"result": f"Edited and sent to {row.get('email')}."})
+
+
+@_handler("reject_neg_application")
+async def _handle_reject_neg(input_data: dict, chat_id: int) -> str:
+    gig_id = input_data.get("gig_id", "")
+    confirmed = input_data.get("confirmed", False)
+
+    row = _find_neg_row(gig_id)
+    if row is None:
+        return json.dumps({"result": _neg_row_lookup_error(gig_id)})
+
+    if not confirmed:
+        return json.dumps(
+            {
+                "result": (
+                    f"Reject NEG draft for '{row.get('header')}'? "
+                    f"Call again with confirmed=true to confirm."
+                )
+            }
+        )
+
+    application_store.transition_neg_pending(gig_id, to="rejected")
+    logger.info("NEG application rejected", extra={"gig_id": gig_id})
+    return json.dumps({"result": "Draft rejected — no email sent."})
 
 
 @_handler("get_gig_stats")

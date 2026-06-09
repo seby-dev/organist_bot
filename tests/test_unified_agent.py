@@ -2024,6 +2024,7 @@ class TestAgentStatePersistence:
 # ── manage_config — negotiable_fee ────────────────────────────────────────────
 
 
+import organist_bot.application_store as application_store  # noqa: E402
 import organist_bot.runtime_config_store as rcs  # noqa: E402
 from organist_bot.integrations.unified_agent import _TOOL_HANDLERS  # noqa: E402
 
@@ -2050,3 +2051,135 @@ async def test_manage_config_rejects_negotiable_fee_out_of_range(tmp_path, monke
     handler = _TOOL_HANDLERS["manage_config"]
     out = json.loads(await handler({"action": "set", "key": "negotiable_fee", "value": -5}, 1))
     assert "Invalid value" in out["result"]
+
+
+# ── NEG-application agent tools ───────────────────────────────────────────────
+
+
+def _seed_neg_pending(link="https://e.com/a"):
+    from organist_bot.models import Gig
+
+    gig = Gig(
+        header="Test",
+        organisation="Org",
+        locality="London",
+        date="Sunday, July 12, 2026",
+        time="10:00 AM",
+        fee="NEG",
+        link=link,
+        contact="Jane",
+        email="jane@example.com",
+    )
+    return application_store.record_neg_pending(
+        gig,
+        draft_subject="Subject",
+        draft_body="<p>Body</p>",
+        negotiable_fee=120,
+    )
+
+
+@pytest.fixture
+def neg_store(tmp_path, monkeypatch):
+    monkeypatch.setattr(application_store, "_PATH", tmp_path / "applications.json")
+
+
+class TestNegTools:
+    async def test_list_neg_pending_returns_pending_rows(self, neg_store):
+        gig_id = _seed_neg_pending()
+        out = json.loads(await _TOOL_HANDLERS["list_neg_pending"]({}, 1))
+        assert gig_id in out["result"]
+        assert "Test" in out["result"]
+
+    async def test_list_neg_pending_empty(self, neg_store):
+        out = json.loads(await _TOOL_HANDLERS["list_neg_pending"]({}, 1))
+        assert "No NEG drafts pending" in out["result"]
+
+    async def test_approve_without_confirmed_returns_preview(self, neg_store):
+        gig_id = _seed_neg_pending()
+        out = json.loads(await _TOOL_HANDLERS["approve_neg_application"]({"gig_id": gig_id}, 1))
+        assert "confirm" in out["result"].lower()
+        assert application_store._read()[0]["status"] == "neg_pending"
+
+    async def test_approve_confirmed_sends_and_transitions(self, neg_store):
+        gig_id = _seed_neg_pending()
+        with patch("organist_bot.integrations.unified_agent.send_application_email") as mock_send:
+            out = json.loads(
+                await _TOOL_HANDLERS["approve_neg_application"](
+                    {"gig_id": gig_id, "confirmed": True}, 1
+                )
+            )
+        assert "sent" in out["result"].lower()
+        mock_send.assert_called_once()
+        assert mock_send.call_args.kwargs["recipient"] == "jane@example.com"
+        assert application_store._read()[0]["status"] == "applied"
+
+    async def test_approve_unknown_gig_id_returns_error(self, neg_store):
+        out = json.loads(
+            await _TOOL_HANDLERS["approve_neg_application"](
+                {"gig_id": "deadbeefcafe", "confirmed": True}, 1
+            )
+        )
+        assert "no draft found" in out["result"].lower()
+
+    async def test_approve_already_applied_returns_already(self, neg_store):
+        gig_id = _seed_neg_pending()
+        with patch("organist_bot.integrations.unified_agent.send_application_email"):
+            await _TOOL_HANDLERS["approve_neg_application"](
+                {"gig_id": gig_id, "confirmed": True}, 1
+            )
+            out = json.loads(
+                await _TOOL_HANDLERS["approve_neg_application"](
+                    {"gig_id": gig_id, "confirmed": True}, 1
+                )
+            )
+        assert "already" in out["result"].lower()
+
+    async def test_approve_send_failure_keeps_row_pending(self, neg_store):
+        gig_id = _seed_neg_pending()
+        with patch(
+            "organist_bot.integrations.unified_agent.send_application_email",
+            side_effect=RuntimeError("smtp down"),
+        ):
+            out = json.loads(
+                await _TOOL_HANDLERS["approve_neg_application"](
+                    {"gig_id": gig_id, "confirmed": True}, 1
+                )
+            )
+        assert "failed" in out["result"].lower()
+        assert application_store._read()[0]["status"] == "neg_pending"
+
+    async def test_edit_with_new_body_confirmed_sends_edited(self, neg_store):
+        gig_id = _seed_neg_pending()
+        with patch("organist_bot.integrations.unified_agent.send_application_email") as mock_send:
+            await _TOOL_HANDLERS["edit_neg_application"](
+                {"gig_id": gig_id, "new_body": "<p>EDITED</p>", "confirmed": True}, 1
+            )
+        assert "EDITED" in mock_send.call_args.kwargs["body"]
+        r = application_store._read()[0]
+        assert r["status"] == "applied"
+        assert "EDITED" in r["draft_body"]
+
+    async def test_edit_requires_new_body_or_new_fee(self, neg_store):
+        gig_id = _seed_neg_pending()
+        out = json.loads(await _TOOL_HANDLERS["edit_neg_application"]({"gig_id": gig_id}, 1))
+        assert "new_body or new_fee" in out["result"]
+
+    async def test_edit_with_new_fee_rerenders(self, neg_store):
+        gig_id = _seed_neg_pending()
+        with patch("organist_bot.integrations.unified_agent.send_application_email") as mock_send:
+            await _TOOL_HANDLERS["edit_neg_application"](
+                {"gig_id": gig_id, "new_fee": 150, "confirmed": True}, 1
+            )
+        assert "£150" in mock_send.call_args.kwargs["body"]
+
+    async def test_reject_confirmed_skips_send(self, neg_store):
+        gig_id = _seed_neg_pending()
+        with patch("organist_bot.integrations.unified_agent.send_application_email") as mock_send:
+            out = json.loads(
+                await _TOOL_HANDLERS["reject_neg_application"](
+                    {"gig_id": gig_id, "confirmed": True}, 1
+                )
+            )
+        assert "rejected" in out["result"].lower()
+        mock_send.assert_not_called()
+        assert application_store._read()[0]["status"] == "rejected"
