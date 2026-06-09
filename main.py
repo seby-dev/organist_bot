@@ -1,7 +1,9 @@
 import argparse
 import fcntl
 import hashlib
+import html as _html
 import logging
+import re
 import time
 import uuid
 
@@ -20,6 +22,7 @@ from organist_bot.filters import (
     PostcodeFilter,
     SeenFilter,
     SundayTimeFilter,
+    is_negotiable,
 )
 from organist_bot.integrations.calendar_client import GoogleCalendarClient
 from organist_bot.integrations.sheets_logger import SheetsLogger
@@ -39,6 +42,30 @@ logger = logging.getLogger(__name__)
 
 
 _LOCK_FILE = "/tmp/organistbot_scheduler.lock"
+
+
+def _send_neg_alert(gig: Gig, gig_id: str, subject: str, body: str) -> None:
+    """One Telegram message per NEG draft with the body in plain text."""
+    # Strip HTML tags crudely for Telegram. The body is our own hand-written
+    # Jinja2 template, so there are no scripts/styles to worry about.
+    plain = _html.unescape(re.sub(r"<[^>]+>", "", body)).strip()
+    plain = re.sub(r"\n{3,}", "\n\n", plain)
+    org = f" · {gig.organisation}" if gig.organisation else ""
+    contact_line = (
+        f"Contact: {gig.contact or '(none)'} <{gig.email}>" if gig.email else "Contact: (none)"
+    )
+    msg = (
+        f"🟡 NEG draft pending — id: {gig_id}\n\n"
+        f"Gig: {gig.header}{org} · {gig.date} · {gig.time}\n"
+        f"{contact_line}\n\n"
+        f"Subject: {subject}\n\n"
+        f"{plain}\n\n"
+        f"Reply:\n"
+        f'  • "approve {gig_id}" to send as-is\n'
+        f'  • "edit {gig_id}: <new body>" to send a revised version\n'
+        f'  • "reject {gig_id}" to skip'
+    )
+    alert.send_alert(msg)
 
 
 def main(
@@ -113,6 +140,12 @@ def _run(
         if settings.enable_fee_filter
         else None
     )
+    # When NEG drafting is enabled we remove FeeFilter from BOTH chains so NEG
+    # gigs survive past pre_filter (needed for the detail-page fetch that gets
+    # us the contact email) and past filter_chain. The explicit partition gate
+    # below Phase 2 then sorts them into normal / NEG / drop.
+    _include_fee_in_chains = _fee_filter is not None and not settings.enable_neg_drafts
+
     _sunday_time_filter = SundayTimeFilter() if settings.enable_sunday_time_filter else None
     _avail_filters: list = []
     if settings.enable_availability_filter:
@@ -131,7 +164,7 @@ def _run(
     pre_filter = GigFilterChain()
     if settings.enable_seen_filter:
         pre_filter.add(SeenFilter(seen_gigs_set))
-    if _fee_filter is not None:
+    if _fee_filter is not None and _include_fee_in_chains:
         pre_filter.add(_fee_filter)
     if _sunday_time_filter is not None:
         pre_filter.add(_sunday_time_filter)
@@ -223,10 +256,12 @@ def _run(
 
     filter_chain = GigFilterChain()
 
-    if _fee_filter is not None:
+    if _fee_filter is not None and _include_fee_in_chains:
         filter_chain.add(_fee_filter)
-    else:
+    elif _fee_filter is None:
         logger.info("FeeFilter disabled")
+    else:
+        logger.info("FeeFilter excluded from chains — NEG drafting active")
 
     if _sunday_time_filter is not None:
         filter_chain.add(_sunday_time_filter)
@@ -259,6 +294,32 @@ def _run(
 
     valid_gigs = filter_chain.apply(gig_list)
 
+    # ── Fee partition (only meaningful when enable_neg_drafts is True) ───────
+    neg_gigs: list[Gig] = []
+
+    if settings.enable_neg_drafts and _fee_filter is not None:
+        normal_gigs: list[Gig] = []
+        fee_dropped = 0
+        for gig in valid_gigs:
+            if _fee_filter(gig):
+                normal_gigs.append(gig)
+            elif is_negotiable(gig.fee):
+                neg_gigs.append(gig)
+            else:
+                fee_dropped += 1
+        logger.info(
+            "Fee partition applied",
+            extra={
+                "total_in": len(valid_gigs),
+                "normal": len(normal_gigs),
+                "neg": len(neg_gigs),
+                "dropped": fee_dropped,
+            },
+        )
+        valid_gigs = normal_gigs  # Phase 3 + seen-gigs only handle normal gigs
+    # When enable_neg_drafts is False, FeeFilter was already in the chain so
+    # valid_gigs is correct as-is and neg_gigs stays empty.
+
     logger.info(
         "Filtering complete",
         extra={
@@ -280,6 +341,43 @@ def _run(
                 "contact_email": gig.email or "",
                 "link": gig.link,
             },
+        )
+
+    # ── NEG drafts: render, persist, alert Telegram ───────────────────────────
+    if neg_gigs and not dry_run:
+        _neg_notifier = Notifier(settings, SMTPTransport(password=settings.email_password))
+        _negotiable_fee = runtime_config.get("negotiable_fee", settings.negotiable_fee)
+        _queued_ids: list[str] = []
+        for gig in neg_gigs:
+            if not gig.email:
+                logger.warning(
+                    "NEG draft skipped — no contact email",
+                    extra={"header": gig.header, "link": gig.link},
+                )
+                continue
+            try:
+                subject, body = _neg_notifier.draft_negotiation(gig, negotiable_fee=_negotiable_fee)
+                gig_id = application_store.record_neg_pending(
+                    gig,
+                    draft_subject=subject,
+                    draft_body=body,
+                    negotiable_fee=_negotiable_fee,
+                )
+                _queued_ids.append(gig_id)
+                _send_neg_alert(gig, gig_id, subject, body)
+            except Exception:
+                logger.exception(
+                    "NEG draft failed for gig — skipping",
+                    extra={"link": gig.link},
+                )
+        logger.info(
+            "NEG drafts queued",
+            extra={"count": len(_queued_ids), "gig_ids": _queued_ids},
+        )
+    elif neg_gigs and dry_run:
+        logger.info(
+            "Phase 3 — DRY-RUN: would draft NEG gigs",
+            extra={"count": len(neg_gigs)},
         )
 
     # ── Phase 3: Notify ───────────────────────────────────────────────────────
