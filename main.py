@@ -45,19 +45,27 @@ _LOCK_FILE = "/tmp/organistbot_scheduler.lock"
 
 
 def _send_neg_alert(gig: Gig, gig_id: str, subject: str, body: str) -> None:
-    """One Telegram message per NEG draft with the body in plain text."""
-    # Strip HTML tags crudely for Telegram. The body is our own hand-written
-    # Jinja2 template, so there are no scripts/styles to worry about.
-    plain = _html.unescape(re.sub(r"<[^>]+>", "", body)).strip()
-    plain = re.sub(r"\n{3,}", "\n\n", plain)
-    org = f" · {gig.organisation}" if gig.organisation else ""
+    """Two Telegram messages per NEG draft: gig details first, then the draft."""
+    org = f" — {gig.organisation}" if gig.organisation else ""
     contact_line = (
         f"Contact: {gig.contact or '(none)'} <{gig.email}>" if gig.email else "Contact: (none)"
     )
-    msg = (
-        f"🟡 NEG draft pending — id: {gig_id}\n\n"
-        f"Gig: {gig.header}{org} · {gig.date} · {gig.time}\n"
-        f"{contact_line}\n\n"
+    location_line = f"Location: {gig.postcode}\n" if gig.postcode else ""
+    details_msg = (
+        f"🟡 NEG gig — {gig.header}{org}\n\n"
+        f"Date:     {gig.date} · {gig.time}\n"
+        f"Fee:      {gig.fee or 'NEG'}\n"
+        f"{location_line}"
+        f"{contact_line}\n"
+        f"Link:     {gig.link}"
+    )
+    alert.send_alert(details_msg)
+
+    # Strip HTML tags from the draft body for Telegram display.
+    plain = _html.unescape(re.sub(r"<[^>]+>", "", body)).strip()
+    plain = re.sub(r"\n{3,}", "\n\n", plain)
+    draft_msg = (
+        f"Draft email — id: {gig_id}\n\n"
         f"Subject: {subject}\n\n"
         f"{plain}\n\n"
         f"Reply:\n"
@@ -65,7 +73,7 @@ def _send_neg_alert(gig: Gig, gig_id: str, subject: str, body: str) -> None:
         f'  • "edit {gig_id}: <new body>" to send a revised version\n'
         f'  • "reject {gig_id}" to skip'
     )
-    alert.send_alert(msg)
+    alert.send_alert(draft_msg)
 
 
 def main(
