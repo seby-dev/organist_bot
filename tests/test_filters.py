@@ -1392,8 +1392,9 @@ class TestCalendarFilterCompeting:
         client.get_events_on_date.return_value = []  # simulates API error (fail-open)
         f = CalendarFilter(client)
         gig = make_gig(date="Sunday, 15 March 2026")
-        with patch("organist_bot.filters.alert"):
+        with patch("organist_bot.filters.alert") as mock_alert:
             assert f(gig) is True
+        mock_alert.send_alert.assert_not_called()
 
 
 # ─────────────────────────────────────────────────────────
