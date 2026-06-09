@@ -35,13 +35,12 @@ jq -n --arg s "$sentinel" '{
     hookEventName: "PreToolUse",
     permissionDecision: "deny",
     permissionDecisionReason: (
-      "⚠️  Before opening a PR for organist_bot you MUST first run BOTH reviewers against the current HEAD:\n\n" +
-      "  1. CodeRabbit:   invoke Skill(coderabbit:coderabbit-review)\n" +
-      "  2. Local agent:  Agent(subagent_type=\"pipeline-impact-reviewer\", prompt=\"Review git diff main...HEAD for organist_bot cross-file invariants\")\n\n" +
-      "Address all findings from BOTH reviewers. Then bypass and retry the SAME gh pr create command:\n" +
+      "⚠️  Before opening a PR for organist_bot you MUST first run the reviewer against the current HEAD:\n\n" +
+      "  Agent(subagent_type=\"pipeline-impact-reviewer\", prompt=\"Review git diff main...HEAD for organist_bot cross-file invariants\")\n\n" +
+      "Address all findings. Then bypass and retry the SAME gh pr create command:\n" +
       "  touch " + $s + "\n" +
       "  # retry gh pr create ...\n\n" +
-      "The sentinel is keyed to session_id + HEAD SHA, so new commits invalidate it and the reviewers must run again."
+      "The sentinel is keyed to session_id + HEAD SHA, so new commits invalidate it and the reviewer must run again."
     )
   }
 }'
