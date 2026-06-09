@@ -1642,6 +1642,19 @@ async def _handle_manage_applications(input_data: dict, chat_id: int) -> str:
 # ── NEG-application tools ────────────────────────────────────────────────────
 
 
+def _neg_body_as_text(body: str) -> str:
+    """Plain-text rendering of a draft HTML body for Telegram previews.
+
+    Same crude tag-strip as main._send_neg_alert — the body is our own
+    hand-written Jinja2 template, so there are no scripts/styles to worry about.
+    """
+    import html as _html
+    import re as _re
+
+    plain = _html.unescape(_re.sub(r"<[^>]+>", "", body)).strip()
+    return _re.sub(r"\n{3,}", "\n\n", plain)
+
+
 def _find_neg_row(gig_id: str) -> dict | None:
     for r in application_store.list_neg_pending():
         if r.get("gig_id") == gig_id:
@@ -1672,7 +1685,7 @@ async def _handle_list_neg_pending(input_data: dict, chat_id: int) -> str:
         return json.dumps({"result": "No NEG drafts pending."})
     lines = [f"{len(rows)} NEG draft(s) pending:"]
     for r in rows:
-        preview = (r.get("draft_body") or "")[:120].replace("\n", " ")
+        preview = _neg_body_as_text(r.get("draft_body") or "")[:120].replace("\n", " ")
         lines.append(
             f"  • {r['gig_id']}  {r.get('date', '?')}  {r.get('header', '?')[:50]}\n"
             f"      → £{r.get('negotiable_fee')}  preview: {preview}..."
@@ -1695,7 +1708,7 @@ async def _handle_approve_neg(input_data: dict, chat_id: int) -> str:
                 "result": (
                     f"Will send this draft to {row.get('email')}.\n\n"
                     f"Subject: {row.get('draft_subject')}\n\n"
-                    f"{row.get('draft_body')}\n\n"
+                    f"{_neg_body_as_text(row.get('draft_body') or '')}\n\n"
                     f"Call again with confirmed=true to send."
                 )
             }
@@ -1759,7 +1772,7 @@ async def _handle_edit_neg(input_data: dict, chat_id: int) -> str:
                 "result": (
                     f"Will send this edited draft to {row.get('email')}.\n\n"
                     f"Subject: {row.get('draft_subject')}\n\n"
-                    f"{new_body}\n\n"
+                    f"{_neg_body_as_text(new_body or '')}\n\n"
                     f"Call again with confirmed=true to send."
                 )
             }
