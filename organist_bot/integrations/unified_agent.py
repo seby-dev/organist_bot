@@ -1339,16 +1339,35 @@ async def _handle_manage_blacklist(input_data: dict, chat_id: int) -> str:
     return json.dumps({"error": f"Unknown action: {action}"})
 
 
+def _format_period(token: str) -> str:
+    """Format a YYYY-MM-DD or YYYY-MM-DD:YYYY-MM-DD token into a readable label."""
+    fmt = "%d %b %Y"
+    try:
+        if ":" in token:
+            start_s, end_s = token.split(":", 1)
+            start = datetime.date.fromisoformat(start_s)
+            end = datetime.date.fromisoformat(end_s)
+            if start.year == end.year:
+                return f"{start.strftime('%d %b')} – {end.strftime('%d %b %Y')}"
+            return f"{start.strftime(fmt)} – {end.strftime(fmt)}"
+        return datetime.date.fromisoformat(token).strftime(fmt)
+    except ValueError:
+        return token
+
+
+def _format_periods_list(periods: list[str], label: str) -> str:
+    if not periods:
+        return f"No {label} set."
+    lines = "\n".join(f"  • {_format_period(p)}" for p in periods)
+    return f"{label.capitalize()} ({len(periods)}):\n{lines}"
+
+
 @_handler("manage_unavailable")
 async def _handle_manage_unavailable(input_data: dict, chat_id: int) -> str:
     action = input_data["action"]
     if action == "list":
         periods = filter_store.unavailable_periods()
-        return (
-            json.dumps({"unavailable_periods": periods})
-            if periods
-            else json.dumps({"result": "No unavailable periods set."})
-        )
+        return _format_periods_list(periods, "unavailable periods")
     period = _resolve_period(input_data.get("period", ""))
     if action == "add":
         added = filter_store.add_period("unavailable_periods", period)
@@ -1390,11 +1409,7 @@ async def _handle_manage_available(input_data: dict, chat_id: int) -> str:
     action = input_data["action"]
     if action == "list":
         periods = filter_store.available_only_periods()
-        return (
-            json.dumps({"available_only_periods": periods})
-            if periods
-            else json.dumps({"result": "No available-only periods set."})
-        )
+        return _format_periods_list(periods, "available-only periods")
     period = input_data.get("period", "")
     if action == "add":
         added = filter_store.add_period("available_only_periods", period)
