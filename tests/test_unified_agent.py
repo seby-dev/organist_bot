@@ -374,6 +374,45 @@ class TestListUpcomingGigs:
         assert "Sunday Service 2" in result
 
     @pytest.mark.asyncio
+    async def test_overfetches_then_truncates_to_max_results(self):
+        # 5 real gigs interleaved with travel buffers — caller asks for 3,
+        # should still get exactly 3 real gigs (not 3 minus the buffers).
+        events = []
+        for n in (1, 2, 3, 4, 5):
+            events.append(
+                {
+                    "id": f"tb-before-{n}",
+                    "summary": f"🚗 Travel to Sunday Service {n}",
+                    "start_dt": datetime.datetime(2026, 6, n, 9, 45, tzinfo=datetime.UTC),
+                    "date_str": f"2026-06-0{n}",
+                }
+            )
+            events.append(_make_event(n))
+            events.append(
+                {
+                    "id": f"tb-after-{n}",
+                    "summary": f"🚗 Travel from Sunday Service {n}",
+                    "start_dt": datetime.datetime(2026, 6, n, 11, 30, tzinfo=datetime.UTC),
+                    "date_str": f"2026-06-0{n}",
+                }
+            )
+        with patch("organist_bot.integrations.unified_agent._make_calendar_client") as mock_factory:
+            mock_cal = MagicMock()
+            mock_cal.list_upcoming_events.return_value = events
+            mock_factory.return_value = mock_cal
+            result = await _execute_tool("list_upcoming_gigs", {"max_results": 3}, CHAT_ID)
+        # Over-fetch: API call should request more than max_results
+        called_count = mock_cal.list_upcoming_events.call_args.kwargs["max_results"]
+        assert called_count > 3, f"expected over-fetch, got max_results={called_count}"
+        # Truncate: only 3 gigs should appear in the rendered output and cache
+        assert "Sunday Service 1" in result
+        assert "Sunday Service 2" in result
+        assert "Sunday Service 3" in result
+        assert "Sunday Service 4" not in result
+        assert "Sunday Service 5" not in result
+        assert len(_last_gig_listing[CHAT_ID]) == 3
+
+    @pytest.mark.asyncio
     async def test_gig_listing_includes_markdown_formatting(self):
         events = [_make_event(1)]
         with patch("organist_bot.integrations.unified_agent._make_calendar_client") as mock_factory:
