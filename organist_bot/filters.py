@@ -489,35 +489,20 @@ class CalendarFilter:
 
         competing = [e for e in events if e.get("summary", "").strip() != "Unavailable"]
         if competing:
-            self._alert_competing(gig, competing)
+            logger.info(
+                "CalendarFilter: competing gig detected — alerting",
+                extra={
+                    "header": gig.header,
+                    "date": gig.date,
+                    "competing": [e.get("summary", "(untitled)") for e in competing],
+                },
+            )
         else:
             logger.debug(
                 "CalendarFilter: date already busy — rejecting",
                 extra={"header": gig.header, "date": gig.date},
             )
         return False
-
-    def _alert_competing(self, gig: Gig, competing: list[dict]) -> None:
-        org_part = f" — {gig.organisation}" if gig.organisation else ""
-        fee_part = f"\nFee:      {gig.fee}" if gig.fee else ""
-        conflicts = "\n".join(f"  • {e.get('summary', '(untitled)')}" for e in competing)
-        msg = (
-            "⚠️ Competing gig — date already booked\n\n"
-            f"New gig:  {gig.header}{org_part}\n"
-            f"Date:     {gig.date}"
-            f"{fee_part}\n"
-            f"URL:      {gig.link}\n\n"
-            f"Conflicts with:\n{conflicts}"
-        )
-        logger.info(
-            "CalendarFilter: competing gig detected — alerting",
-            extra={
-                "header": gig.header,
-                "date": gig.date,
-                "competing": [e.get("summary", "(untitled)") for e in competing],
-            },
-        )
-        alert.send_alert(msg)
 
     def __repr__(self):
         return "CalendarFilter()"
