@@ -76,7 +76,7 @@ You are an assistant for an organist. You handle three areas:
 - "What's the current config?" / "show config" → manage_config(action=get).
 - "Set min fee to 150" → manage_config(action=set, key=min_fee, value=150).
 - "Reset min fee to default" → manage_config(action=reset, key=min_fee).
-- Editable keys: min_fee, max_travel_minutes, poll_minutes.
+- Editable keys: min_fee, max_travel_minutes, poll_minutes, negotiable_fee.
 
 ## Application tracking
 - "What applications are pending?" / "show my applications" → manage_applications(action=list).
@@ -447,7 +447,8 @@ TOOLS: list[dict] = [
         "description": (
             "Read or update runtime pipeline configuration. "
             "Editable keys: min_fee (int, ≥0), max_travel_minutes (int, 1–300), "
-            "poll_minutes (int, 1–60). Changes take effect on the next polling tick. "
+            "poll_minutes (int, 1–60), negotiable_fee (int, 0–100000). "
+            "Changes take effect on the next polling tick. "
             "Use action='reset' to restore the .env default for a key."
         ),
         "input_schema": {
@@ -463,7 +464,7 @@ TOOLS: list[dict] = [
                 },
                 "key": {
                     "type": "string",
-                    "enum": ["min_fee", "max_travel_minutes", "poll_minutes"],
+                    "enum": ["min_fee", "max_travel_minutes", "poll_minutes", "negotiable_fee"],
                     "description": "Required for set and reset actions.",
                 },
                 "value": {
@@ -1642,11 +1643,13 @@ async def _handle_manage_config(input_data: dict, chat_id: int) -> str:
         "min_fee": (0, 100_000),
         "max_travel_minutes": (1, 300),
         "poll_minutes": (1, 60),
+        "negotiable_fee": (0, 100_000),
     }
     _DEFAULTS = {
         "min_fee": settings.min_fee,
         "max_travel_minutes": settings.max_travel_minutes,
         "poll_minutes": settings.poll_minutes,
+        "negotiable_fee": settings.negotiable_fee,
     }
 
     if action == "get":

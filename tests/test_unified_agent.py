@@ -2019,3 +2019,34 @@ class TestAgentStatePersistence:
             unified_agent._hydrate_chat(cid)  # must not raise
         finally:
             unified_agent._hydrated.discard(cid)
+
+
+# ── manage_config — negotiable_fee ────────────────────────────────────────────
+
+
+import organist_bot.runtime_config_store as rcs  # noqa: E402
+from organist_bot.integrations.unified_agent import _TOOL_HANDLERS  # noqa: E402
+
+
+@pytest.mark.asyncio
+async def test_manage_config_accepts_negotiable_fee_set(tmp_path, monkeypatch):
+    monkeypatch.setattr(rcs, "_PATH", tmp_path / "runtime_config.json")
+    handler = _TOOL_HANDLERS["manage_config"]
+    out = json.loads(await handler({"action": "set", "key": "negotiable_fee", "value": 150}, 1))
+    assert "negotiable_fee set to 150" in out["result"]
+
+
+@pytest.mark.asyncio
+async def test_manage_config_get_shows_negotiable_fee(tmp_path, monkeypatch):
+    monkeypatch.setattr(rcs, "_PATH", tmp_path / "runtime_config.json")
+    handler = _TOOL_HANDLERS["manage_config"]
+    out = json.loads(await handler({"action": "get"}, 1))
+    assert "negotiable_fee" in out["result"]
+
+
+@pytest.mark.asyncio
+async def test_manage_config_rejects_negotiable_fee_out_of_range(tmp_path, monkeypatch):
+    monkeypatch.setattr(rcs, "_PATH", tmp_path / "runtime_config.json")
+    handler = _TOOL_HANDLERS["manage_config"]
+    out = json.loads(await handler({"action": "set", "key": "negotiable_fee", "value": -5}, 1))
+    assert "Invalid value" in out["result"]
