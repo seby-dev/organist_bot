@@ -244,7 +244,9 @@ def update_travel_buffer_ids(url: str, before_id: str, after_id: str) -> bool:
 
 
 def expire_past_applied() -> int:
-    """Mark all 'applied' records whose date < today as 'no_response'. Returns count changed."""
+    """Mark past-date 'applied' rows as 'no_response' and past-date 'neg_pending'
+    rows as 'expired'. Returns total count changed.
+    """
     from organist_bot.filters import normalize_to_yyyymmdd
 
     today = datetime.date.today()
@@ -253,7 +255,8 @@ def expire_past_applied() -> int:
         changed = 0
         now = _now_iso()
         for r in records:
-            if r.get("status") != "applied":
+            status = r.get("status")
+            if status not in ("applied", "neg_pending"):
                 continue
             normalized = normalize_to_yyyymmdd(r.get("date", ""))
             if normalized is None:
@@ -263,7 +266,12 @@ def expire_past_applied() -> int:
             except ValueError:
                 continue
             if gig_date < today:
-                r["status"] = "no_response"
+                if status == "applied":
+                    r["status"] = "no_response"
+                else:  # neg_pending
+                    r["status"] = "expired"
+                    r["decision"] = "expired"
+                    r["decided_at"] = now
                 r["updated_at"] = now
                 changed += 1
         if changed:
