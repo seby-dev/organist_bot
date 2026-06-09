@@ -196,10 +196,9 @@ class Scraper:
     @staticmethod
     def _get_sibling_text(detail_element: Tag, label: str) -> str | None:
         """Extract text from the sibling paragraph of a labeled heading."""
-        element = detail_element.find("h3", string=label)  # type: ignore[call-overload]
-        if element and element.find_next_sibling("p"):
-            return element.find_next_sibling("p").get_text(strip=True)
-        return None
+        element = next((h for h in detail_element.find_all("h3") if h.string == label), None)
+        sibling = element.find_next_sibling("p") if element else None
+        return sibling.get_text(strip=True) if sibling else None
 
     def __enter__(self):
         return self
