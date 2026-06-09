@@ -54,10 +54,13 @@ if result.returncode != 0:
     print("git reset failed")
     sys.exit(1)
 
-run(
+result = run(
     [str(UV), "sync", "--project", str(REPO)],
     env={**os.environ, "UV_PROJECT_ENVIRONMENT": str(VENV)},
 )
+if result.returncode != 0:
+    print("uv sync failed")
+    sys.exit(1)
 
 for plist in PLISTS:
     run(["launchctl", "bootout", f"gui/{UID}", str(plist)], capture_output=True)
