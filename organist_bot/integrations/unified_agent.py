@@ -889,9 +889,17 @@ async def _handle_list_upcoming_gigs(input_data: dict, chat_id: int) -> str:
     if cal is None:
         return json.dumps({"error": "Google Calendar not configured."})
     max_results = input_data.get("max_results", 10)
-    events = cal.list_upcoming_events(max_results=max_results)
-    events = [e for e in events if e.get("summary", "").strip() != "Unavailable"]
-    events = sorted(events, key=lambda e: e["start_dt"])
+    # Each booked gig typically generates ~3 non-gig events (1 Unavailable block
+    # + 2 travel buffers), so over-fetch to keep the post-filter list at the
+    # requested size.
+    events = cal.list_upcoming_events(max_results=max_results * 4)
+    events = [
+        e
+        for e in events
+        if e.get("summary", "").strip() != "Unavailable"
+        and not e.get("summary", "").startswith("🚗 Travel ")
+    ]
+    events = sorted(events, key=lambda e: e["start_dt"])[:max_results]
     _last_gig_listing[chat_id] = events
     if not events:
         return json.dumps({"result": "No upcoming gigs found."})
