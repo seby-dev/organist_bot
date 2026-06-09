@@ -114,6 +114,14 @@ def list_neg_pending() -> list[dict]:
     return [r for r in _read() if r.get("status") == "neg_pending"]
 
 
+def get_by_gig_id(gig_id: str) -> dict | None:
+    """Return the record with this gig_id regardless of status, or None."""
+    for r in _read():
+        if r.get("gig_id") == gig_id:
+            return r
+    return None
+
+
 def transition_neg_pending(
     gig_id: str,
     *,

@@ -157,3 +157,5 @@ The user approves/edits/rejects via Telegram chat (unified-agent tools, two-step
 - `reject <gig_id>` → `reject_neg_application` transitions to `rejected`; no email.
 
 Past-date `neg_pending` rows auto-flip to `expired` via `expire_past_applied`. `ENABLE_NEG_DRAFTS=false` reverts to the old behavior (NEG gigs rejected by `FeeFilter`).
+
+Two intentional visibility caveats: (1) `neg_pending`/`rejected`/`expired` NEG rows have no `applied_at`, so they never appear in `manage_applications` summaries or analytics — only `list_neg_pending` shows drafts, and approved drafts become normal `applied` rows; (2) with NEG drafting active, `FeeFilter` disappears from the dashboard's `filter_breakdown` metric — the "Fee partition applied" log (normal/neg/dropped counts) replaces it.

@@ -1662,16 +1662,8 @@ def _find_neg_row(gig_id: str) -> dict | None:
     return None
 
 
-def _find_any_row_by_gig_id(gig_id: str) -> dict | None:
-    """Search across all statuses — used to report 'already decided'."""
-    for r in application_store._read():
-        if r.get("gig_id") == gig_id:
-            return r
-    return None
-
-
 def _neg_row_lookup_error(gig_id: str) -> str:
-    existing = _find_any_row_by_gig_id(gig_id)
+    existing = application_store.get_by_gig_id(gig_id)
     if existing is None:
         return f"No draft found with id {gig_id}."
     decided = existing.get("decided_at") or existing.get("updated_at") or "unknown time"
