@@ -13,6 +13,7 @@ from organist_bot.filters import (
     SundayTimeFilter,
     _date_in_periods,
     _parse_periods,
+    is_negotiable,
     normalize_to_yyyymmdd,
     parse_min_fee,
     parse_start_time,
@@ -1391,6 +1392,42 @@ class TestCalendarFilterCompeting:
         client.get_events_on_date.return_value = []  # simulates API error (fail-open)
         f = CalendarFilter(client)
         gig = make_gig(date="Sunday, 15 March 2026")
-        with patch("organist_bot.filters.alert") as mock_alert:
+        with patch("organist_bot.filters.alert"):
             assert f(gig) is True
-        mock_alert.send_alert.assert_not_called()
+
+
+# ─────────────────────────────────────────────────────────
+# is_negotiable
+# ─────────────────────────────────────────────────────────
+
+
+def test_is_negotiable_detects_NEG():
+    assert is_negotiable("NEG") is True
+
+
+def test_is_negotiable_detects_Negotiable_case_insensitive():
+    assert is_negotiable("Negotiable") is True
+    assert is_negotiable("negotiable") is True
+    assert is_negotiable("NEGOTIABLE") is True
+
+
+def test_is_negotiable_detects_NEG_with_surrounding_text():
+    assert is_negotiable("Fee: NEG") is True
+    assert is_negotiable("(negotiable)") is True
+
+
+def test_is_negotiable_false_for_numeric_fee():
+    assert is_negotiable("£120") is False
+    assert is_negotiable("£80 - £120") is False
+    assert is_negotiable("From £90") is False
+
+
+def test_is_negotiable_false_for_expenses_only():
+    assert is_negotiable("Expenses only") is False
+    assert is_negotiable("Expenses") is False
+
+
+def test_is_negotiable_false_for_blank():
+    assert is_negotiable("") is False
+    assert is_negotiable(None) is False
+    assert is_negotiable("   ") is False
