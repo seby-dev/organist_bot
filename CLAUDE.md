@@ -132,6 +132,7 @@ Optional sections in `.env`:
 | `data/runtime_config.json` | Runtime pipeline overrides: min_fee, max_travel_minutes, poll_minutes |
 | `data/agent_state.json` | Per-chat agent reference-context (last invoice/gig-listing/application-listing) persisted across restarts by `integrations/agent_state.py` |
 | `data/listings_hash.txt` | Hash of last-seen listings HTML for short-circuit detection |
+| `data/last_deployed_sha.txt` | SHA of the last successfully deployed commit; written by `scripts/auto_deploy.py` after each restart (gitignored) |
 | `data/gmail_token.json` | OAuth2 token for Gmail reply monitoring (gitignored) |
 | `clients.json` | Invoice client database (project root) |
 | `invoices.json` | Invoice history/metadata (project root) |
