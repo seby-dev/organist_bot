@@ -1175,28 +1175,35 @@ async def _handle_list_invoices(input_data: dict, chat_id: int) -> str:
     def _payment_status(r: dict) -> str:
         if r.get("paid_at"):
             return "✅ paid"
-        emailed_at_str = r.get("emailed_at")
-        if not r.get("emailed") or not emailed_at_str:
-            return "not sent"
+        if not r.get("emailed"):
+            return "📝 not sent"
+        # Older records have `emailed: true` but no `emailed_at`; fall back to
+        # `created_at` so the days-since calculation still works.
+        sent_at_str = r.get("emailed_at") or r.get("created_at")
+        if not sent_at_str:
+            return "📤 emailed"
         try:
-            emailed_at = _dt.datetime.fromisoformat(emailed_at_str.replace("Z", "+00:00"))
-            days = (now - emailed_at).days
+            sent_at = _dt.datetime.fromisoformat(sent_at_str.replace("Z", "+00:00"))
+            if sent_at.tzinfo is None:
+                sent_at = sent_at.replace(tzinfo=_dt.UTC)
+            days = (now - sent_at).days
             if days >= 5:
                 return f"⏰ overdue ({days}d)"
-            return f"emailed {days}d ago"
+            return f"📤 emailed {days}d ago"
         except ValueError:
-            return "emailed"
+            return "📤 emailed"
 
     records = list(invoices.values())
     records.sort(key=lambda r: r.get("created_at", ""), reverse=True)
-    lines = ["📄 Invoices (most recent first)", ""]
-    for r in records[:20]:
-        pay_status = _payment_status(r)
+    records = records[:20]
+
+    lines = [f"📄 *Invoices* ({len(records)}, most recent first)"]
+    for i, r in enumerate(records, start=1):
         lines.append(
-            f"{r['invoice_number']}  {r.get('client_name', '?'):<20}"
-            f"  £{r.get('total', 0):.2f}  {r.get('date', '?')}  {pay_status}"
+            f"{i}. {_payment_status(r)} — *{r['invoice_number']}*\n"
+            f"   {r.get('client_name', '?')} · £{r.get('total', 0):.2f} · {r.get('date', '?')}"
         )
-    return json.dumps({"result": "\n".join(lines)})
+    return json.dumps({"result": "\n\n".join(lines)})
 
 
 @_handler("get_invoice")
