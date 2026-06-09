@@ -813,7 +813,8 @@ class TestFilterTools:
         with patch("organist_bot.integrations.unified_agent.filter_store") as mock_fs:
             mock_fs.unavailable_periods.return_value = ["2026-12", "2027-01-01"]
             result = await _execute_tool("manage_unavailable", {"action": "list"}, CHAT_ID)
-        assert "2026-12" in result
+        assert "01 Dec 2026" in result
+        assert "01 Jan 2027" in result
 
     @pytest.mark.asyncio
     async def test_manage_available_add(self):
@@ -825,10 +826,10 @@ class TestFilterTools:
     @pytest.mark.asyncio
     async def test_manage_available_list(self):
         with patch("organist_bot.integrations.unified_agent.filter_store") as mock_fs:
-            mock_fs.available_only_periods.return_value = ["2026-08"]
+            mock_fs.available_only_periods.return_value = ["2026-08-01"]
             result = await _execute_tool("manage_available", {"action": "list"}, CHAT_ID)
-        data = json.loads(result)
-        assert data.get("available_only_periods") == ["2026-08"]
+        assert "01 Aug 2026" in result
+        assert "Available-only periods" in result
 
     @pytest.mark.asyncio
     async def test_manage_available_remove(self):

@@ -1340,17 +1340,23 @@ async def _handle_manage_blacklist(input_data: dict, chat_id: int) -> str:
 
 
 def _format_period(token: str) -> str:
-    """Format a YYYY-MM-DD or YYYY-MM-DD:YYYY-MM-DD token into a readable label."""
+    """Format a YYYY-MM-DD, YYYY-MM, or YYYY-MM-DD:YYYY-MM-DD token into a readable label."""
     fmt = "%d %b %Y"
+
+    def _parse(s: str) -> datetime.date:
+        if len(s) == 7:  # YYYY-MM
+            return datetime.date.fromisoformat(s + "-01")
+        return datetime.date.fromisoformat(s)
+
     try:
         if ":" in token:
             start_s, end_s = token.split(":", 1)
-            start = datetime.date.fromisoformat(start_s)
-            end = datetime.date.fromisoformat(end_s)
+            start = _parse(start_s)
+            end = _parse(end_s)
             if start.year == end.year:
                 return f"{start.strftime('%d %b')} – {end.strftime('%d %b %Y')}"
             return f"{start.strftime(fmt)} – {end.strftime(fmt)}"
-        return datetime.date.fromisoformat(token).strftime(fmt)
+        return _parse(token).strftime(fmt)
     except ValueError:
         return token
 
