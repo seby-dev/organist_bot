@@ -9,6 +9,8 @@ class Settings(BaseSettings):
     email_password: str
     cc_email: str
     min_fee: int = 100
+    negotiable_fee: int = 120
+    enable_neg_drafts: bool = True
     poll_minutes: int = 2
     log_file: str = "logs/gigs.log"
     csv_file: str = "data/seen_gigs.csv"

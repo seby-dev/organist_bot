@@ -1,11 +1,13 @@
 # tests/test_main.py
 """Tests for main.py — scheduler orchestration and helper functions."""
 
+import datetime as _dt
 import hashlib
 import logging
 from unittest.mock import MagicMock, patch
 
 import main as main_module
+import organist_bot.application_store as application_store
 
 # ── overlapping run protection ────────────────────────────────────────────────
 
@@ -685,3 +687,147 @@ class TestSheetsDrain:
         alert_msg = mock_alert.send_alert.call_args.args[0]
         assert "Sheets flush failed" in alert_msg
         assert "spreadsheet quota exceeded" in alert_msg
+
+
+# ── NEG-fee draft & approval pipeline branch ─────────────────────────────────
+
+
+class TestNegDrafts:
+    """Tests for the NEG-fee draft & approval pipeline branch."""
+
+    def _settings(self, **overrides):
+        s = MagicMock()
+        s.target_url = "https://organistsonline.org/required/"
+        s.min_fee = 100
+        s.negotiable_fee = 120
+        s.enable_neg_drafts = True
+        s.poll_minutes = 2
+        s.booked_dates = []
+        s.home_postcode = ""
+        s.google_maps_api_key = ""
+        s.google_calendar_id = ""
+        s.google_calendar_credentials_file = ""
+        s.google_sheets_id = ""
+        s.google_sheets_credentials_file = ""
+        s.telegram_bot_token = "token"
+        s.telegram_chat_id = "12345"
+        s.email_password = "pass"
+        s.email_sender = "bot@test.com"
+        s.cc_email = ""
+        s.applicant_name = "Alex"
+        s.applicant_mobile = "07700 900000"
+        s.applicant_video_1 = ""
+        s.applicant_video_2 = ""
+        s.enable_fee_filter = True
+        s.enable_sunday_time_filter = False
+        s.enable_blacklist_filter = False
+        s.enable_booked_date_filter = False
+        s.enable_seen_filter = False
+        s.enable_postcode_filter = False
+        s.enable_calendar_filter = False
+        s.enable_availability_filter = False
+        s.dry_run = False
+        for k, v in overrides.items():
+            setattr(s, k, v)
+        return s
+
+    def _future_date(self) -> str:
+        d = _dt.date.today() + _dt.timedelta(days=21)
+        return d.strftime("%A, %B %d, %Y")
+
+    def _mock_scraper_with_one_gig(self, fee: str, link: str = "https://e.com/abc"):
+        scraper = MagicMock()
+        scraper.fetch.return_value = "<html/>"
+        scraper.parse_gig_listings.return_value = [MagicMock()]
+        scraper.extract_basic_details.return_value = {
+            "header": "St Mary's Sunday Service",
+            "organisation": "St Mary's",
+            "locality": "London",
+            "date": self._future_date(),
+            "time": "10:00 AM",
+            "link": link,
+            "fee": fee,
+        }
+        scraper.extract_full_details.return_value = {
+            "phone": "020 1234 5678",
+            "contact": "Jane Smith",
+            "email": "jane@stmarys.org",
+            "address": "1 High St",
+            "postcode": "SW1A 1AA",
+        }
+        return scraper
+
+    def _run(self, mock_settings, scraper, tmp_path, monkeypatch):
+        monkeypatch.setattr(application_store, "_PATH", tmp_path / "applications.json")
+        with (
+            patch("main.alert") as mock_alert,
+            patch("main.settings", mock_settings),
+            patch("organist_bot.notifier.application_store"),
+            patch("main.load_seen_gigs", return_value=set()),
+            patch("main.load_listings_hash", return_value="old_hash"),
+            patch("main.save_listings_hash"),
+            patch("main.save_seen_gigs"),
+            patch("main.filter_store"),
+            patch("main.SMTPTransport"),
+            patch("main.set_run_id"),
+            patch("main.runtime_config") as mock_rc,
+        ):
+            mock_rc.get.side_effect = lambda k, d: d
+            main_module.main(scraper)
+        return mock_alert
+
+    def test_neg_gig_is_recorded_as_pending_and_alerts_telegram(self, tmp_path, monkeypatch):
+        mock_alert = self._run(
+            self._settings(), self._mock_scraper_with_one_gig(fee="NEG"), tmp_path, monkeypatch
+        )
+        rows = application_store.list_neg_pending()
+        assert len(rows) == 1
+        assert rows[0]["status"] == "neg_pending"
+        assert "£120" in rows[0]["draft_body"]
+        neg_calls = [
+            c for c in mock_alert.send_alert.call_args_list if "NEG draft pending" in c.args[0]
+        ]
+        assert len(neg_calls) == 1
+        assert rows[0]["gig_id"] in neg_calls[0].args[0]
+
+    def test_below_min_fee_gig_is_not_drafted(self, tmp_path, monkeypatch):
+        self._run(
+            self._settings(), self._mock_scraper_with_one_gig(fee="£50"), tmp_path, monkeypatch
+        )
+        assert application_store.list_neg_pending() == []
+
+    def test_expenses_only_gig_is_not_drafted(self, tmp_path, monkeypatch):
+        mock_alert = self._run(
+            self._settings(),
+            self._mock_scraper_with_one_gig(fee="Expenses only"),
+            tmp_path,
+            monkeypatch,
+        )
+        assert application_store.list_neg_pending() == []
+        for c in mock_alert.send_alert.call_args_list:
+            assert "NEG draft pending" not in c.args[0]
+
+    def test_enable_neg_drafts_false_rejects_neg(self, tmp_path, monkeypatch):
+        self._run(
+            self._settings(enable_neg_drafts=False),
+            self._mock_scraper_with_one_gig(fee="NEG"),
+            tmp_path,
+            monkeypatch,
+        )
+        assert application_store.list_neg_pending() == []
+
+    def test_normal_gig_above_min_fee_still_notified(self, tmp_path, monkeypatch):
+        """Regression: partition must not break the normal Phase-3 path."""
+        with patch("main.Notifier") as mock_notifier_cls:
+            mock_alert = self._run(
+                self._settings(),
+                self._mock_scraper_with_one_gig(fee="£150"),
+                tmp_path,
+                monkeypatch,
+            )
+        assert application_store.list_neg_pending() == []
+        # No NEG-draft alert should have been sent
+        for c in mock_alert.send_alert.call_args_list:
+            assert "NEG draft pending" not in c.args[0]
+        # Notifier must have been instantiated (Phase 3 ran)
+        mock_notifier_cls.assert_called()

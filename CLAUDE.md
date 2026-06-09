@@ -110,7 +110,7 @@ All config lives in `organist_bot/config.py` as a single `Settings` (pydantic-se
 Required fields (no defaults; pydantic raises on import if unset): `EMAIL_SENDER`, `EMAIL_PASSWORD`, `CC_EMAIL`.
 
 Optional sections in `.env`:
-- **Scraper** — `MIN_FEE` (default 100), `POLL_MINUTES` (default 2), `TARGET_URL`, applicant fields (`APPLICANT_NAME`, `APPLICANT_MOBILE`, `APPLICANT_VIDEO_1/2`)
+- **Scraper** — `MIN_FEE` (default 100), `NEGOTIABLE_FEE` (default 120; proposed fee for NEG-flagged gigs), `POLL_MINUTES` (default 2), `TARGET_URL`, applicant fields (`APPLICANT_NAME`, `APPLICANT_MOBILE`, `APPLICANT_VIDEO_1/2`)
 - **Postcode / distance** — `HOME_POSTCODE`, `GOOGLE_MAPS_API_KEY`, `MAX_TRAVEL_MINUTES` (default 45)
 - **Google Calendar** — `GOOGLE_CALENDAR_ID`, `GOOGLE_CALENDAR_CREDENTIALS_FILE`
 - **Google Sheets** — `GOOGLE_SHEETS_ID`, `GOOGLE_SHEETS_CREDENTIALS_FILE` (falls back to the calendar creds file)
@@ -118,16 +118,16 @@ Optional sections in `.env`:
 - **Gmail reply monitor** — `GMAIL_CREDENTIALS_FILE`, `GMAIL_TOKEN_FILE` (default `data/gmail_token.json`); run `scripts/setup_gmail_auth.py` once to mint the token
 - **Anthropic** — `ANTHROPIC_API_KEY`
 - **Invoice / SMTP** — `FROM_NAME`, `FROM_ADDRESS`, `CURRENCY`, payment fields, `SMTP_HOST/PORT/USER/PASSWORD`
-- **Filter toggles** — `ENABLE_FEE_FILTER`, `ENABLE_SUNDAY_TIME_FILTER`, `ENABLE_BLACKLIST_FILTER`, `ENABLE_SEEN_FILTER`, `ENABLE_POSTCODE_FILTER`, `ENABLE_CALENDAR_FILTER`, `ENABLE_AVAILABILITY_FILTER` (all default `True`)
+- **Filter toggles** — `ENABLE_FEE_FILTER`, `ENABLE_SUNDAY_TIME_FILTER`, `ENABLE_BLACKLIST_FILTER`, `ENABLE_SEEN_FILTER`, `ENABLE_POSTCODE_FILTER`, `ENABLE_CALENDAR_FILTER`, `ENABLE_AVAILABILITY_FILTER`, `ENABLE_NEG_DRAFTS` (all default `True`)
 
-`runtime_config_store` overrides `MIN_FEE`, `MAX_TRAVEL_MINUTES`, and `POLL_MINUTES` at runtime — the scheduler reads via `runtime_config.get(key, settings.foo)` so `.env` values are the fallback.
+`runtime_config_store` overrides `MIN_FEE`, `MAX_TRAVEL_MINUTES`, `POLL_MINUTES`, and `NEGOTIABLE_FEE` at runtime — the scheduler reads via `runtime_config.get(key, settings.foo)` so `.env` values are the fallback.
 
 ## Data files
 
 | File | Purpose |
 |---|---|
 | `data/seen_gigs.csv` | Dedup store for the scraper; one gig URL per line |
-| `data/applications.json` | Application lifecycle store (written by `application_store`) |
+| `data/applications.json` | Application lifecycle store (written by `application_store`); `neg_pending` rows hold unsent NEG drafts awaiting Telegram approval |
 | `data/filter_config.json` | Runtime filter values: blacklist, unavail/avail periods |
 | `data/runtime_config.json` | Runtime pipeline overrides: min_fee, max_travel_minutes, poll_minutes |
 | `data/agent_state.json` | Per-chat agent reference-context (last invoice/gig-listing/application-listing) persisted across restarts by `integrations/agent_state.py` |
@@ -146,3 +146,16 @@ Optional sections in `.env`:
 - **Full filter** (after detail-page fetch): all of the above plus `BlacklistFilter` (requires contact email) and `PostcodeFilter` (requires postcode + Google Maps API)
 
 `PostcodeFilter` requires `HOME_POSTCODE` and `GOOGLE_MAPS_API_KEY` to activate. `CalendarFilter` requires `GOOGLE_CALENDAR_ID` and `GOOGLE_CALENDAR_CREDENTIALS_FILE`.
+
+### NEG-fee drafts
+
+When `ENABLE_NEG_DRAFTS=true` (default), gigs whose fee is `"NEG"` or `"Negotiable"` are NOT rejected by `FeeFilter` — `FeeFilter` is excluded from both chains and an explicit fee partition runs after Phase 2. Gigs passing every *other* filter get a draft email proposing `NEGOTIABLE_FEE` (default 120, runtime-overridable via the agent's `manage_config`) rendered from `templates/negotiation.html.j2`, persisted to `applications.json` as `status: "neg_pending"`, and a Telegram alert with the plain-text draft + a 12-char `gig_id`.
+
+The user approves/edits/rejects via Telegram chat (unified-agent tools, two-step `confirmed` pattern):
+- `approve <gig_id>` → `approve_neg_application` sends the stored draft verbatim and transitions the row to `applied`.
+- `edit <gig_id>: <new body>` or `edit <gig_id> fee 150` → `edit_neg_application` (replaces the body or re-renders with `new_fee`) then sends.
+- `reject <gig_id>` → `reject_neg_application` transitions to `rejected`; no email.
+
+Past-date `neg_pending` rows auto-flip to `expired` via `expire_past_applied`. `ENABLE_NEG_DRAFTS=false` reverts to the old behavior (NEG gigs rejected by `FeeFilter`).
+
+Two intentional visibility caveats: (1) `neg_pending`/`rejected`/`expired` NEG rows have no `applied_at`, so they never appear in `manage_applications` summaries or analytics — only `list_neg_pending` shows drafts, and approved drafts become normal `applied` rows; (2) with NEG drafting active, `FeeFilter` disappears from the dashboard's `filter_breakdown` metric — the "Fee partition applied" log (normal/neg/dropped counts) replaces it.

@@ -13,6 +13,25 @@ from organist_bot.models import Gig
 
 logger = logging.getLogger(__name__)
 
+# ── Negotiable-fee detection ──────────────────────────────────────────
+# Shared with parse_min_fee's "neg|negotiable|expenses" regex, but narrower:
+# only matches NEG / Negotiable so the pipeline can distinguish negotiable
+# (worth drafting) from expenses-only (no money on offer).
+_NEG_REGEX = re.compile(r"\b(neg|negotiable)\b", re.IGNORECASE)
+
+
+def is_negotiable(fee_str: str | None) -> bool:
+    """Return True if the fee string indicates a negotiable fee.
+
+    Matches literal "NEG" or "Negotiable" (case-insensitive, whole word).
+    Does NOT match "expenses only" / blank / numeric — those should still
+    be rejected by FeeFilter.
+    """
+    if not fee_str:
+        return False
+    return bool(_NEG_REGEX.search(fee_str))
+
+
 # ──────────────────────────────────────────────
 # Parsing helpers (pure functions, no state)
 # ──────────────────────────────────────────────

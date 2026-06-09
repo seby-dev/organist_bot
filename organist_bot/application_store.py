@@ -7,8 +7,10 @@ Backed by data/applications.json — a flat JSON array, one object per applicati
 from __future__ import annotations
 
 import datetime
+import hashlib
 import logging
 from pathlib import Path
+from typing import Literal
 
 from organist_bot import atomic_store
 from organist_bot.models import Gig
@@ -55,6 +57,107 @@ def record_application(gig: Gig) -> bool:
         )
         _write(records)
     return True
+
+
+def _gig_id(link: str) -> str:
+    """Deterministic short id derived from the gig URL."""
+    return hashlib.sha256(link.encode()).hexdigest()[:12]
+
+
+def record_neg_pending(
+    gig: Gig,
+    *,
+    draft_subject: str,
+    draft_body: str,
+    negotiable_fee: int,
+) -> str:
+    """Write a new 'neg_pending' record. Returns the gig_id.
+
+    Idempotent: if a row for this gig URL already exists in any state
+    (neg_pending or otherwise), returns the existing gig_id without modifying
+    the row — the original draft the user is reviewing is preserved.
+    """
+    gig_id = _gig_id(gig.link)
+    with atomic_store.file_lock(_PATH):
+        records = _read()
+        for r in records:
+            if r.get("url") == gig.link:
+                return gig_id
+        now = _now_iso()
+        records.append(
+            {
+                "gig_id": gig_id,
+                "url": gig.link,
+                "header": gig.header or "",
+                "organisation": gig.organisation or "",
+                "date": gig.date or "",
+                "time": gig.time or "",
+                "fee": gig.fee or "",
+                "email": gig.email or "",
+                "postcode": gig.postcode or "",
+                "status": "neg_pending",
+                "draft_subject": draft_subject,
+                "draft_body": draft_body,
+                "negotiable_fee": negotiable_fee,
+                "created_at": now,
+                "updated_at": now,
+                "decided_at": None,
+                "decision": None,
+            }
+        )
+        _write(records)
+    return gig_id
+
+
+def list_neg_pending() -> list[dict]:
+    """Return all records with status == 'neg_pending'."""
+    return [r for r in _read() if r.get("status") == "neg_pending"]
+
+
+def get_by_gig_id(gig_id: str) -> dict | None:
+    """Return the record with this gig_id regardless of status, or None."""
+    for r in _read():
+        if r.get("gig_id") == gig_id:
+            return r
+    return None
+
+
+def transition_neg_pending(
+    gig_id: str,
+    *,
+    to: Literal["applied", "rejected", "expired"],
+    sent_body: str | None = None,
+) -> bool:
+    """Transition a neg_pending row to applied/rejected/expired.
+
+    Returns False if no neg_pending row with this gig_id exists (already
+    transitioned, never existed, or in a different state) — caller should
+    treat False as "already decided" and not double-send.
+
+    On to='applied' the standard 'applied_at' field is set so downstream
+    tools (get_income_forecast, manage_applications) see this like any
+    other application. If sent_body is provided, draft_body is overwritten
+    (for the edit case).
+    """
+    with atomic_store.file_lock(_PATH):
+        records = _read()
+        for r in records:
+            if r.get("gig_id") != gig_id:
+                continue
+            if r.get("status") != "neg_pending":
+                return False
+            now = _now_iso()
+            r["status"] = to
+            r["decision"] = to
+            r["decided_at"] = now
+            r["updated_at"] = now
+            if to == "applied":
+                r["applied_at"] = now
+                if sent_body is not None:
+                    r["draft_body"] = sent_body
+            _write(records)
+            return True
+    return False
 
 
 def update_status(url: str, status: str) -> bool:
@@ -149,7 +252,9 @@ def update_travel_buffer_ids(url: str, before_id: str, after_id: str) -> bool:
 
 
 def expire_past_applied() -> int:
-    """Mark all 'applied' records whose date < today as 'no_response'. Returns count changed."""
+    """Mark past-date 'applied' rows as 'no_response' and past-date 'neg_pending'
+    rows as 'expired'. Returns total count changed.
+    """
     from organist_bot.filters import normalize_to_yyyymmdd
 
     today = datetime.date.today()
@@ -158,7 +263,8 @@ def expire_past_applied() -> int:
         changed = 0
         now = _now_iso()
         for r in records:
-            if r.get("status") != "applied":
+            status = r.get("status")
+            if status not in ("applied", "neg_pending"):
                 continue
             normalized = normalize_to_yyyymmdd(r.get("date", ""))
             if normalized is None:
@@ -168,7 +274,12 @@ def expire_past_applied() -> int:
             except ValueError:
                 continue
             if gig_date < today:
-                r["status"] = "no_response"
+                if status == "applied":
+                    r["status"] = "no_response"
+                else:  # neg_pending
+                    r["status"] = "expired"
+                    r["decision"] = "expired"
+                    r["decided_at"] = now
                 r["updated_at"] = now
                 changed += 1
         if changed:
