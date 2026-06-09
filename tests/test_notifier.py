@@ -162,3 +162,56 @@ class TestApplyToGigRecordsApplication:
             mock_store.record_application.return_value = True
             notifier.apply_to_gig(gig)
         mock_store.record_application.assert_called_once_with(gig)
+
+
+# ── negotiation.html.j2 template ──────────────────────────────────────────────
+
+
+def _render_negotiation(**ctx):
+    from jinja2 import Environment, FileSystemLoader, select_autoescape
+
+    from organist_bot.notifier import TEMPLATES_DIR
+
+    env = Environment(
+        loader=FileSystemLoader(TEMPLATES_DIR),
+        autoescape=select_autoescape(["html", "j2"]),
+    )
+    defaults = dict(
+        gig=_make_gig(fee="NEG", contact="Jane Smith", email="jane@stmarys.org"),
+        applicant_name="Alex Organist",
+        applicant_mobile="07700 900000",
+        applicant_video_1="",
+        applicant_video_2="",
+        negotiable_fee=120,
+    )
+    defaults.update(ctx)
+    return env.get_template("negotiation.html.j2").render(**defaults)
+
+
+class TestNegotiationTemplate:
+    def test_includes_negotiable_fee(self):
+        rendered = _render_negotiation(
+            applicant_video_1="https://yt/v1",
+            applicant_video_2="https://yt/v2",
+        )
+        assert "£120" in rendered
+        assert "Jane Smith" in rendered
+        assert "Sunday, March 1, 2026" in rendered
+        assert "Alex Organist" in rendered
+        assert "https://yt/v1" in rendered
+
+    def test_uses_provided_fee_value(self):
+        rendered = _render_negotiation(negotiable_fee=150)
+        assert "£150" in rendered
+        assert "£120" not in rendered
+
+    def test_falls_back_to_sir_madam_when_no_contact(self):
+        rendered = _render_negotiation(
+            gig=_make_gig(fee="NEG", contact=None, email="jane@stmarys.org")
+        )
+        assert "Sir/Madam" in rendered
+
+    def test_omits_videos_section_when_empty(self):
+        rendered = _render_negotiation()
+        assert "Video 1" not in rendered
+        assert "Video 2" not in rendered
