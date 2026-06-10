@@ -1857,10 +1857,7 @@ class TestListInvoicesPaymentStatus:
         with patch("organist_bot.integrations.unified_agent.load_invoices", return_value=invoices):
             agent = UnifiedAgent()
             result = await agent._execute_tool("list_invoices", {}, chat_id=1)
-        import json
-
-        data = json.loads(result)
-        assert "paid" in data["result"].lower()
+        assert "paid" in result.lower()
 
     async def test_shows_overdue_status(self):
         import datetime
@@ -1884,10 +1881,7 @@ class TestListInvoicesPaymentStatus:
         with patch("organist_bot.integrations.unified_agent.load_invoices", return_value=invoices):
             agent = UnifiedAgent()
             result = await agent._execute_tool("list_invoices", {}, chat_id=1)
-        import json
-
-        data = json.loads(result)
-        assert "overdue" in data["result"].lower()
+        assert "overdue" in result.lower()
 
 
 # ── manage_applications declined → delete travel buffers ─────────────────────
