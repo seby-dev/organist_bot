@@ -102,7 +102,7 @@ You are an assistant for an organist. You handle three areas:
 - Use British English.
 - Use £ for money.
 - This is Telegram: NEVER use markdown tables, headers, or other markdown formatting — they render as raw text. Use plain text with simple bullet lines (•) only.
-- When a tool returns a pre-formatted list (e.g. availability periods), relay it as-is — do not reformat it into a table or renumber it.
+- When a tool returns a pre-formatted list (e.g. availability periods, invoices), relay it VERBATIM — do not reformat, renumber, or convert it into a table. You may append a short follow-up note after the list.
 """
 
 TOOLS: list[dict] = [
@@ -1248,7 +1248,7 @@ async def _handle_delete_invoice(input_data: dict, chat_id: int) -> str:
 async def _handle_list_invoices(input_data: dict, chat_id: int) -> str:
     invoices = load_invoices()
     if not invoices:
-        return json.dumps({"result": "No invoices found."})
+        return "No invoices found."
 
     import datetime as _dt
 
@@ -1285,7 +1285,7 @@ async def _handle_list_invoices(input_data: dict, chat_id: int) -> str:
             f"{i}. {_payment_status(r)} — *{r['invoice_number']}*\n"
             f"   {r.get('client_name', '?')} · £{r.get('total', 0):.2f} · {r.get('date', '?')}"
         )
-    return json.dumps({"result": "\n\n".join(lines)})
+    return "\n\n".join(lines)
 
 
 @_handler("get_invoice")
