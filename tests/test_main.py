@@ -846,11 +846,12 @@ class TestGmailMonitoringConfigWarning:
         s.gmail_token_file = token_file
         return s
 
-    def test_alerts_when_credentials_unset(self):
+    def test_alerts_when_credentials_unset(self, caplog):
         """No GMAIL_CREDENTIALS_FILE → one alert naming the missing env var."""
         with (
             patch("main.settings", self._settings("", "data/gmail_token.json")),
             patch("main.alert") as mock_alert,
+            caplog.at_level(logging.WARNING),
         ):
             main_module.warn_if_gmail_monitoring_unconfigured()
 
@@ -858,8 +859,10 @@ class TestGmailMonitoringConfigWarning:
         msg = mock_alert.send_alert.call_args.args[0]
         assert "GMAIL_CREDENTIALS_FILE" in msg
         assert "disabled" in msg.lower()
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1
 
-    def test_alerts_when_token_file_missing(self, tmp_path):
+    def test_alerts_when_token_file_missing(self, tmp_path, caplog):
         """Credentials set but no minted token → one alert naming the setup script."""
         creds = tmp_path / "gmail_credentials.json"
         creds.write_text("{}")
@@ -868,6 +871,7 @@ class TestGmailMonitoringConfigWarning:
         with (
             patch("main.settings", self._settings(str(creds), str(missing_token))),
             patch("main.alert") as mock_alert,
+            caplog.at_level(logging.WARNING),
         ):
             main_module.warn_if_gmail_monitoring_unconfigured()
 
@@ -875,6 +879,12 @@ class TestGmailMonitoringConfigWarning:
         msg = mock_alert.send_alert.call_args.args[0]
         assert "setup_gmail_auth" in msg
         assert "disabled" in msg.lower()
+        # Log message must be a stable string (Sheets dashboard groups by message);
+        # the variable token path belongs in `extra`, not the message.
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        assert str(missing_token) not in warnings[0].message
+        assert warnings[0].token_file == str(missing_token)
 
     def test_silent_when_fully_configured(self, tmp_path):
         """Credentials and token both present → no alert, no warning."""

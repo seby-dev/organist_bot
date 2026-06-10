@@ -86,21 +86,24 @@ def warn_if_gmail_monitoring_unconfigured() -> None:
     """
 
     if not settings.gmail_credentials_file:
-        msg = (
+        logger.warning(
+            "Gmail monitoring disabled — GMAIL_CREDENTIALS_FILE not set",
+            extra={"reason": "credentials_unset"},
+        )
+        alert.send_alert(
             "⚠️ Gmail monitoring disabled — GMAIL_CREDENTIALS_FILE is not set in .env. "
             "Gig replies and invoice payments will NOT be detected automatically."
         )
     elif not pathlib.Path(settings.gmail_token_file).exists():
-        msg = (
+        logger.warning(
+            "Gmail monitoring disabled — token file missing",
+            extra={"reason": "token_missing", "token_file": settings.gmail_token_file},
+        )
+        alert.send_alert(
             f"⚠️ Gmail monitoring disabled — token file {settings.gmail_token_file} "
             "is missing. Run scripts/setup_gmail_auth.py once to mint it. "
             "Gig replies and invoice payments will NOT be detected automatically."
         )
-    else:
-        return
-
-    logger.warning(msg)
-    alert.send_alert(msg)
 
 
 def main(
