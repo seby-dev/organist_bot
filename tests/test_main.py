@@ -831,3 +831,72 @@ class TestNegDrafts:
             assert "NEG draft pending" not in c.args[0]
         # Notifier must have been instantiated (Phase 3 ran)
         mock_notifier_cls.assert_called()
+
+
+# ── Gmail monitoring config warning ──────────────────────────────────────────
+
+
+class TestGmailMonitoringConfigWarning:
+    """Tests for warn_if_gmail_monitoring_unconfigured() — the startup guard
+    that makes a silently-disabled Gmail reply/payment monitor loud."""
+
+    def _settings(self, credentials_file, token_file):
+        s = MagicMock()
+        s.gmail_credentials_file = credentials_file
+        s.gmail_token_file = token_file
+        return s
+
+    def test_alerts_when_credentials_unset(self, caplog):
+        """No GMAIL_CREDENTIALS_FILE → one alert naming the missing env var."""
+        with (
+            patch("main.settings", self._settings("", "data/gmail_token.json")),
+            patch("main.alert") as mock_alert,
+            caplog.at_level(logging.WARNING),
+        ):
+            main_module.warn_if_gmail_monitoring_unconfigured()
+
+        mock_alert.send_alert.assert_called_once()
+        msg = mock_alert.send_alert.call_args.args[0]
+        assert "GMAIL_CREDENTIALS_FILE" in msg
+        assert "disabled" in msg.lower()
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1
+
+    def test_alerts_when_token_file_missing(self, tmp_path, caplog):
+        """Credentials set but no minted token → one alert naming the setup script."""
+        creds = tmp_path / "gmail_credentials.json"
+        creds.write_text("{}")
+        missing_token = tmp_path / "gmail_token.json"
+
+        with (
+            patch("main.settings", self._settings(str(creds), str(missing_token))),
+            patch("main.alert") as mock_alert,
+            caplog.at_level(logging.WARNING),
+        ):
+            main_module.warn_if_gmail_monitoring_unconfigured()
+
+        mock_alert.send_alert.assert_called_once()
+        msg = mock_alert.send_alert.call_args.args[0]
+        assert "setup_gmail_auth" in msg
+        assert "disabled" in msg.lower()
+        # Log message must be a stable string (Sheets dashboard groups by message);
+        # the variable token path belongs in `extra`, not the message.
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        assert str(missing_token) not in warnings[0].message
+        assert warnings[0].token_file == str(missing_token)
+
+    def test_silent_when_fully_configured(self, tmp_path):
+        """Credentials and token both present → no alert, no warning."""
+        creds = tmp_path / "gmail_credentials.json"
+        creds.write_text("{}")
+        token = tmp_path / "gmail_token.json"
+        token.write_text("{}")
+
+        with (
+            patch("main.settings", self._settings(str(creds), str(token))),
+            patch("main.alert") as mock_alert,
+        ):
+            main_module.warn_if_gmail_monitoring_unconfigured()
+
+        mock_alert.send_alert.assert_not_called()
