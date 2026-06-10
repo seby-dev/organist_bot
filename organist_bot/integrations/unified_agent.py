@@ -101,6 +101,8 @@ You are an assistant for an organist. You handle three areas:
 - Keep responses concise — this is a chat interface.
 - Use British English.
 - Use £ for money.
+- This is Telegram: NEVER use markdown tables, headers, or other markdown formatting — they render as raw text. Use plain text with simple bullet lines (•) only.
+- When a tool returns a pre-formatted list (e.g. availability periods), relay it as-is — do not reformat it into a table or renumber it.
 """
 
 TOOLS: list[dict] = [
