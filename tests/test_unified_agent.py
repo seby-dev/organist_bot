@@ -1883,6 +1883,12 @@ class TestListInvoicesPaymentStatus:
             result = await agent._execute_tool("list_invoices", {}, chat_id=1)
         assert "overdue" in result.lower()
 
+    async def test_empty_invoices_plain_text(self):
+        with patch("organist_bot.integrations.unified_agent.load_invoices", return_value={}):
+            agent = UnifiedAgent()
+            result = await agent._execute_tool("list_invoices", {}, chat_id=1)
+        assert result == "No invoices found."
+
 
 # ── manage_applications declined → delete travel buffers ─────────────────────
 

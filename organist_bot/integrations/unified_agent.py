@@ -1248,7 +1248,7 @@ async def _handle_delete_invoice(input_data: dict, chat_id: int) -> str:
 async def _handle_list_invoices(input_data: dict, chat_id: int) -> str:
     invoices = load_invoices()
     if not invoices:
-        return json.dumps({"result": "No invoices found."})
+        return "No invoices found."
 
     import datetime as _dt
 
