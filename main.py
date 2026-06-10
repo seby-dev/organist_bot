@@ -3,6 +3,7 @@ import fcntl
 import hashlib
 import html as _html
 import logging
+import pathlib
 import re
 import time
 import uuid
@@ -74,6 +75,32 @@ def _send_neg_alert(gig: Gig, gig_id: str, subject: str, body: str) -> None:
         f'  • "reject {gig_id}" to skip'
     )
     alert.send_alert(draft_msg)
+
+
+def warn_if_gmail_monitoring_unconfigured() -> None:
+    """Alert once at startup when Gmail reply/payment monitoring cannot run.
+
+    reply_monitor and invoice_monitor both skip their Gmail checks silently
+    when credentials are missing, so without this guard the scheduler looks
+    like it monitors replies and invoice payments while doing neither.
+    """
+
+    if not settings.gmail_credentials_file:
+        msg = (
+            "⚠️ Gmail monitoring disabled — GMAIL_CREDENTIALS_FILE is not set in .env. "
+            "Gig replies and invoice payments will NOT be detected automatically."
+        )
+    elif not pathlib.Path(settings.gmail_token_file).exists():
+        msg = (
+            f"⚠️ Gmail monitoring disabled — token file {settings.gmail_token_file} "
+            "is missing. Run scripts/setup_gmail_auth.py once to mint it. "
+            "Gig replies and invoice payments will NOT be detected automatically."
+        )
+    else:
+        return
+
+    logger.warning(msg)
+    alert.send_alert(msg)
 
 
 def main(
@@ -508,6 +535,7 @@ if __name__ == "__main__":
         logger.info("DRY-RUN mode active — no emails, no state writes, no Sheets drain")
     else:
         alert.send_alert(f"🔄 Scheduler started (polling every {settings.poll_minutes} min)")
+        warn_if_gmail_monitoring_unconfigured()
 
     # ── Google Sheets logger (optional) ───────────────────────────────────────
     sheets_logger: SheetsLogger | None = None
