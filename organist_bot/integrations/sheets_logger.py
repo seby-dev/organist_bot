@@ -58,6 +58,13 @@ _NUM_COLS = 9  # len(_HEADERS) — kept as a literal to avoid a forward referenc
 # drain(). ~50k rows is generous headroom (days of buffering at a 2-min poll).
 _MAX_BUFFER_ROWS = 50_000
 
+# Delete Logs/Logs N tabs whose newest row is older than this many days. Keeps
+# the workbook-wide cell count (hard-capped at 10M by Sheets) from growing
+# without bound over the bot's lifetime.
+_RETENTION_DAYS = 60
+
+logger = logging.getLogger(__name__)
+
 # Columns written in a fixed order — all other keys go into the "details" column.
 _FIXED_COLUMNS = [
     "timestamp",
@@ -430,13 +437,16 @@ class SheetsLogger(logging.Handler):
 
     # ── Sheet management ──────────────────────────────────────────────────────
 
-    def _get_sheet_titles(self) -> list[str]:
+    def _get_sheet_metadata(self) -> list[dict]:
         meta = (
             self._service.spreadsheets()
-            .get(spreadsheetId=self._spreadsheet_id, fields="sheets.properties.title")
+            .get(spreadsheetId=self._spreadsheet_id, fields="sheets.properties(sheetId,title)")
             .execute()
         )
-        return [s["properties"]["title"] for s in meta.get("sheets", [])]
+        return meta.get("sheets", [])
+
+    def _get_sheet_titles(self) -> list[str]:
+        return [s["properties"]["title"] for s in self._get_sheet_metadata()]
 
     def _resolve_active_sheet(self) -> str:
         """Query the spreadsheet and return the latest Logs sheet name."""
@@ -460,8 +470,63 @@ class SheetsLogger(logging.Handler):
             },
         ).execute()
 
+    def _prune_old_sheets(self) -> None:
+        """Delete Logs/Logs N tabs whose newest row is older than _RETENTION_DAYS.
+
+        Rows within a tab are chronological and a tab is never written to again
+        once rotation moves past it, so a closed tab's last row is a reliable
+        upper bound on its age. Tabs are scanned oldest-first and the scan stops
+        at the first tab that isn't stale, since every later tab is newer.
+        """
+        cutoff = datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=_RETENTION_DAYS)
+        pattern = re.compile(r"^Logs(?: (\d+))?$")
+        numbered = sorted(
+            (
+                int(m.group(1)) if m.group(1) else 1,
+                s["properties"]["title"],
+                s["properties"]["sheetId"],
+            )
+            for s in self._get_sheet_metadata()
+            if (m := pattern.match(s["properties"]["title"]))
+        )
+
+        for _, title, sheet_id in numbered:
+            result = (
+                self._service.spreadsheets()
+                .values()
+                .get(spreadsheetId=self._spreadsheet_id, range=f"{title}!A:A")
+                .execute()
+            )
+            values = result.get("values", [])
+            if len(values) <= 1 or not values[-1]:
+                break  # empty or header-only — this and every later tab are current
+
+            try:
+                newest = datetime.datetime.fromisoformat(values[-1][0].replace("Z", "+00:00"))
+            except ValueError:
+                break
+
+            if newest >= cutoff:
+                break  # still within the retention window
+
+            self._service.spreadsheets().batchUpdate(
+                spreadsheetId=self._spreadsheet_id,
+                body={"requests": [{"deleteSheet": {"sheetId": sheet_id}}]},
+            ).execute()
+            logger.info(
+                "Pruned stale Logs sheet",
+                extra={"sheet": title, "newest_row": values[-1][0]},
+            )
+
     def _create_next_sheet(self) -> str:
         """Create the next sequential Logs sheet tab and return its name."""
+        try:
+            self._prune_old_sheets()
+        except Exception:
+            # Pruning is best-effort — it must not block rotation, and letting it
+            # propagate into drain()'s outer handler would re-queue rows that
+            # were already appended successfully, duplicating them on retry.
+            logger.warning("Failed to prune stale Logs sheets", exc_info=True)
         titles = self._get_sheet_titles()
         pattern = re.compile(r"^Logs(?: (\d+))?$")
         max_n = 0

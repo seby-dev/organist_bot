@@ -64,7 +64,7 @@ Polls `organistsonline.org` every `POLL_MINUTES` and runs a 3-phase pipeline per
 - `application_store.expire_past_applied()` — flips `applied` rows whose gig date is in the past to `no_response`.
 - `reply_monitor.check_replies()` — polls Gmail for replies to active applications and classifies each with Claude Haiku (`accepted` / `rejected` / `cancellation` / `unclear`). On `accepted` it upserts the application as accepted, creates a Google Calendar event, and pings Telegram.
 
-Finally, `SheetsLogger` (a buffering `logging.Handler` subclass) drains its in-memory record buffer into the Google Sheet in one batch.
+Finally, `SheetsLogger` (a buffering `logging.Handler` subclass) drains its in-memory record buffer into the Google Sheet in one batch. It rotates to a new `Logs N` tab when the active tab nears Sheets' per-sheet cell limit, and — since Sheets also enforces a hard 10M-cell-per-workbook cap — prunes (deletes) any `Logs N` tab whose newest row is older than `_RETENTION_DAYS` (60 days) each time it rotates, so historical tabs don't accumulate forever.
 
 ### `telegram_bot.py` — Unified Telegram bot
 
