@@ -13,6 +13,7 @@ from organist_bot.integrations.sheets_logger import (
     _EXCLUDED_LOGGER_PREFIXES,
     _HEADERS,
     _NUM_COLS,
+    _RETENTION_DAYS,
     SheetsLogger,
     _latest_log_sheet,
     _parse_last_row,
@@ -384,7 +385,7 @@ class TestSheetRotation:
             _make_append_response("Logs", last_row=rows_at_threshold)
         )
         mock_service.spreadsheets().get().execute.return_value = {
-            "sheets": [{"properties": {"title": "Logs"}}]
+            "sheets": [{"properties": {"title": "Logs", "sheetId": 1}}]
         }
         sheets_logger.emit(_make_record())
         sheets_logger.drain()
@@ -402,7 +403,7 @@ class TestSheetRotation:
             _make_append_response("Logs", last_row=rows_at_threshold)
         )
         mock_service.spreadsheets().get().execute.return_value = {
-            "sheets": [{"properties": {"title": "Logs"}}]
+            "sheets": [{"properties": {"title": "Logs", "sheetId": 1}}]
         }
         sheets_logger.emit(_make_record())
         sheets_logger.drain()
@@ -712,8 +713,8 @@ class TestQueryRunStats:
         )
         mock_service.spreadsheets().get().execute.return_value = {
             "sheets": [
-                {"properties": {"title": "Logs"}},
-                {"properties": {"title": "Logs 2"}},
+                {"properties": {"title": "Logs", "sheetId": 1}},
+                {"properties": {"title": "Logs 2", "sheetId": 2}},
             ]
         }
         sheets_logger._active_sheet = "Logs 2"  # simulate already-rotated state
@@ -759,3 +760,168 @@ class TestActiveSheetResolution:
         assert sheets_logger._active_sheet == "Logs 2"
         append_kwargs = mock_service.spreadsheets().values().append.call_args[1]
         assert append_kwargs["range"].startswith("Logs 2!")
+
+
+# ── Retention pruning ─────────────────────────────────────────────────────────
+
+
+def _mock_service_for_prune(sheet_timestamps: dict[str, str | None]) -> MagicMock:
+    """Mock service where each Logs tab's newest row timestamp is controlled per-title.
+
+    ``sheet_timestamps[title] is None`` simulates a header-only (empty) tab.
+    Sheet IDs are assigned 1, 2, 3... in dict order.
+    """
+    sheet_ids = {title: idx + 1 for idx, title in enumerate(sheet_timestamps)}
+    svc = MagicMock()
+    svc.spreadsheets().get().execute.return_value = {
+        "sheets": [{"properties": {"title": t, "sheetId": sheet_ids[t]}} for t in sheet_timestamps]
+    }
+
+    def values_get(**kwargs):
+        title = kwargs["range"].split("!")[0]
+        ts = sheet_timestamps[title]
+        values = [["timestamp"]] if ts is None else [["timestamp"], [ts]]
+        response = MagicMock()
+        response.execute.return_value = {"values": values}
+        return response
+
+    svc.spreadsheets().values().get.side_effect = values_get
+    return svc
+
+
+def _days_ago(days: int) -> str:
+    ts = datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=days)
+    return ts.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+
+class TestSheetPruning:
+    def _make_logger(self, timestamps: dict[str, str | None]) -> tuple[SheetsLogger, MagicMock]:
+        svc = _mock_service_for_prune(timestamps)
+        sl = _make_sheets_logger_for_query(svc)
+        return sl, svc
+
+    def test_deletes_sheet_older_than_retention(self):
+        """A tab whose newest row is well past the retention window gets deleted."""
+        sl, svc = self._make_logger({"Logs": _days_ago(90), "Logs 2": _days_ago(1)})
+
+        sl._prune_old_sheets()
+
+        svc.spreadsheets().batchUpdate.assert_called_once()
+        body = svc.spreadsheets().batchUpdate.call_args[1]["body"]
+        assert body["requests"] == [{"deleteSheet": {"sheetId": 1}}]  # "Logs"
+
+    def test_keeps_sheet_within_retention(self):
+        """A tab whose newest row is recent must not be touched."""
+        sl, svc = self._make_logger({"Logs": _days_ago(5)})
+
+        sl._prune_old_sheets()
+
+        svc.spreadsheets().batchUpdate.assert_not_called()
+
+    def test_sheet_just_inside_retention_window_is_kept(self):
+        """A newest-row timestamp just inside the retention window must be kept."""
+        sl, svc = self._make_logger({"Logs": _days_ago(_RETENTION_DAYS - 1)})
+
+        sl._prune_old_sheets()
+
+        svc.spreadsheets().batchUpdate.assert_not_called()
+
+    def test_stops_at_first_non_stale_sheet(self):
+        """Tabs are chronological — scanning stops (and later tabs are kept) at the
+        first tab whose newest row is still within the retention window."""
+        sl, svc = self._make_logger(
+            {"Logs": _days_ago(90), "Logs 2": _days_ago(80), "Logs 3": _days_ago(5)}
+        )
+
+        sl._prune_old_sheets()
+
+        deleted_ids = {
+            call.kwargs["body"]["requests"][0]["deleteSheet"]["sheetId"]
+            for call in svc.spreadsheets().batchUpdate.call_args_list
+        }
+        assert deleted_ids == {1, 2}  # "Logs" and "Logs 2" pruned, "Logs 3" kept
+
+    def test_treats_header_only_sheet_as_current_not_stale(self):
+        """An empty/header-only tab (the freshly-rotated-to active tab) is never pruned."""
+        sl, svc = self._make_logger({"Logs": None})
+
+        sl._prune_old_sheets()
+
+        svc.spreadsheets().batchUpdate.assert_not_called()
+
+    def test_rotation_also_prunes_stale_sheets(self, sheets_logger, mock_service):
+        """Rotating to a new tab (_create_next_sheet) sweeps for stale tabs too."""
+        rows_at_threshold = _CELL_THRESHOLD // _NUM_COLS
+        mock_service.spreadsheets().values().append.return_value.execute.return_value = (
+            _make_append_response("Logs 2", last_row=rows_at_threshold)
+        )
+        mock_service.spreadsheets().get().execute.return_value = {
+            "sheets": [
+                {"properties": {"title": "Logs", "sheetId": 1}},
+                {"properties": {"title": "Logs 2", "sheetId": 2}},
+            ]
+        }
+
+        def values_get(**kwargs):
+            title = kwargs["range"].split("!")[0]
+            response = MagicMock()
+            if title == "Logs":
+                response.execute.return_value = {"values": [["timestamp"], [_days_ago(90)]]}
+            else:
+                response.execute.return_value = {"values": [["timestamp"]]}
+            return response
+
+        mock_service.spreadsheets().values().get.side_effect = values_get
+        sheets_logger._active_sheet = "Logs 2"  # simulate already-rotated state
+        sheets_logger.emit(_make_record())
+        sheets_logger.drain()
+
+        request_types = [
+            next(iter(call.kwargs["body"]["requests"][0]))
+            for call in mock_service.spreadsheets().batchUpdate.call_args_list
+        ]
+        assert "deleteSheet" in request_types  # pruned "Logs"
+        assert "addSheet" in request_types  # created "Logs 3"
+
+    def test_prune_failure_does_not_abort_rotation_or_duplicate_rows(
+        self, sheets_logger, mock_service
+    ):
+        """If deleting a stale tab fails (e.g. transient API error), rotation must
+        still complete and the already-appended rows must NOT be restored to the
+        buffer — restoring them would duplicate them on the next drain()."""
+        rows_at_threshold = _CELL_THRESHOLD // _NUM_COLS
+        mock_service.spreadsheets().values().append.return_value.execute.return_value = (
+            _make_append_response("Logs 2", last_row=rows_at_threshold)
+        )
+        mock_service.spreadsheets().get().execute.return_value = {
+            "sheets": [
+                {"properties": {"title": "Logs", "sheetId": 1}},
+                {"properties": {"title": "Logs 2", "sheetId": 2}},
+            ]
+        }
+
+        def values_get(**kwargs):
+            title = kwargs["range"].split("!")[0]
+            response = MagicMock()
+            if title == "Logs":
+                response.execute.return_value = {"values": [["timestamp"], [_days_ago(90)]]}
+            else:
+                response.execute.return_value = {"values": [["timestamp"]]}
+            return response
+
+        mock_service.spreadsheets().values().get.side_effect = values_get
+
+        def batch_update(**kwargs):
+            if "deleteSheet" in kwargs["body"]["requests"][0]:
+                raise RuntimeError("transient Sheets error")
+            return MagicMock()
+
+        mock_service.spreadsheets().batchUpdate.side_effect = batch_update
+
+        sheets_logger._active_sheet = "Logs 2"  # simulate already-rotated state
+        sheets_logger.emit(_make_record())
+        result = sheets_logger.drain()
+
+        assert result == 1  # append succeeded — not treated as a failure
+        assert sheets_logger._buffer == []  # rows must not be re-queued
+        assert sheets_logger._active_sheet == "Logs 3"  # rotation still completed
