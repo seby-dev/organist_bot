@@ -7,6 +7,8 @@ import pathlib
 import re
 import time
 import uuid
+from collections.abc import Callable
+from typing import Any
 
 import schedule
 
@@ -180,7 +182,7 @@ def _run(
     # pattern already used for blacklist/availability filter construction below.
     suspension_snapshot = filter_suspension_store.load_active()
 
-    _fee_filter = (
+    _fee_filter: Callable[[Any], bool] | None = (
         FeeFilter(min_fee=runtime_config.get("min_fee", settings.min_fee))
         if settings.enable_fee_filter
         else None
@@ -196,7 +198,9 @@ def _run(
     # below Phase 2 then sorts them into normal / NEG / drop.
     _include_fee_in_chains = _fee_filter is not None and not settings.enable_neg_drafts
 
-    _sunday_time_filter = SundayTimeFilter() if settings.enable_sunday_time_filter else None
+    _sunday_time_filter: Callable[[Any], bool] | None = (
+        SundayTimeFilter() if settings.enable_sunday_time_filter else None
+    )
     if _sunday_time_filter is not None:
         _sunday_time_filter = SuspendableFilter(
             "sunday_time", _sunday_time_filter, suspension_snapshot
