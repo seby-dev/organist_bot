@@ -11,6 +11,7 @@ from organist_bot.filters import (
     PostcodeFilter,
     SeenFilter,
     SundayTimeFilter,
+    SuspendableFilter,
     _date_in_periods,
     _parse_periods,
     is_negotiable,
@@ -1308,6 +1309,56 @@ class TestAvailabilityFilterIntegration:
         )
         # April gig: blocked by first filter (chain short-circuits)
         assert chain.is_valid(_gig("Sunday, 12 April 2026")) is False
+
+
+class TestSuspendableFilter:
+    def test_suspended_date_passes_without_calling_inner(self):
+        inner_calls = []
+
+        def inner(gig):
+            inner_calls.append(gig)
+            return False  # would reject if actually called
+
+        snapshot = [("fee", datetime.date(2026, 12, 1), datetime.date(2026, 12, 31))]
+        f = SuspendableFilter("fee", inner, snapshot)
+        assert f(_gig("Sunday, 20 December 2026")) is True
+        assert inner_calls == []
+
+    def test_non_suspended_date_delegates_to_inner(self):
+        def inner(gig):
+            return False
+
+        snapshot = [("fee", datetime.date(2026, 12, 1), datetime.date(2026, 12, 31))]
+        f = SuspendableFilter("fee", inner, snapshot)
+        assert f(_gig("Sunday, 3 May 2026")) is False
+
+    def test_delegates_to_inner_when_inner_passes(self):
+        def inner(gig):
+            return True
+
+        snapshot = []
+        f = SuspendableFilter("fee", inner, snapshot)
+        assert f(_gig("Sunday, 3 May 2026")) is True
+
+    def test_all_suspension_covers_any_filter_name(self):
+        def inner(gig):
+            return False
+
+        snapshot = [("all", datetime.date(2026, 12, 1), datetime.date(2026, 12, 31))]
+        f = SuspendableFilter("postcode", inner, snapshot)
+        assert f(_gig("Sunday, 20 December 2026")) is True
+
+    def test_unparseable_gig_date_fails_open_to_inner(self):
+        def inner(gig):
+            return False
+
+        snapshot = [("fee", datetime.date(2026, 12, 1), datetime.date(2026, 12, 31))]
+        f = SuspendableFilter("fee", inner, snapshot)
+        assert f(_gig("not a real date")) is False  # falls through to inner, which rejects
+
+    def test_repr_includes_filter_name_and_inner(self):
+        f = SuspendableFilter("fee", FeeFilter(min_fee=100), [])
+        assert "fee" in repr(f)
 
 
 class TestPostcodeFilterAlert:

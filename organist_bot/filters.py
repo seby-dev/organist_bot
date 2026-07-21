@@ -8,7 +8,7 @@ from typing import Any
 
 import googlemaps
 
-from organist_bot import alert
+from organist_bot import alert, filter_suspension_store
 from organist_bot.models import Gig
 
 logger = logging.getLogger(__name__)
@@ -506,6 +506,41 @@ class CalendarFilter:
 
     def __repr__(self):
         return "CalendarFilter()"
+
+
+class SuspendableFilter:
+    """Wraps a filter; passes gigs through unconditionally if an active
+    suspension snapshot entry covers this filter's name (or "all") for the
+    gig's date.
+
+    The snapshot is loaded once per tick via filter_suspension_store.load_active()
+    and passed in at construction time — this class performs no I/O itself, so
+    wrapping many gigs in a tight loop stays cheap.
+
+    Fails open (delegates to inner) if the gig's date cannot be parsed, matching
+    every other filter's fail-open convention in this module.
+    """
+
+    def __init__(
+        self,
+        filter_name: str,
+        inner: Callable[[Gig], bool],
+        snapshot: list[tuple[str, datetime.date, datetime.date]],
+    ) -> None:
+        self.filter_name = filter_name
+        self.inner = inner
+        self._snapshot = snapshot
+
+    def __call__(self, gig: Gig) -> bool:
+        normalized = normalize_to_yyyymmdd(gig.date)
+        if normalized is not None:
+            d = datetime.datetime.strptime(normalized, "%Y%m%d").date()
+            if filter_suspension_store.is_suspended(self._snapshot, self.filter_name, d):
+                return True  # suspended — pass through
+        return self.inner(gig)
+
+    def __repr__(self) -> str:
+        return f"SuspendableFilter({self.filter_name!r}, {self.inner!r})"
 
 
 # ──────────────────────────────────────────────
