@@ -71,7 +71,7 @@ Finally, `SheetsLogger` (a buffering `logging.Handler` subclass) drains its in-m
 A single python-telegram-bot polling bot, gated by `TELEGRAM_CHAT_ID`. **Every free-text message is forwarded to `unified_agent.process_message`** (`integrations/unified_agent.py`) — a multi-domain Claude Sonnet 4.6 agent with ~26 tools spanning:
 - **Gig calendar** — `add_gig` (from URL or fields), `list_upcoming_gigs`, `manage_competing_gigs`
 - **Invoicing** — `generate_invoice`, `email_invoice`, `list_clients`, `list_invoices`
-- **Filter management** — `manage_blacklist`, `manage_unavailable`, `manage_available` (writes to `filter_store`)
+- **Filter management** — `manage_blacklist`, `manage_unavailable`, `manage_available` (writes to `filter_store`), `manage_filter_suspensions` (writes to `filter_suspension_store`)
 - **Runtime config** — `manage_config` (writes to `runtime_config_store`: `min_fee`, `max_travel_minutes`, `poll_minutes`)
 - **Pipeline observability** — `get_gig_stats` (queries Sheets via `SheetsLogger.query_run_stats`)
 - **Applications & income** — `manage_applications`, `get_income_forecast` (reads from `application_store`)
@@ -88,6 +88,7 @@ Per-chat history, last-invoice context, and last-gig-listing context live in pro
 - `storage.py` — `seen_gigs.csv` and `listings_hash.txt` I/O
 - `application_store.py` — JSON-backed application lifecycle (`applied → accepted/no_response/declined/rejected`)
 - `filter_store.py` — JSON-backed runtime filter values (blacklist, unavail/avail periods); read fresh each tick
+- `filter_suspension_store.py` — JSON-backed store for date-ranged filter suspensions (temporarily exempt gigs, by their own date, from a named filter or all filters except `seen`); read fresh each tick
 - `runtime_config_store.py` — JSON-backed pipeline overrides (`min_fee`, `max_travel_minutes`, `poll_minutes`)
 - `reply_monitor.py` — Gmail → Claude-classifier → application_store + calendar + Telegram
 - `alert.py` — fire-and-forget Telegram alert (`send_alert(message)`); silently no-ops if unconfigured
@@ -129,6 +130,7 @@ Optional sections in `.env`:
 | `data/seen_gigs.csv` | Dedup store for the scraper; one gig URL per line |
 | `data/applications.json` | Application lifecycle store (written by `application_store`); `neg_pending` rows hold unsent NEG drafts awaiting Telegram approval |
 | `data/filter_config.json` | Runtime filter values: blacklist, unavail/avail periods |
+| `data/filter_suspensions.json` | Runtime filter suspensions (written by `filter_suspension_store`): which filter (or `all`) is exempted for which date range |
 | `data/runtime_config.json` | Runtime pipeline overrides: min_fee, max_travel_minutes, poll_minutes |
 | `data/agent_state.json` | Per-chat agent reference-context (last invoice/gig-listing/application-listing) persisted across restarts by `integrations/agent_state.py` |
 | `data/listings_hash.txt` | Hash of last-seen listings HTML for short-circuit detection |
@@ -159,3 +161,9 @@ The user approves/edits/rejects via Telegram chat (unified-agent tools, two-step
 Past-date `neg_pending` rows auto-flip to `expired` via `expire_past_applied`. `ENABLE_NEG_DRAFTS=false` reverts to the old behavior (NEG gigs rejected by `FeeFilter`).
 
 Two intentional visibility caveats: (1) `neg_pending`/`rejected`/`expired` NEG rows have no `applied_at`, so they never appear in `manage_applications` summaries or analytics — only `list_neg_pending` shows drafts, and approved drafts become normal `applied` rows; (2) with NEG drafting active, `FeeFilter` disappears from the dashboard's `filter_breakdown` metric — the "Fee partition applied" log (normal/neg/dropped counts) replaces it.
+
+### Filter suspensions
+
+Any filter except `SeenFilter` can be temporarily suspended for a date range via the Telegram agent's `manage_filter_suspensions` tool, backed by `filter_suspension_store.py` (`data/filter_suspensions.json`). Suspension containment is keyed by the **gig's own date** (same model as `unavailable_periods`/`available_only_periods`), not the date the suspension was created. Period tokens support the existing formats (`YYYY-MM-DD`, `YYYY-MM-DD:YYYY-MM-DD`, `YYYY-MM`) plus two open-ended forms: `YYYY-MM-DD:` (from that date onward, never auto-expires) and `:YYYY-MM-DD` (up to and including that date, auto-expires like any closed range).
+
+In `main.py`, each suspendable filter instance is wrapped in a `SuspendableFilter` (`filters.py`) at construction time, using a suspension snapshot loaded once per tick via `filter_suspension_store.load_active()`. Wrapping happens before the instance is used anywhere — including the direct `_fee_filter(gig)` call inside the NEG-drafts fee-partition block — so a fee suspension takes effect there too, not only inside `GigFilterChain`. `filter="all"` suspends every wrapped filter but never reaches `SeenFilter`, since it's never wrapped in the first place.
