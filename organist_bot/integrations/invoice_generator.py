@@ -4,15 +4,19 @@ import json
 import logging
 from datetime import datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from jinja2 import Environment, FileSystemLoader
 
-try:
-    from playwright.async_api import async_playwright
-except ImportError:  # pragma: no cover — playwright not installed in base env
-    async_playwright = None  # noqa: F841
-
 from organist_bot.config import settings
+
+if TYPE_CHECKING:
+    from playwright.async_api import async_playwright
+else:
+    try:
+        from playwright.async_api import async_playwright
+    except ImportError:  # pragma: no cover — playwright not installed in base env
+        async_playwright = None
 
 _PKG_ROOT = Path(__file__).parent.parent  # organist_bot/
 _PROJ_ROOT = _PKG_ROOT.parent  # project root

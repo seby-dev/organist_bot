@@ -61,4 +61,4 @@ ignore_missing_imports = true
 warn_unused_ignores    = true
 warn_return_any        = false
 strict                 = false
-exclude                = ["tests/"]
+exclude                = ["tests/", " \\d+\\.py$"]  # 2nd pattern: stray " N.py" duplicate-copy artifacts
