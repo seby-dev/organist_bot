@@ -540,7 +540,7 @@ class SuspendableFilter:
         return self.inner(gig)
 
     def __repr__(self) -> str:
-        return f"SuspendableFilter({self.filter_name!r}, {self.inner!r})"
+        return repr(self.inner)
 
 
 # ──────────────────────────────────────────────

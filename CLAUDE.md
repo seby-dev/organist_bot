@@ -68,7 +68,7 @@ Finally, `SheetsLogger` (a buffering `logging.Handler` subclass) drains its in-m
 
 ### `telegram_bot.py` — Unified Telegram bot
 
-A single python-telegram-bot polling bot, gated by `TELEGRAM_CHAT_ID`. **Every free-text message is forwarded to `unified_agent.process_message`** (`integrations/unified_agent.py`) — a multi-domain Claude Sonnet 4.6 agent with ~26 tools spanning:
+A single python-telegram-bot polling bot, gated by `TELEGRAM_CHAT_ID`. **Every free-text message is forwarded to `unified_agent.process_message`** (`integrations/unified_agent.py`) — a multi-domain Claude Sonnet 4.6 agent with ~27 tools spanning:
 - **Gig calendar** — `add_gig` (from URL or fields), `list_upcoming_gigs`, `manage_competing_gigs`
 - **Invoicing** — `generate_invoice`, `email_invoice`, `list_clients`, `list_invoices`
 - **Filter management** — `manage_blacklist`, `manage_unavailable`, `manage_available` (writes to `filter_store`), `manage_filter_suspensions` (writes to `filter_suspension_store`)
@@ -100,7 +100,7 @@ Per-chat history, last-invoice context, and last-gig-listing context live in pro
 - `sheets_logger.py` — buffering `logging.Handler` + `query_run_stats` for the dashboard
 - `gmail_client.py` — OAuth2 Gmail read-only; refreshes token + atomic write with `0o600`
 - `telegram_bot.py` — the bot module the entry point delegates to
-- `unified_agent.py` — Claude SDK agentic loop, ~26 tools, per-chat state
+- `unified_agent.py` — Claude SDK agentic loop, ~27 tools, per-chat state
 - `invoice_generator.py` — Playwright headless Chromium → PDF from Jinja2 `invoice.html`
 - `email_sender.py` — SMTP invoice email sender
 

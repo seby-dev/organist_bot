@@ -1356,9 +1356,10 @@ class TestSuspendableFilter:
         f = SuspendableFilter("fee", inner, snapshot)
         assert f(_gig("not a real date")) is False  # falls through to inner, which rejects
 
-    def test_repr_includes_filter_name_and_inner(self):
-        f = SuspendableFilter("fee", FeeFilter(min_fee=100), [])
-        assert "fee" in repr(f)
+    def test_repr_delegates_to_inner(self):
+        inner = FeeFilter(min_fee=100)
+        f = SuspendableFilter("fee", inner, [])
+        assert repr(f) == repr(inner)
 
 
 class TestPostcodeFilterAlert:
