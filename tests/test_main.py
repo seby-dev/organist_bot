@@ -386,6 +386,76 @@ class TestMain:
         mock_scraper.extract_full_details.assert_not_called()
         notifier_inst.send_summary.assert_not_called()
 
+    def test_suspended_blacklist_filter_lets_gig_through(self):
+        """A blacklist suspension covering the gig's date must let a
+        blacklisted email through the Phase 2 chain."""
+        mock_settings = self._make_minimal_settings()
+        mock_settings.enable_blacklist_filter = True
+
+        basic = dict(
+            header="Test Gig",
+            organisation="Church",
+            locality="London",
+            date="Sunday, March 1, 2026",
+            time="10:00 AM",
+            fee="£120",
+            link="https://organistsonline.org/required/test",
+        )
+        full = {"email": "blacklisted@example.com"}
+
+        mock_scraper = MagicMock()
+        mock_scraper.fetch.return_value = "<html></html>"
+        mock_scraper.parse_gig_listings.return_value = [MagicMock()]
+        mock_scraper.extract_basic_details.return_value = basic
+        mock_scraper.extract_full_details.return_value = full
+
+        with (
+            patch("main.settings", mock_settings),
+            patch("main.Notifier") as MockNotifier,
+            patch("main.SMTPTransport"),
+            patch("main.load_seen_gigs", return_value=set()),
+            patch("main.save_seen_gigs"),
+            patch("main.load_listings_hash", return_value=None),
+            patch("main.save_listings_hash"),
+            patch("main.set_run_id"),
+            patch("main.filter_store") as mock_filter_store,
+            patch("main.filter_suspension_store") as mock_fss,
+        ):
+            mock_filter_store.blacklist_emails.return_value = ["blacklisted@example.com"]
+            mock_fss.load_active.return_value = [
+                ("blacklist", _dt.date(2026, 1, 1), _dt.date(2026, 12, 31))
+            ]
+            mock_fss.purge_past_suspensions.return_value = 0
+            notifier_inst = MockNotifier.return_value
+            main_module.main(mock_scraper)
+
+        notifier_inst.send_summary.assert_called_once()
+        assert len(notifier_inst.send_summary.call_args[0][0]) == 1
+
+    def test_purge_past_suspensions_called_each_tick(self):
+        """purge_past_suspensions() must run once per tick, alongside expire_past_applied()."""
+        mock_settings = self._make_minimal_settings()
+        mock_scraper = MagicMock()
+        mock_scraper.fetch.return_value = "<html></html>"
+        mock_scraper.parse_gig_listings.return_value = []
+
+        with (
+            patch("main.settings", mock_settings),
+            patch("main.Notifier"),
+            patch("main.SMTPTransport"),
+            patch("main.load_seen_gigs", return_value=set()),
+            patch("main.save_seen_gigs"),
+            patch("main.load_listings_hash", return_value=None),
+            patch("main.save_listings_hash"),
+            patch("main.set_run_id"),
+            patch("main.filter_suspension_store") as mock_fss,
+        ):
+            mock_fss.load_active.return_value = []
+            mock_fss.purge_past_suspensions.return_value = 0
+            main_module.main(mock_scraper)
+
+        mock_fss.purge_past_suspensions.assert_called_once()
+
 
 class TestHashChangeDetection:
     def test_skips_pipeline_when_hash_unchanged(self, caplog):
@@ -831,6 +901,42 @@ class TestNegDrafts:
             assert "NEG draft pending" not in c.args[0]
         # Notifier must have been instantiated (Phase 3 ran)
         mock_notifier_cls.assert_called()
+
+    def test_suspended_fee_filter_bypasses_neg_partition(self, tmp_path, monkeypatch):
+        """A fee suspension covering the gig's date must let a below-threshold,
+        non-negotiable-worded gig through as normal — not partitioned to
+        neg_pending or dropped. This proves the suspension applies at the
+        direct _fee_filter(gig) call site inside the NEG partition, not just
+        inside GigFilterChain."""
+        monkeypatch.setattr(application_store, "_PATH", tmp_path / "applications.json")
+        mock_settings = (
+            self._settings()
+        )  # enable_neg_drafts=True, enable_fee_filter=True, min_fee=100
+        scraper = self._mock_scraper_with_one_gig(fee="£50")  # below min_fee, not "NEG"-worded
+
+        with (
+            patch("main.alert"),
+            patch("main.settings", mock_settings),
+            patch("organist_bot.notifier.application_store"),
+            patch("main.load_seen_gigs", return_value=set()),
+            patch("main.load_listings_hash", return_value="old_hash"),
+            patch("main.save_listings_hash"),
+            patch("main.save_seen_gigs"),
+            patch("main.filter_store"),
+            patch("main.SMTPTransport"),
+            patch("main.set_run_id"),
+            patch("main.runtime_config") as mock_rc,
+            patch("main.filter_suspension_store") as mock_fss,
+            patch("main.Notifier") as mock_notifier_cls,
+        ):
+            mock_rc.get.side_effect = lambda k, d: d
+            mock_fss.load_active.return_value = [("fee", _dt.date.min, _dt.date.max)]
+            mock_fss.purge_past_suspensions.return_value = 0
+            main_module.main(scraper)
+
+        assert application_store.list_neg_pending() == []
+        mock_notifier_cls.return_value.send_summary.assert_called_once()
+        assert len(mock_notifier_cls.return_value.send_summary.call_args[0][0]) == 1
 
 
 # ── Gmail monitoring config warning ──────────────────────────────────────────

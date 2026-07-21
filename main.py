@@ -13,6 +13,7 @@ import schedule
 import organist_bot.alert as alert
 import organist_bot.application_store as application_store
 import organist_bot.filter_store as filter_store
+import organist_bot.filter_suspension_store as filter_suspension_store
 from organist_bot.config import settings
 from organist_bot.filters import (
     AvailabilityFilter,
@@ -23,6 +24,7 @@ from organist_bot.filters import (
     PostcodeFilter,
     SeenFilter,
     SundayTimeFilter,
+    SuspendableFilter,
     is_negotiable,
 )
 from organist_bot.integrations.calendar_client import GoogleCalendarClient
@@ -173,11 +175,21 @@ def _run(
     # pre_filter (Phase 1) and filter_chain (Phase 2) to avoid config-drift.
     # Each GigFilterChain keeps its own rejection-count dict keyed by the filter
     # object, and these filters are stateless (config only), so sharing is safe.
+
+    # Suspensions snapshot: loaded once per tick, not per gig — same performance
+    # pattern already used for blacklist/availability filter construction below.
+    suspension_snapshot = filter_suspension_store.load_active()
+
     _fee_filter = (
         FeeFilter(min_fee=runtime_config.get("min_fee", settings.min_fee))
         if settings.enable_fee_filter
         else None
     )
+    if _fee_filter is not None:
+        # Wrapped here (not just when added to a chain) so the NEG-drafts fee
+        # partition below — which calls _fee_filter(gig) directly — also
+        # respects fee suspensions.
+        _fee_filter = SuspendableFilter("fee", _fee_filter, suspension_snapshot)
     # When NEG drafting is enabled we remove FeeFilter from BOTH chains so NEG
     # gigs survive past pre_filter (needed for the detail-page fetch that gets
     # us the contact email) and past filter_chain. The explicit partition gate
@@ -185,14 +197,28 @@ def _run(
     _include_fee_in_chains = _fee_filter is not None and not settings.enable_neg_drafts
 
     _sunday_time_filter = SundayTimeFilter() if settings.enable_sunday_time_filter else None
+    if _sunday_time_filter is not None:
+        _sunday_time_filter = SuspendableFilter(
+            "sunday_time", _sunday_time_filter, suspension_snapshot
+        )
     _avail_filters: list = []
     if settings.enable_availability_filter:
         unavail = filter_store.unavailable_periods()
         avail_only = filter_store.available_only_periods()
         if unavail:
-            _avail_filters.append(AvailabilityFilter(unavail, mode="block"))
+            _avail_filters.append(
+                SuspendableFilter(
+                    "availability", AvailabilityFilter(unavail, mode="block"), suspension_snapshot
+                )
+            )
         if avail_only:
-            _avail_filters.append(AvailabilityFilter(avail_only, mode="only"))
+            _avail_filters.append(
+                SuspendableFilter(
+                    "availability",
+                    AvailabilityFilter(avail_only, mode="only"),
+                    suspension_snapshot,
+                )
+            )
 
     # Pre-filter chain: filters that only need basic details (fee, date, time, link).
     # SeenFilter (link in seen_gigs.csv) and CalendarFilter (date in Google Calendar)
@@ -215,7 +241,9 @@ def _run(
             credentials_file=settings.google_calendar_credentials_file,
             calendar_id=settings.google_calendar_id,
         )
-        pre_filter.add(CalendarFilter(cal_client))
+        pre_filter.add(
+            SuspendableFilter("calendar", CalendarFilter(cal_client), suspension_snapshot)
+        )
     elif not settings.enable_calendar_filter:
         logger.info("CalendarFilter disabled")
     else:
@@ -307,7 +335,11 @@ def _run(
         logger.info("SundayTimeFilter disabled")
 
     if settings.enable_blacklist_filter:
-        filter_chain.add(BlacklistFilter(filter_store.blacklist_emails()))
+        filter_chain.add(
+            SuspendableFilter(
+                "blacklist", BlacklistFilter(filter_store.blacklist_emails()), suspension_snapshot
+            )
+        )
     else:
         logger.info("BlacklistFilter disabled")
 
@@ -319,10 +351,16 @@ def _run(
 
     if settings.enable_postcode_filter and settings.home_postcode and settings.google_maps_api_key:
         filter_chain.add(
-            PostcodeFilter(
-                home_postcode=settings.home_postcode,
-                api_key=settings.google_maps_api_key,
-                max_minutes=runtime_config.get("max_travel_minutes", settings.max_travel_minutes),
+            SuspendableFilter(
+                "postcode",
+                PostcodeFilter(
+                    home_postcode=settings.home_postcode,
+                    api_key=settings.google_maps_api_key,
+                    max_minutes=runtime_config.get(
+                        "max_travel_minutes", settings.max_travel_minutes
+                    ),
+                ),
+                suspension_snapshot,
             )
         )
     elif not settings.enable_postcode_filter:
@@ -469,6 +507,13 @@ def _run(
             logger.info("Expired past applications as no_response", extra={"count": expired})
     except Exception:
         logger.warning("application_store: expire_past_applied failed", exc_info=True)
+
+    try:
+        removed_suspensions = filter_suspension_store.purge_past_suspensions()
+        if removed_suspensions > 0:
+            logger.info("Purged expired filter suspensions", extra={"count": removed_suspensions})
+    except Exception:
+        logger.warning("filter_suspension_store: purge_past_suspensions failed", exc_info=True)
 
     try:
         import organist_bot.reply_monitor as reply_monitor
