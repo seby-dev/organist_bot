@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from organist_bot.integrations.unified_agent import (
+    TOOLS,
     UnifiedAgent,
     _execute_tool,
     _last_gig_listing,
@@ -925,6 +926,114 @@ class TestFilterTools:
             )
         data = json.loads(result)
         assert "result" in data
+
+    @pytest.mark.asyncio
+    async def test_manage_filter_suspensions_list_empty(self):
+        with patch("organist_bot.integrations.unified_agent.filter_suspension_store") as mock_fss:
+            mock_fss.list_suspensions.return_value = []
+            result = await _execute_tool("manage_filter_suspensions", {"action": "list"}, CHAT_ID)
+        assert "no filter suspensions" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_manage_filter_suspensions_list_shows_filter_and_period(self):
+        with patch("organist_bot.integrations.unified_agent.filter_suspension_store") as mock_fss:
+            mock_fss.list_suspensions.return_value = [{"filter": "postcode", "period": "2026-12"}]
+            result = await _execute_tool("manage_filter_suspensions", {"action": "list"}, CHAT_ID)
+        assert "postcode" in result
+        assert "01 Dec 2026" in result
+
+    @pytest.mark.asyncio
+    async def test_manage_filter_suspensions_list_shows_open_ended_from(self):
+        with patch("organist_bot.integrations.unified_agent.filter_suspension_store") as mock_fss:
+            mock_fss.list_suspensions.return_value = [{"filter": "fee", "period": "2026-08-01:"}]
+            result = await _execute_tool("manage_filter_suspensions", {"action": "list"}, CHAT_ID)
+        assert "from" in result.lower()
+        assert "onward" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_manage_filter_suspensions_list_shows_open_ended_until(self):
+        with patch("organist_bot.integrations.unified_agent.filter_suspension_store") as mock_fss:
+            mock_fss.list_suspensions.return_value = [{"filter": "all", "period": ":2026-01-05"}]
+            result = await _execute_tool("manage_filter_suspensions", {"action": "list"}, CHAT_ID)
+        assert "through" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_manage_filter_suspensions_add_success(self):
+        with patch("organist_bot.integrations.unified_agent.filter_suspension_store") as mock_fss:
+            mock_fss.add_suspension.return_value = True
+            result = await _execute_tool(
+                "manage_filter_suspensions",
+                {"action": "add", "filter": "postcode", "period": "2026-12"},
+                CHAT_ID,
+            )
+        mock_fss.add_suspension.assert_called_once_with("postcode", "2026-12")
+        data = json.loads(result)
+        assert "suspended" in data["result"].lower()
+
+    @pytest.mark.asyncio
+    async def test_manage_filter_suspensions_add_duplicate(self):
+        with patch("organist_bot.integrations.unified_agent.filter_suspension_store") as mock_fss:
+            mock_fss.add_suspension.return_value = False
+            result = await _execute_tool(
+                "manage_filter_suspensions",
+                {"action": "add", "filter": "postcode", "period": "2026-12"},
+                CHAT_ID,
+            )
+        data = json.loads(result)
+        assert "already" in data["result"].lower()
+
+    @pytest.mark.asyncio
+    async def test_manage_filter_suspensions_add_invalid_returns_error(self):
+        with patch("organist_bot.integrations.unified_agent.filter_suspension_store") as mock_fss:
+            mock_fss.add_suspension.side_effect = ValueError("Could not parse period 'nonsense'")
+            result = await _execute_tool(
+                "manage_filter_suspensions",
+                {"action": "add", "filter": "fee", "period": "nonsense"},
+                CHAT_ID,
+            )
+        data = json.loads(result)
+        assert "error" in data
+
+    @pytest.mark.asyncio
+    async def test_manage_filter_suspensions_add_resolves_relative_period(self):
+        with patch("organist_bot.integrations.unified_agent.filter_suspension_store") as mock_fss:
+            mock_fss.add_suspension.return_value = True
+            await _execute_tool(
+                "manage_filter_suspensions",
+                {"action": "add", "filter": "fee", "period": "next month"},
+                CHAT_ID,
+            )
+        called_period = mock_fss.add_suspension.call_args[0][1]
+        assert called_period != "next month"  # resolved to a real token
+
+    @pytest.mark.asyncio
+    async def test_manage_filter_suspensions_remove_success(self):
+        with patch("organist_bot.integrations.unified_agent.filter_suspension_store") as mock_fss:
+            mock_fss.remove_suspension.return_value = True
+            result = await _execute_tool(
+                "manage_filter_suspensions",
+                {"action": "remove", "filter": "postcode", "period": "2026-12"},
+                CHAT_ID,
+            )
+        mock_fss.remove_suspension.assert_called_once_with("postcode", "2026-12")
+        data = json.loads(result)
+        assert "resumed" in data["result"].lower()
+
+    @pytest.mark.asyncio
+    async def test_manage_filter_suspensions_remove_not_found(self):
+        with patch("organist_bot.integrations.unified_agent.filter_suspension_store") as mock_fss:
+            mock_fss.remove_suspension.return_value = False
+            result = await _execute_tool(
+                "manage_filter_suspensions",
+                {"action": "remove", "filter": "postcode", "period": "2026-12"},
+                CHAT_ID,
+            )
+        data = json.loads(result)
+        assert "no matching" in data["result"].lower()
+
+    def test_seen_not_in_manage_filter_suspensions_enum(self):
+        tool_def = next(t for t in TOOLS if t["name"] == "manage_filter_suspensions")
+        assert "seen" not in tool_def["input_schema"]["properties"]["filter"]["enum"]
 
 
 # ── clear_conversation ────────────────────────────────────────────────────────

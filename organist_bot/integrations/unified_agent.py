@@ -7,7 +7,13 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import cast
 
-from organist_bot import analytics, application_store, filter_store, travel
+from organist_bot import (
+    analytics,
+    application_store,
+    filter_store,
+    filter_suspension_store,
+    travel,
+)
 from organist_bot.config import settings
 from organist_bot.filters import normalize_to_yyyymmdd, parse_start_time
 from organist_bot.integrations import agent_state
@@ -68,6 +74,12 @@ You are an assistant for an organist. You handle three areas:
 - "I'm unavailable on 25 Dec" → manage_unavailable(action=add, period=2026-12-25).
 - "Add an available-only period" → manage_available(action=add, period=<period>).
 - Period formats: YYYY-MM-DD, YYYY-MM-DD:YYYY-MM-DD, YYYY-MM. Also: today, tomorrow, this/next <weekday>, this weekend, next week, this/next month.
+- "Turn off the postcode filter for all of December" → manage_filter_suspensions(action=add, filter=postcode, period=2026-12).
+- "Ignore the fee filter from August 1st onward" → manage_filter_suspensions(action=add, filter=fee, period=2026-08-01:).
+- "Disable every filter until the 5th of January" → manage_filter_suspensions(action=add, filter=all, period=:2026-01-05).
+- "What filters are currently suspended?" → manage_filter_suspensions(action=list).
+- "Resume the postcode filter" → manage_filter_suspensions(action=remove, filter=postcode, period=<period from the last list>).
+- The 'seen' filter cannot be suspended — if asked, explain that suspending it would just resend the same application every poll tick instead of exempting a category of gig.
 
 ## Pipeline stats
 - "Show stats" / "how's the pipeline?" / "gig stats this week" → call get_gig_stats.
@@ -420,6 +432,40 @@ TOOLS: list[dict] = [
             "type": "object",
             "properties": {
                 "action": {"type": "string", "enum": ["list", "add", "remove"]},
+                "period": {"type": "string"},
+            },
+            "required": ["action"],
+        },
+    },
+    {
+        "name": "manage_filter_suspensions",
+        "description": (
+            "Suspend or resume gig filters for a date range, keyed by the GIG's own date "
+            "(not today's date) — e.g. 'ignore the postcode filter for gigs in December'. "
+            "action: list, add, or remove. filter: fee, sunday_time, blacklist, postcode, "
+            "calendar, availability, or all. The 'seen' filter cannot be suspended — doing so "
+            "would just re-send the same application every poll tick instead of exempting a "
+            "category of gig. period formats: YYYY-MM-DD, YYYY-MM-DD:YYYY-MM-DD, YYYY-MM, "
+            "YYYY-MM-DD: (from that date onward, open-ended), :YYYY-MM-DD (up to and including "
+            "that date). Also accepts the same relative phrases as manage_unavailable: today, "
+            "tomorrow, this/next <weekday>, this weekend, next week, this/next month."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["list", "add", "remove"]},
+                "filter": {
+                    "type": "string",
+                    "enum": [
+                        "fee",
+                        "sunday_time",
+                        "blacklist",
+                        "postcode",
+                        "calendar",
+                        "availability",
+                        "all",
+                    ],
+                },
                 "period": {"type": "string"},
             },
             "required": ["action"],
@@ -1368,6 +1414,61 @@ def _format_periods_list(periods: list[str], label: str) -> str:
         return f"No {label} set."
     lines = "\n".join(f"  • {_format_period(p)}" for p in periods)
     return f"{label.capitalize()} ({len(periods)}):\n{lines}"
+
+
+def _format_suspension(entry: dict) -> str:
+    """Format a suspension entry (filter + period) into a readable label,
+    including open-ended bounds."""
+    period = entry.get("period", "")
+    filter_name = entry.get("filter", "")
+    if period.startswith(":"):
+        label = f"through {_format_period(period[1:])}"
+    elif period.endswith(":") and period.count(":") == 1:
+        label = f"from {_format_period(period[:-1])} onward"
+    else:
+        label = _format_period(period)
+    return f"{filter_name}: {label}"
+
+
+def _format_suspensions_list(suspensions: list[dict]) -> str:
+    if not suspensions:
+        return "No filter suspensions set."
+    lines = "\n".join(f"  • {_format_suspension(e)}" for e in suspensions)
+    return f"Filter suspensions ({len(suspensions)}):\n{lines}"
+
+
+@_handler("manage_filter_suspensions")
+async def _handle_manage_filter_suspensions(input_data: dict, chat_id: int) -> str:
+    action = input_data["action"]
+    if action == "list":
+        suspensions = filter_suspension_store.list_suspensions()
+        return _format_suspensions_list(suspensions)
+
+    filter_name = input_data.get("filter", "")
+    period = _resolve_period(input_data.get("period", ""))
+
+    if action == "add":
+        try:
+            added = filter_suspension_store.add_suspension(filter_name, period)
+        except ValueError as exc:
+            return json.dumps({"error": str(exc)})
+        msg = (
+            f"Suspended '{filter_name}' for '{period}'."
+            if added
+            else f"'{filter_name}' is already suspended for '{period}'."
+        )
+        return json.dumps({"result": msg})
+
+    if action == "remove":
+        removed = filter_suspension_store.remove_suspension(filter_name, period)
+        msg = (
+            f"Resumed '{filter_name}' for '{period}'."
+            if removed
+            else f"No matching suspension for '{filter_name}' / '{period}'."
+        )
+        return json.dumps({"result": msg})
+
+    return json.dumps({"error": f"Unknown action: {action}"})
 
 
 @_handler("manage_unavailable")
