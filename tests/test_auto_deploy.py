@@ -6,8 +6,11 @@ would previously have triggered a real `git fetch` against the live repo
 merely by importing the module.
 """
 
+import os
 import subprocess
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 import scripts.auto_deploy as ad
 
@@ -74,6 +77,15 @@ class TestAlreadyAlerted:
 
 
 class TestWorkingTreeClean:
+    @pytest.fixture(autouse=True)
+    def _clear_git_env(self, monkeypatch):
+        # Git hooks set GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE in the process
+        # environment. Those vars override directory detection and cause git
+        # commands run in a freshly-inited tmp_path to target the wrong repo.
+        # Strip them so _init_repo and _working_tree_clean see a clean slate.
+        for key in [k for k in os.environ if k.startswith("GIT_")]:
+            monkeypatch.delenv(key, raising=False)
+
     def _init_repo(self, tmp_path):
         subprocess.run(["git", "init", "--quiet"], cwd=tmp_path, check=True)
         subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=tmp_path, check=True)
