@@ -36,11 +36,7 @@ A personal automation bot that scrapes organ gig listings from [organistsonline.
 git clone https://github.com/sebby/organist_bot.git
 cd organist_bot
 
-# Runtime only
-pip install -r requirements.txt
-
-# Development (includes pytest, mypy, ruff)
-pip install -r requirements-dev.txt
+uv sync --extra dev
 ```
 
 ### 2. Configure environment
@@ -286,9 +282,7 @@ Hooks run automatically on every `git commit`: trailing whitespace, credential d
 organist_bot/
 ├── main.py                  # Scheduler entry point
 ├── telegram_bot.py          # Telegram bot entry point
-├── requirements.txt         # Runtime dependencies
-├── requirements-dev.txt     # Development dependencies
-├── pyproject.toml           # Tool configuration (ruff, mypy, pytest)
+├── pyproject.toml           # Dependencies + tool configuration (ruff, mypy, pytest)
 ├── .pre-commit-config.yaml  # Pre-commit hooks
 │
 ├── .github/
