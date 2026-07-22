@@ -13,6 +13,10 @@ import organist_bot.application_store as application_store
 
 
 class TestRunLock:
+    """The suite-wide _isolate_scheduler_lock_file fixture (conftest.py) points
+    main._LOCK_FILE at a tmp_path for every test — real production behavior
+    (the module-level default) is unaffected."""
+
     def test_skips_when_lock_held(self, caplog):
         """main() returns early without calling _run when the lock is already held."""
         with patch("fcntl.flock", side_effect=BlockingIOError):

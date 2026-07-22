@@ -114,8 +114,12 @@ def main(
     scraper: Scraper,
     sheets_logger: SheetsLogger | None = None,
     dry_run: bool = False,
+    lock_file: str | None = None,
 ) -> None:
-    lock = open(_LOCK_FILE, "w")
+    # Read _LOCK_FILE live (not as a bound default) so tests can override it
+    # for every main() call via a single autouse fixture patching the module
+    # attribute, rather than threading lock_file= through every call site.
+    lock = open(lock_file or _LOCK_FILE, "w")
     try:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
