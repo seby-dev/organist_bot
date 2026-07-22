@@ -11,7 +11,8 @@ Security: only messages from TELEGRAM_CHAT_ID are processed.
 import logging
 import os
 
-from telegram import Update
+from telegram import Message, Update
+from telegram.error import BadRequest
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -50,6 +51,25 @@ def _reject(update: Update) -> None:
     )
 
 
+# ── Reply helper ──────────────────────────────────────────────────────────────
+
+
+async def _reply(message: Message, text: str) -> None:
+    """Send with Markdown formatting; fall back to plain text if the LLM's
+    output contains characters (stray `_`, `*`, backticks) that Telegram's
+    legacy Markdown parser can't balance into valid entities."""
+    try:
+        await message.reply_text(text, parse_mode="Markdown")
+    except BadRequest as exc:
+        if "can't parse entities" not in str(exc).lower():
+            raise
+        logger.warning(
+            "Telegram: Markdown parse failed, resending as plain text",
+            extra={"error": str(exc)},
+        )
+        await message.reply_text(text)
+
+
 # ── /start ────────────────────────────────────────────────────────────────────
 
 
@@ -58,7 +78,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         _reject(update)
         return
     assert update.message is not None
-    await update.message.reply_text(_HELP, parse_mode="Markdown")
+    await _reply(update.message, _HELP)
 
 
 # ── Free-text handler ─────────────────────────────────────────────────────────
@@ -86,7 +106,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                         caption=resp.file_caption or "",
                     )
             if resp.text:
-                await update.message.reply_text(resp.text, parse_mode="Markdown")
+                await _reply(update.message, resp.text)
     except Exception as exc:
         logger.exception("Telegram: unified agent error")
         await update.message.reply_text(f"❌ Unexpected error: {exc}")
