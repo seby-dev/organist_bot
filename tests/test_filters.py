@@ -1397,7 +1397,7 @@ class TestCalendarFilterCompeting:
             assert f(gig) is False
         mock_alert.send_alert.assert_not_called()
 
-    def test_real_event_rejects_and_sends_alert(self):
+    def test_real_event_rejects_without_alert(self):
         f = self._make_filter([{"id": "e1", "summary": "Evensong — St Mary's"}])
         gig = make_gig(
             date="Sunday, 15 March 2026",
@@ -1408,16 +1408,9 @@ class TestCalendarFilterCompeting:
         )
         with patch("organist_bot.filters.alert") as mock_alert:
             assert f(gig) is False
-        mock_alert.send_alert.assert_called_once()
-        msg = mock_alert.send_alert.call_args.args[0]
-        assert "Sunday Service" in msg
-        assert "All Saints Church" in msg
-        assert "£80" in msg
-        assert "https://organistsonline.org/gig/99" in msg
-        assert "Evensong — St Mary's" in msg
-        assert "Unavailable" not in msg
+        mock_alert.send_alert.assert_not_called()
 
-    def test_mixed_events_alerts_only_real_events(self):
+    def test_mixed_events_rejects_without_alert(self):
         events = [
             {"id": "b1", "summary": "Unavailable"},
             {"id": "e1", "summary": "Matins — St John's"},
@@ -1426,17 +1419,14 @@ class TestCalendarFilterCompeting:
         gig = make_gig(date="Sunday, 15 March 2026")
         with patch("organist_bot.filters.alert") as mock_alert:
             assert f(gig) is False
-        mock_alert.send_alert.assert_called_once()
-        msg = mock_alert.send_alert.call_args.args[0]
-        assert "Matins — St John's" in msg
-        assert "Unavailable" not in msg
+        mock_alert.send_alert.assert_not_called()
 
     def test_event_without_summary_treated_as_competing(self):
         f = self._make_filter([{"id": "e1"}])  # no "summary" key
         gig = make_gig(date="Sunday, 15 March 2026")
         with patch("organist_bot.filters.alert") as mock_alert:
             assert f(gig) is False
-        mock_alert.send_alert.assert_called_once()
+        mock_alert.send_alert.assert_not_called()
 
     def test_api_failure_fails_open_passes_gig(self):
         """get_events_on_date returns [] on API error — gig should pass through."""

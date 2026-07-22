@@ -854,11 +854,15 @@ class TestNegDrafts:
         assert len(rows) == 1
         assert rows[0]["status"] == "neg_pending"
         assert "£120" in rows[0]["draft_body"]
-        neg_calls = [
-            c for c in mock_alert.send_alert.call_args_list if "NEG draft pending" in c.args[0]
-        ]
-        assert len(neg_calls) == 1
-        assert rows[0]["gig_id"] in neg_calls[0].args[0]
+        gig_id = rows[0]["gig_id"]
+        # _send_neg_alert sends two Telegram messages per NEG draft: a gig
+        # details card, then the draft itself (containing gig_id and the
+        # approve/edit/reject instructions) — PR #59 split what used to be
+        # one "NEG draft pending" message into these two.
+        assert mock_alert.send_alert.call_count == 2
+        draft_calls = [c for c in mock_alert.send_alert.call_args_list if gig_id in c.args[0]]
+        assert len(draft_calls) == 1
+        assert "approve" in draft_calls[0].args[0]
 
     def test_below_min_fee_gig_is_not_drafted(self, tmp_path, monkeypatch):
         self._run(
