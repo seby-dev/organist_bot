@@ -8,6 +8,36 @@ After pushing a branch and creating a PR:
 1. Always create PRs as **ready for review** (never as draft).
 2. Immediately enable **auto-merge with squash** on the PR (`mcp__github__enable_pr_auto_merge` with `mergeMethod: SQUASH`).
 
+## Ship workflow
+
+Never commit directly to `main`. For any change:
+
+```bash
+git checkout -b <descriptive-branch-name>
+# ... make changes, commit ...
+make ship
+```
+
+`make ship` runs the full local quality gate (`make pre-push`: ruff lint,
+ruff format --check, mypy, bandit + semgrep, pytest) — refusing to run at
+all if you're on `main` — then pushes the branch, opens a PR (ready for
+review, matching the workflow above), and enables squash auto-merge.
+`core.hooksPath` is set to `.githooks` automatically the first time `make
+pre-push` or `make ship` runs, so the same checks also run as a real `git
+push` hook — a push that skips `make ship` entirely still can't skip the
+gate.
+
+`main` requires the `Lint & type-check` and `Tests` CI checks to pass
+before any PR can merge — auto-merge genuinely waits for green CI rather
+than merging immediately.
+
+Separately, `scripts/auto_deploy.py` re-runs the same checks locally
+(ruff/mypy/pytest) immediately before restarting the live bots, as a
+backstop that doesn't depend on GitHub Actions or `gh` auth being
+reachable from a background launchd process. See its module docstring for
+the exact failure-handling behavior (alert-once-per-SHA, conditional safe
+rollback).
+
 ## Commands
 
 ```bash
@@ -48,7 +78,7 @@ After adding new dependencies, run `playwright install chromium` if Playwright i
 
 ## Architecture
 
-The project has two long-running processes that share the `organist_bot` package. Both run under launchd (see `scripts/install-launchagent.sh`) and are auto-redeployed by `scripts/auto_deploy.py` on every push to `main`.
+The project has two long-running processes that share the `organist_bot` package. Both run under launchd (see `scripts/install-launchagent.sh`) and are auto-redeployed by `scripts/auto_deploy.py` on every push to `main` — but only after `auto_deploy.py` re-verifies lint/type/tests locally; see "Ship workflow" above for the full picture.
 
 ### `main.py` — Gig scraper/scheduler
 
