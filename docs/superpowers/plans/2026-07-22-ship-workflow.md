@@ -232,38 +232,17 @@ ship: pre-push
 
 - [ ] **Step 4: Create `.githooks/pre-push`**
 
+A thin wrapper delegating to the Makefile — single source of truth for the actual checks, so the hook and `make pre-push`/`make ship` can never drift out of sync with each other:
+
 ```bash
 #!/usr/bin/env bash
 # Pre-push hook: runs the full quality gate before allowing any push.
-# Blocks the push and exits non-zero if any check fails.
+# Delegates to `make pre-push` — the Makefile is the single source of truth
+# for what the gate checks; this file only makes it fire automatically on
+# every `git push`, not just when someone remembers to type `make ship`.
 set -euo pipefail
-
-ROOT="$(git rev-parse --show-toplevel)"
-VENV="$ROOT/.venv/bin"
-
-echo "── Pre-push: lint ────────────────────────────────────"
-"$VENV/ruff" check "$ROOT"
-
-echo "── Pre-push: format check ────────────────────────────"
-"$VENV/ruff" format --check "$ROOT"
-
-echo "── Pre-push: type-check ──────────────────────────────"
-"$VENV/mypy" "$ROOT/organist_bot/"
-
-echo "── Pre-push: security (bandit) ───────────────────────"
-"$VENV/bandit" -r "$ROOT/organist_bot/" -ll
-
-echo "── Pre-push: security (semgrep) ──────────────────────"
-if command -v semgrep &>/dev/null; then
-    semgrep --config=auto "$ROOT/organist_bot/" --error
-else
-    echo "semgrep not installed — skipping"
-fi
-
-echo "── Pre-push: tests ───────────────────────────────────"
-"$VENV/pytest" --tb=short -q --rootdir="$ROOT"
-
-echo "── Pre-push: all checks passed ───────────────────────"
+cd "$(git rev-parse --show-toplevel)"
+make pre-push
 ```
 
 Make it executable:
@@ -347,29 +326,29 @@ Make it executable:
 chmod +x scripts/ship.sh
 ```
 
-- [ ] **Step 2: Verify with a real throwaway branch**
+- [ ] **Step 2: Verify only the safe parts now — no push, no PR**
+
+Branch protection doesn't exist yet (that's Task 6), so a real `gh pr merge --squash --auto` run against `main` right now has nothing stopping it from merging immediately — there'd be a genuine race between the merge landing and a following `gh pr close`. Task 6 already runs a full end-to-end smoke test of this exact script once branch protection makes that safe (the merge is provably blocked pending CI there). For now, verify only what's safe to run against the real repo:
 
 ```bash
-git checkout -b test/ship-script-smoke-test
-echo "# smoke test for ship.sh — safe to delete" > /tmp/ship_smoke_test.md
-cp /tmp/ship_smoke_test.md SHIP_SMOKE_TEST.md
-git add SHIP_SMOKE_TEST.md
-git commit -m "test: smoke-test scripts/ship.sh"
+bash -n scripts/ship.sh
+```
+
+Expected: no output, exit code 0 (valid bash syntax).
+
+```bash
 ./scripts/ship.sh
 ```
 
-Expected: pushes the branch, creates a PR titled "test: smoke-test scripts/ship.sh", enables auto-merge, and prints `Shipped: <url>`.
-
-Then clean up — this PR must not actually merge into `main`:
+(Run while still on `main` — do not check out a branch first.)
+Expected: exits 1, prints `ERROR: Do not ship from main — use a feature branch` to stderr. Confirm no side effects:
 
 ```bash
-gh pr close --delete-branch
-git checkout main
-git branch -D test/ship-script-smoke-test 2>/dev/null || true
-rm -f SHIP_SMOKE_TEST.md
+git log -1 --format=%H
+gh pr list --limit 1 --json number,title
 ```
 
-Expected: PR closed, remote and local branches deleted, no `SHIP_SMOKE_TEST.md` left in the working tree.
+Expected: the local `HEAD` SHA is unchanged from before running `ship.sh`, and the PR list shows nothing new.
 
 - [ ] **Step 3: Commit `scripts/ship.sh` itself directly to `main`**
 
@@ -931,6 +910,8 @@ Run: `gh api repos/seby-dev/organist_bot/branches/main/protection --jq '.require
 Expected: `["Lint & type-check", "Tests"]`
 
 - [ ] **Step 3: End-to-end verification with a real throwaway branch**
+
+This is also the first full run of `scripts/ship.sh`'s complete behavior (push, PR creation, *and* the auto-merge-enable call) — Task 3 deliberately only smoke-tested the safe, no-side-effect parts (the `main`-branch guard) because branch protection didn't exist yet to make a real merge attempt safe to test. It does now.
 
 ```bash
 git checkout -b test/branch-protection-smoke-test
