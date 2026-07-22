@@ -1,7 +1,13 @@
 """
 Auto-deploy: run every 60 seconds via launchd.
 Fetches origin/main; if origin/main differs from the last deployed SHA,
-pulls, syncs the venv, and restarts the bots via launchctl.
+fast-forwards onto it (never destroys local work), syncs the venv, and
+restarts the bots via launchctl.
+
+REPO is also the interactive dev working copy, so this deliberately never
+does a hard reset: a fast-forward-only merge just refuses (leaving
+everything untouched) if there are local commits or uncommitted changes
+that would be overwritten, or if HEAD isn't on main.
 """
 
 import os
@@ -10,10 +16,8 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
-REPO = Path.home() / "Documents/Dev/organist_bot"
-VENV = Path.home() / ".venvs/organist_bot"
+REPO = Path.home() / "Developer/organist_bot"
 UV = Path.home() / ".local/bin/uv"
-HOME = str(Path.home())
 UID = os.getuid()
 
 GIT = ["git", "-C", str(REPO)]
@@ -46,20 +50,25 @@ last_deployed = SHA_FILE.read_text().strip() if SHA_FILE.exists() else ""
 if remote == last_deployed:
     sys.exit(0)
 
-print(f"[{ts()}] New commits on main -- deploying")
+branch = run(
+    GIT + ["rev-parse", "--abbrev-ref", "HEAD"], capture_output=True, text=True
+).stdout.strip()
+if branch != "main":
+    print(f"[{ts()}] HEAD is on '{branch}', not main -- skipping auto-deploy")
+    sys.exit(0)
 
-run(GIT + ["checkout", "main", "--quiet"], capture_output=True)
-result = run(GIT + ["reset", "--hard", "origin/main"])
-if result.returncode != 0:
-    print("git reset failed")
-    sys.exit(1)
+print(f"[{ts()}] New commits on main -- attempting deploy")
 
-result = run(
-    [str(UV), "sync", "--project", str(REPO)],
-    env={**os.environ, "UV_PROJECT_ENVIRONMENT": str(VENV)},
-)
+result = run(GIT + ["merge", "--ff-only", "origin/main"], capture_output=True, text=True)
 if result.returncode != 0:
-    print("uv sync failed")
+    print(f"[{ts()}] Fast-forward not possible (local changes or divergence) -- skipping deploy")
+    print(result.stdout)
+    print(result.stderr)
+    sys.exit(0)
+
+result = run([str(UV), "sync", "--project", str(REPO), "--extra", "dev"])
+if result.returncode != 0:
+    print(f"[{ts()}] uv sync failed")
     sys.exit(1)
 
 for plist in PLISTS:
@@ -67,4 +76,4 @@ for plist in PLISTS:
     run(["launchctl", "bootstrap", f"gui/{UID}", str(plist)])
 
 SHA_FILE.write_text(remote + "\n")
-print(f"[{ts()}] Deploy complete")
+print(f"[{ts()}] Deploy complete -- now at {remote}")
