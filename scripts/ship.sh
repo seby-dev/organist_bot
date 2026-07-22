@@ -20,6 +20,6 @@ else
     PR_URL="$(gh pr create --title "$TITLE" --body "$BODY" --draft=false)"
 fi
 
-gh pr merge --squash --auto
+gh pr merge --squash --auto --delete-branch
 echo "Shipped: $PR_URL"
 echo "Auto-merge enabled — will merge once CI passes."
