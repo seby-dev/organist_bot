@@ -135,6 +135,7 @@ Optional sections in `.env`:
 | `data/agent_state.json` | Per-chat agent reference-context (last invoice/gig-listing/application-listing) persisted across restarts by `integrations/agent_state.py` |
 | `data/listings_hash.txt` | Hash of last-seen listings HTML for short-circuit detection |
 | `data/last_deployed_sha.txt` | SHA of the last successfully deployed commit; written by `scripts/auto_deploy.py` after each restart (gitignored) |
+| `data/last_failed_deploy_sha.txt` | SHA of the last commit that failed `auto_deploy.py`'s local re-run gate (ruff/mypy/pytest); prevents re-alerting every 60s for the same stuck failure (gitignored) |
 | `data/gmail_token.json` | OAuth2 token for Gmail reply monitoring (gitignored) |
 | `data/reply_monitor_since_floor.txt` | Earliest date `reply_monitor.check_replies` will ever search Gmail for; set to "today" on first use and never moves backward, so replies to applications made before it was introduced aren't retroactively surfaced |
 | `clients.json` | Invoice client database (project root) |
