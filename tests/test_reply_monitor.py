@@ -1,9 +1,20 @@
+import datetime
 from unittest.mock import MagicMock, patch
 
 import anthropic  # used to construct real TextBlock instances in classify tests
+import pytest
 
-import organist_bot.reply_monitor  # noqa: F401 — ensures module is resolvable by patch()
-from organist_bot.reply_monitor import _classify_reply, check_replies
+import organist_bot.reply_monitor
+from organist_bot.reply_monitor import _classify_reply, _since_floor, check_replies
+
+
+@pytest.fixture(autouse=True)
+def _isolate_since_floor(tmp_path, monkeypatch):
+    """check_replies() persists a floor date via _SINCE_FLOOR_PATH — point every
+    test at a throwaway path so none of them touch the real data/ directory."""
+    monkeypatch.setattr(
+        organist_bot.reply_monitor, "_SINCE_FLOOR_PATH", tmp_path / "reply_monitor_since_floor.txt"
+    )
 
 
 def _make_record(url, email, status, reply_message_id=None):
@@ -179,6 +190,31 @@ class TestCheckReplies:
             check_replies()
         mock_classify.assert_not_called()
 
+    def test_search_window_never_reaches_before_the_persisted_floor(self):
+        """An application from long ago must not cause the Gmail search (and
+        therefore the flood of alerts) to reach back before the floor date —
+        that's the whole point of _since_floor."""
+        record = _make_record("http://a.com/1", "church@example.com", "applied")
+        record["applied_at"] = "2025-01-01T00:00:00Z"  # long before the floor below
+        with (
+            patch("organist_bot.reply_monitor.settings") as mock_settings,
+            patch(
+                "organist_bot.reply_monitor.application_store.list_applications",
+                return_value=[record],
+            ),
+            patch("organist_bot.reply_monitor._make_gmail_client") as mock_gmail,
+            patch(
+                "organist_bot.reply_monitor._since_floor",
+                return_value=datetime.date(2026, 7, 22),
+            ),
+        ):
+            self._patch_settings(mock_settings)
+            mock_gmail.return_value.fetch_reply_messages.return_value = []
+
+            check_replies()
+        kwargs = mock_gmail.return_value.fetch_reply_messages.call_args.kwargs
+        assert kwargs["since_date"] == "2026/07/22"
+
     def test_disabled_when_credentials_file_empty(self):
         with (
             patch("organist_bot.reply_monitor.settings") as mock_settings,
@@ -200,6 +236,38 @@ class TestCheckReplies:
             mock_settings.gmail_credentials_file = "creds.json"
 
             check_replies()  # must not raise
+
+
+class TestSinceFloor:
+    def test_first_call_creates_file_with_given_today(self, tmp_path, monkeypatch):
+        floor_path = tmp_path / "floor.txt"
+        monkeypatch.setattr(organist_bot.reply_monitor, "_SINCE_FLOOR_PATH", floor_path)
+        today = datetime.date(2026, 7, 22)
+
+        result = _since_floor(today)
+
+        assert result == today
+        assert floor_path.read_text().strip() == "2026-07-22"
+
+    def test_subsequent_calls_return_persisted_value_not_current_today(self, tmp_path, monkeypatch):
+        floor_path = tmp_path / "floor.txt"
+        floor_path.write_text("2026-01-01\n")
+        monkeypatch.setattr(organist_bot.reply_monitor, "_SINCE_FLOOR_PATH", floor_path)
+
+        result = _since_floor(datetime.date(2026, 7, 22))
+
+        assert result == datetime.date(2026, 1, 1)
+
+    def test_unparseable_file_resets_to_given_today(self, tmp_path, monkeypatch):
+        floor_path = tmp_path / "floor.txt"
+        floor_path.write_text("not-a-date\n")
+        monkeypatch.setattr(organist_bot.reply_monitor, "_SINCE_FLOOR_PATH", floor_path)
+        today = datetime.date(2026, 7, 22)
+
+        result = _since_floor(today)
+
+        assert result == today
+        assert floor_path.read_text().strip() == "2026-07-22"
 
 
 class TestCreateCalendarEventWithBuffers:

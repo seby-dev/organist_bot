@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import datetime as _dt
 import logging
+from pathlib import Path
 
 import anthropic
 
@@ -18,6 +20,12 @@ from organist_bot.integrations.calendar_client import (
 from organist_bot.integrations.gmail_client import GmailClient
 
 logger = logging.getLogger(__name__)
+
+# The earliest date reply_monitor will ever search Gmail for, persisted so it
+# never drifts backward. Set to "today" the first time this runs; from then
+# on, replies to applications made before this floor are never retroactively
+# surfaced, no matter how far back an application's applied_at goes.
+_SINCE_FLOOR_PATH = Path("data/reply_monitor_since_floor.txt")
 
 _CLASSIFY_PROMPT = """\
 You are classifying an email reply related to an organ performance job application.
@@ -108,8 +116,6 @@ def _create_calendar_event(record: dict) -> bool:
     if not settings.google_calendar_id or not settings.google_calendar_credentials_file:
         return False
     try:
-        import datetime as _dt
-
         from organist_bot.filters import normalize_to_yyyymmdd, parse_start_time
         from organist_bot.models import Gig
 
@@ -177,6 +183,20 @@ def _match_record(message: dict, records: list[dict]) -> dict | None:
     return None
 
 
+def _since_floor(today: _dt.date) -> _dt.date:
+    """Read the persisted floor date, creating it (as today) on first use."""
+    if _SINCE_FLOOR_PATH.exists():
+        try:
+            return _dt.date.fromisoformat(_SINCE_FLOOR_PATH.read_text().strip())
+        except ValueError:
+            logger.warning(
+                "reply_monitor: could not parse %s — resetting to today", _SINCE_FLOOR_PATH
+            )
+    _SINCE_FLOOR_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _SINCE_FLOOR_PATH.write_text(today.isoformat() + "\n")
+    return today
+
+
 def check_replies() -> None:
     """Check Gmail for replies to active applications and dispatch actions.
 
@@ -186,8 +206,6 @@ def check_replies() -> None:
     """
     if not settings.gmail_credentials_file or not settings.gmail_token_file:
         return
-
-    import datetime as _dt
 
     try:
         records = application_store.list_applications(days=365)
@@ -212,6 +230,13 @@ def check_replies() -> None:
                 since = applied
         except (ValueError, TypeError):
             pass
+
+    # Never look earlier than the persisted floor, so replies to applications
+    # made long before Gmail monitoring came online aren't retroactively surfaced.
+    floor = _since_floor(_dt.date.today())
+    if since < floor:
+        since = floor
+
     since_str = since.strftime("%Y/%m/%d")
 
     try:
