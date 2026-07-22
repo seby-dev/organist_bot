@@ -109,6 +109,13 @@ class TestWorkingTreeClean:
         (repo / "new_file.txt").write_text("new\n")
         assert ad._working_tree_clean(repo) is False
 
+    def test_nonzero_exit_returns_false_even_with_empty_stdout(self, tmp_path):
+        # Pass a path that is not a git repo so `git status` exits non-zero
+        # with empty stdout — the function must return False, not True.
+        not_a_repo = tmp_path / "not_a_repo"
+        not_a_repo.mkdir()
+        assert ad._working_tree_clean(not_a_repo) is False
+
 
 class TestSendAlert:
     def test_posts_when_configured(self, tmp_path):

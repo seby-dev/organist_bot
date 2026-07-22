@@ -25,7 +25,10 @@ review, matching the workflow above), and enables squash auto-merge.
 `core.hooksPath` is set to `.githooks` automatically the first time `make
 pre-push` or `make ship` runs, so the same checks also run as a real `git
 push` hook — a push that skips `make ship` entirely still can't skip the
-gate.
+gate. `.githooks/pre-commit` also chains the pre-commit framework's
+commit-stage hooks (trailing-whitespace, detect-private-key, ruff, mypy,
+etc. — see `.pre-commit-config.yaml`), so nothing from the pre-existing
+`pre-commit install` setup was lost when `core.hooksPath` took effect.
 
 `main` requires the `Lint & type-check` and `Tests` CI checks to pass
 before any PR can merge — auto-merge genuinely waits for green CI rather

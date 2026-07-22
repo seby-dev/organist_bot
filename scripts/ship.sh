@@ -16,6 +16,10 @@ if PR_URL="$(gh pr view --json url -q .url 2>/dev/null)"; then
     echo "PR already exists: $PR_URL"
 else
     TITLE="$(git log --reverse main.."$BRANCH" --format=%s | head -1)"
+    if [ -z "$TITLE" ]; then
+        echo "ERROR: No commits ahead of main — nothing to ship" >&2
+        exit 1
+    fi
     BODY="$(git log --reverse main.."$BRANCH" --format='- %s')"
     PR_URL="$(gh pr create --title "$TITLE" --body "$BODY" --draft=false)"
 fi

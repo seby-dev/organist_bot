@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Runs the pre-commit framework's commit-stage hooks (trailing-whitespace,
+# detect-private-key, ruff, mypy, etc. — see .pre-commit-config.yaml).
+# core.hooksPath = .githooks (set by _ensure-hooks in the Makefile) means git
+# only reads hooks from this directory now, which would otherwise silently
+# disable pre-commit entirely for anyone who already ran `pre-commit install`.
+set -euo pipefail
+if command -v pre-commit &>/dev/null; then
+    pre-commit run --hook-stage=commit
+else
+    echo "pre-commit not installed — skipping commit-stage checks (pip install pre-commit && pre-commit install)"
+fi

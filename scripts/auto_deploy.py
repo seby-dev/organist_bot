@@ -92,7 +92,7 @@ def _already_alerted(sha: str, failed_sha_file: Path) -> bool:
 
 def _working_tree_clean(repo: Path) -> bool:
     result = run(["git", "-C", str(repo), "status", "--porcelain"], capture_output=True, text=True)
-    return result.stdout.strip() == ""
+    return result.returncode == 0 and result.stdout.strip() == ""
 
 
 def main() -> None:
@@ -138,7 +138,11 @@ def main() -> None:
             FAILED_SHA_FILE.write_text(remote + "\n")
         if last_deployed and _working_tree_clean(REPO):
             run(GIT + ["reset", "--hard", last_deployed])
-            run([str(UV), "sync", "--project", str(REPO), "--extra", "dev"], capture_output=True)
+            result = run(
+                [str(UV), "sync", "--project", str(REPO), "--extra", "dev"], capture_output=True
+            )
+            if result.returncode != 0:
+                print(f"[{ts()}] rollback uv sync failed")
             print(f"[{ts()}] Rolled back working tree to last good deploy {last_deployed[:8]}")
         else:
             print(
