@@ -29,6 +29,7 @@ dev = [
     "mypy>=1.0",
     "ruff>=0.4",
     "types-requests",
+    "bandit>=1.7",
 ]
 
 # ── pytest ─────────────────────────────────────────────────────────────────────
@@ -62,3 +63,7 @@ warn_unused_ignores    = true
 warn_return_any        = false
 strict                 = false
 exclude                = ["tests/", " \\d+\\.py$"]  # 2nd pattern: stray " N.py" duplicate-copy artifacts
+
+# ── bandit ─────────────────────────────────────────────────────────────────────
+[tool.bandit]
+exclude_dirs = ["tests", ".venv"]

@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from jinja2 import Environment, FileSystemLoader
+from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from organist_bot.config import settings
 
@@ -221,7 +221,9 @@ async def generate_invoice(client_key: str, items: list[dict]) -> dict:
     date_str = datetime.now().strftime("%-d %B %Y")
     currency = settings.currency
 
-    env = Environment(loader=FileSystemLoader(str(TEMPLATES_DIR)))
+    env = Environment(
+        loader=FileSystemLoader(str(TEMPLATES_DIR)), autoescape=select_autoescape(["html"])
+    )
     template = env.get_template("invoice.html")
 
     html = template.render(

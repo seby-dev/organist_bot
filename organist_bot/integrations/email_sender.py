@@ -7,7 +7,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from pathlib import Path
 
-from jinja2 import Environment, FileSystemLoader
+from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from organist_bot.config import settings
 
@@ -34,7 +34,9 @@ def send_invoice_email(invoice_data: dict) -> dict:
         if not to_email:
             return {"success": False, "error": "Client has no email address on file."}
 
-        env = Environment(loader=FileSystemLoader(str(TEMPLATES_DIR)))
+        env = Environment(
+            loader=FileSystemLoader(str(TEMPLATES_DIR)), autoescape=select_autoescape(["html"])
+        )
         template = env.get_template("email.html")
 
         html_body = template.render(

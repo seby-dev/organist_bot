@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Pre-push hook: runs the full quality gate before allowing any push.
+# Delegates to `make pre-push` — the Makefile is the single source of truth
+# for what the gate checks; this file only makes it fire automatically on
+# every `git push`, not just when someone remembers to type `make ship`.
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+make pre-push
