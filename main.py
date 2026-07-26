@@ -78,7 +78,16 @@ def _send_neg_alert(gig: Gig, gig_id: str, subject: str, body: str) -> None:
         f'  • "edit {gig_id}: <new body>" to send a revised version\n'
         f'  • "reject {gig_id}" to skip'
     )
-    alert.send_alert(draft_msg)
+    buttons = {
+        "inline_keyboard": [
+            [
+                {"text": "✅ Accept", "callback_data": f"neg:accept:{gig_id}"},
+                {"text": "✏️ Edit", "callback_data": f"neg:edit:{gig_id}"},
+                {"text": "❌ Reject", "callback_data": f"neg:reject:{gig_id}"},
+            ]
+        ]
+    }
+    alert.send_alert(draft_msg, reply_markup=buttons)
 
 
 def warn_if_gmail_monitoring_unconfigured() -> None:

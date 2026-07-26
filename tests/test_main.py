@@ -868,6 +868,22 @@ class TestNegDrafts:
         assert len(draft_calls) == 1
         assert "approve" in draft_calls[0].args[0]
 
+    def test_neg_draft_alert_carries_accept_edit_reject_buttons(self, tmp_path, monkeypatch):
+        mock_alert = self._run(
+            self._settings(), self._mock_scraper_with_one_gig(fee="NEG"), tmp_path, monkeypatch
+        )
+        rows = application_store.list_neg_pending()
+        gig_id = rows[0]["gig_id"]
+        draft_calls = [c for c in mock_alert.send_alert.call_args_list if gig_id in c.args[0]]
+        assert len(draft_calls) == 1
+        buttons = draft_calls[0].kwargs["reply_markup"]["inline_keyboard"][0]
+        callback_data = {b["callback_data"] for b in buttons}
+        assert callback_data == {
+            f"neg:accept:{gig_id}",
+            f"neg:edit:{gig_id}",
+            f"neg:reject:{gig_id}",
+        }
+
     def test_below_min_fee_gig_is_not_drafted(self, tmp_path, monkeypatch):
         self._run(
             self._settings(), self._mock_scraper_with_one_gig(fee="£50"), tmp_path, monkeypatch

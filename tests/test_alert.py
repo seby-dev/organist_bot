@@ -94,3 +94,32 @@ class TestSendAlert:
             send_alert("test message")  # must not raise
 
         mock_logger.warning.assert_called_once()
+
+    def test_reply_markup_included_when_given(self):
+        """reply_markup is included in the POST payload when provided."""
+        mock_post = MagicMock()
+        buttons = {"inline_keyboard": [[{"text": "Accept", "callback_data": "neg:accept:abc123"}]]}
+        with (
+            patch("organist_bot.alert.settings") as mock_settings,
+            patch("organist_bot.alert._requests.post", mock_post),
+        ):
+            mock_settings.telegram_bot_token = "TOKEN123"
+            mock_settings.telegram_chat_id = 42
+            send_alert("test message", reply_markup=buttons)
+
+        mock_post.assert_called_once()
+        assert mock_post.call_args.kwargs["json"]["reply_markup"] == buttons
+
+    def test_reply_markup_omitted_when_not_given(self):
+        """reply_markup key is absent from the payload when not provided —
+        existing callers of send_alert are unaffected."""
+        mock_post = MagicMock()
+        with (
+            patch("organist_bot.alert.settings") as mock_settings,
+            patch("organist_bot.alert._requests.post", mock_post),
+        ):
+            mock_settings.telegram_bot_token = "TOKEN123"
+            mock_settings.telegram_chat_id = 42
+            send_alert("test message")
+
+        assert "reply_markup" not in mock_post.call_args.kwargs["json"]
