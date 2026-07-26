@@ -160,6 +160,37 @@ def transition_neg_pending(
     return False
 
 
+def update_neg_draft(
+    gig_id: str,
+    *,
+    draft_subject: str | None = None,
+    draft_body: str | None = None,
+    negotiable_fee: int | None = None,
+) -> bool:
+    """Persist a revised draft onto a neg_pending row without changing its
+    status. Returns False if no neg_pending row with this gig_id exists
+    (unknown id, or already decided) — caller should treat False as "can't
+    edit this anymore" and not proceed.
+    """
+    with atomic_store.file_lock(_PATH):
+        records = _read()
+        for r in records:
+            if r.get("gig_id") != gig_id:
+                continue
+            if r.get("status") != "neg_pending":
+                return False
+            if draft_subject is not None:
+                r["draft_subject"] = draft_subject
+            if draft_body is not None:
+                r["draft_body"] = draft_body
+            if negotiable_fee is not None:
+                r["negotiable_fee"] = negotiable_fee
+            r["updated_at"] = _now_iso()
+            _write(records)
+            return True
+    return False
+
+
 def update_status(url: str, status: str) -> bool:
     """Update status and updated_at for the record with the given URL. Returns False if not found."""
     with atomic_store.file_lock(_PATH):
