@@ -15,7 +15,7 @@ from typing import Any
 from organist_bot import atomic_store
 
 _PATH = Path("data/agent_state.json")
-_KEYS = ("last_invoice", "last_gig_listing", "last_application_listing")
+_KEYS = ("last_invoice", "last_gig_listing", "last_application_listing", "active_neg_draft")
 
 
 def load_chat(chat_id: int) -> dict[str, Any]:

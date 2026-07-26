@@ -521,6 +521,41 @@ class TestNegPending:
     def test_transition_unknown_id_returns_false(self):
         assert store.transition_neg_pending("deadbeefcafe", to="applied") is False
 
+    def test_update_neg_draft_persists_body_and_fee(self):
+        gig_id = store.record_neg_pending(
+            _neg_gig(), draft_subject="S", draft_body="old body", negotiable_fee=120
+        )
+        ok = store.update_neg_draft(
+            gig_id, draft_subject="New subject", draft_body="new body", negotiable_fee=150
+        )
+        assert ok is True
+        r = store._read()[0]
+        assert r["draft_subject"] == "New subject"
+        assert r["draft_body"] == "new body"
+        assert r["negotiable_fee"] == 150
+        assert r["status"] == "neg_pending"
+
+    def test_update_neg_draft_partial_update_leaves_other_fields(self):
+        gig_id = store.record_neg_pending(
+            _neg_gig(), draft_subject="S", draft_body="old body", negotiable_fee=120
+        )
+        store.update_neg_draft(gig_id, draft_body="only body changed")
+        r = store._read()[0]
+        assert r["draft_subject"] == "S"
+        assert r["draft_body"] == "only body changed"
+        assert r["negotiable_fee"] == 120
+
+    def test_update_neg_draft_unknown_id_returns_false(self):
+        assert store.update_neg_draft("deadbeefcafe", draft_body="x") is False
+
+    def test_update_neg_draft_already_decided_returns_false(self):
+        gig_id = store.record_neg_pending(
+            _neg_gig(), draft_subject="S", draft_body="b", negotiable_fee=120
+        )
+        store.transition_neg_pending(gig_id, to="rejected")
+        assert store.update_neg_draft(gig_id, draft_body="too late") is False
+        assert store._read()[0]["draft_body"] == "b"
+
 
 class TestExpireNegPending:
     def test_expire_past_neg_pending_flips_to_expired(self):
