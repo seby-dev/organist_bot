@@ -1900,7 +1900,8 @@ def _resolve_neg_gig_id(chat_id: int, gig_id: str | None) -> str | None:
     picker (via _neg_picker_response) in that case.
     """
     if gig_id:
-        set_active_neg_draft(chat_id, gig_id)
+        if _find_neg_row(gig_id) is not None:
+            set_active_neg_draft(chat_id, gig_id)
         return gig_id
     pending = application_store.list_neg_pending()
     if len(pending) == 1:

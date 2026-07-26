@@ -2222,6 +2222,10 @@ class TestNegTools:
         assert "no draft found" in out["result"].lower()
         assert "buttons" not in out
 
+    async def test_approve_unknown_gig_id_does_not_poison_active_draft(self, neg_store):
+        await _TOOL_HANDLERS["approve_neg_application"]({"gig_id": "deadbeefcafe"}, 1)
+        assert unified_agent.get_active_neg_draft(1) is None
+
     async def test_approve_already_applied_returns_already(self, neg_store):
         gig_id = _seed_neg_pending()
         application_store.transition_neg_pending(gig_id, to="applied")
