@@ -2293,6 +2293,122 @@ class TestNegTools:
         assert application_store._read()[0]["status"] == "rejected"
 
 
+# ── NEG active-draft state, buttons, and deterministic actions ──────────────
+
+from organist_bot.integrations import unified_agent  # noqa: E402
+
+
+class TestNegActiveDraftState:
+    def test_set_and_get_active_neg_draft(self):
+        unified_agent.set_active_neg_draft(999, "abc123")
+        try:
+            assert unified_agent.get_active_neg_draft(999) == "abc123"
+        finally:
+            unified_agent._active_neg_draft.pop(999, None)
+
+    def test_get_active_neg_draft_defaults_to_none(self):
+        assert unified_agent.get_active_neg_draft(88888) is None
+
+    def test_stash_and_pop_pending_neg_instruction(self):
+        unified_agent.stash_pending_neg_instruction(999, "raise the fee to 180")
+        assert unified_agent.pop_pending_neg_instruction(999) == "raise the fee to 180"
+        # pop is destructive — a second pop finds nothing.
+        assert unified_agent.pop_pending_neg_instruction(999) is None
+
+
+class TestNegConfirmButtons:
+    def test_send_buttons_use_confirm_send_callback(self):
+        buttons = unified_agent.neg_confirm_buttons("abc123", send=True)
+        assert buttons == [
+            [
+                {"text": "Confirm", "callback_data": "neg:confirm_send:abc123"},
+                {"text": "Cancel", "callback_data": "neg:cancel:abc123"},
+            ]
+        ]
+
+    def test_reject_buttons_use_confirm_reject_callback(self):
+        buttons = unified_agent.neg_confirm_buttons("abc123", send=False)
+        assert buttons == [
+            [
+                {"text": "Confirm", "callback_data": "neg:confirm_reject:abc123"},
+                {"text": "Cancel", "callback_data": "neg:cancel:abc123"},
+            ]
+        ]
+
+
+class TestNegDeterministicActions:
+    async def test_neg_confirm_send_success(self, neg_store):
+        gig_id = _seed_neg_pending()
+        with patch("organist_bot.integrations.unified_agent.send_application_email") as mock_send:
+            ok, msg = await unified_agent.neg_confirm_send(gig_id)
+        assert ok is True
+        assert "sent" in msg.lower()
+        mock_send.assert_called_once()
+        assert application_store._read()[0]["status"] == "applied"
+
+    async def test_neg_confirm_send_unknown_id(self, neg_store):
+        ok, msg = await unified_agent.neg_confirm_send("deadbeefcafe")
+        assert ok is False
+        assert "no draft found" in msg.lower()
+
+    async def test_neg_confirm_send_already_decided(self, neg_store):
+        gig_id = _seed_neg_pending()
+        application_store.transition_neg_pending(gig_id, to="rejected")
+        ok, msg = await unified_agent.neg_confirm_send(gig_id)
+        assert ok is False
+        assert "already" in msg.lower()
+
+    async def test_neg_confirm_send_failure_keeps_row_pending(self, neg_store):
+        gig_id = _seed_neg_pending()
+        with patch(
+            "organist_bot.integrations.unified_agent.send_application_email",
+            side_effect=RuntimeError("smtp down"),
+        ):
+            ok, msg = await unified_agent.neg_confirm_send(gig_id)
+        assert ok is False
+        assert "failed" in msg.lower()
+        assert application_store._read()[0]["status"] == "neg_pending"
+
+    def test_neg_confirm_reject_success(self, neg_store):
+        gig_id = _seed_neg_pending()
+        ok, msg = unified_agent.neg_confirm_reject(gig_id)
+        assert ok is True
+        assert "rejected" in msg.lower()
+        assert application_store._read()[0]["status"] == "rejected"
+
+    def test_neg_confirm_reject_already_decided(self, neg_store):
+        gig_id = _seed_neg_pending()
+        application_store.transition_neg_pending(gig_id, to="applied")
+        ok, msg = unified_agent.neg_confirm_reject(gig_id)
+        assert ok is False
+
+    def test_neg_draft_view_returns_text_and_buttons(self, neg_store):
+        gig_id = _seed_neg_pending()
+        view = unified_agent.neg_draft_view(gig_id)
+        assert view is not None
+        text, buttons = view
+        assert gig_id in text
+        assert buttons == [
+            [
+                {"text": "Accept", "callback_data": f"neg:accept:{gig_id}"},
+                {"text": "Edit", "callback_data": f"neg:edit:{gig_id}"},
+                {"text": "Reject", "callback_data": f"neg:reject:{gig_id}"},
+            ]
+        ]
+
+    def test_neg_draft_view_none_when_not_pending(self, neg_store):
+        assert unified_agent.neg_draft_view("deadbeefcafe") is None
+
+
+def test_agent_response_buttons_defaults_to_none():
+    from organist_bot.integrations.unified_agent import AgentResponse
+
+    assert AgentResponse(text="hi").buttons is None
+    assert AgentResponse(text="hi", buttons=[[{"text": "A", "callback_data": "x"}]]).buttons == [
+        [{"text": "A", "callback_data": "x"}]
+    ]
+
+
 # ── process_message on_step progress reporting ──────────────────────────────
 
 

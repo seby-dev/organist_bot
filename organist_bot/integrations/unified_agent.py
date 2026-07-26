@@ -702,6 +702,7 @@ class AgentResponse:
     text: str | None = None
     file_path: str | None = None
     file_caption: str | None = None
+    buttons: list[list[dict]] | None = None
 
 
 # Per-chat state
@@ -709,6 +710,8 @@ _histories: dict[int, list[dict]] = {}
 _last_invoice: dict[int, dict] = {}
 _last_gig_listing: dict[int, list[dict]] = {}
 _last_application_listing: dict[int, list[dict]] = {}
+_active_neg_draft: dict[int, str] = {}
+_pending_neg_instruction: dict[int, str] = {}
 
 # Chats whose persisted reference-context has been loaded this process.
 _hydrated: set[int] = set()
@@ -735,6 +738,8 @@ def _hydrate_chat(chat_id: int) -> None:
         and persisted.get("last_application_listing") is not None
     ):
         _last_application_listing[chat_id] = persisted["last_application_listing"]
+    if chat_id not in _active_neg_draft and persisted.get("active_neg_draft") is not None:
+        _active_neg_draft[chat_id] = persisted["active_neg_draft"]
 
 
 def _persist_chat(chat_id: int) -> None:
@@ -747,6 +752,7 @@ def _persist_chat(chat_id: int) -> None:
                 "last_invoice": _last_invoice.get(chat_id),
                 "last_gig_listing": _last_gig_listing.get(chat_id),
                 "last_application_listing": _last_application_listing.get(chat_id),
+                "active_neg_draft": _active_neg_draft.get(chat_id),
             },
         )
     except Exception:
@@ -1794,6 +1800,96 @@ def _neg_row_lookup_error(gig_id: str) -> str:
     return f"Already {existing.get('status')} at {decided}."
 
 
+def set_active_neg_draft(chat_id: int, gig_id: str) -> None:
+    _active_neg_draft[chat_id] = gig_id
+
+
+def get_active_neg_draft(chat_id: int) -> str | None:
+    return _active_neg_draft.get(chat_id)
+
+
+def stash_pending_neg_instruction(chat_id: int, text: str) -> None:
+    _pending_neg_instruction[chat_id] = text
+
+
+def pop_pending_neg_instruction(chat_id: int) -> str | None:
+    return _pending_neg_instruction.pop(chat_id, None)
+
+
+def _draft_buttons(gig_id: str) -> list[list[dict]]:
+    return [
+        [
+            {"text": "Accept", "callback_data": f"neg:accept:{gig_id}"},
+            {"text": "Edit", "callback_data": f"neg:edit:{gig_id}"},
+            {"text": "Reject", "callback_data": f"neg:reject:{gig_id}"},
+        ]
+    ]
+
+
+def neg_confirm_buttons(gig_id: str, *, send: bool) -> list[list[dict]]:
+    confirm_action = "confirm_send" if send else "confirm_reject"
+    return [
+        [
+            {"text": "Confirm", "callback_data": f"neg:{confirm_action}:{gig_id}"},
+            {"text": "Cancel", "callback_data": f"neg:cancel:{gig_id}"},
+        ]
+    ]
+
+
+async def neg_confirm_send(gig_id: str) -> tuple[bool, str]:
+    """Send the current draft for gig_id and transition it to applied.
+
+    Called by the deterministic Telegram button handler, never by the LLM —
+    this is the one place a NEG email actually gets sent.
+    """
+    row = _find_neg_row(gig_id)
+    if row is None:
+        return False, _neg_row_lookup_error(gig_id)
+    try:
+        send_application_email(
+            transport=SMTPTransport(password=settings.email_password),
+            settings=settings,
+            subject=row["draft_subject"],
+            body=row["draft_body"],
+            recipient=row["email"],
+            cc=[settings.cc_email] if settings.cc_email else None,
+        )
+    except Exception as exc:
+        logger.exception("NEG confirm_send: send failed", extra={"gig_id": gig_id})
+        return False, f"Send failed: {exc}"
+    ok = application_store.transition_neg_pending(gig_id, to="applied", sent_body=row["draft_body"])
+    if not ok:
+        return False, "Already sent or no longer pending."
+    logger.info("NEG application sent", extra={"gig_id": gig_id})
+    return True, f"Sent to {row.get('email')}."
+
+
+def neg_confirm_reject(gig_id: str) -> tuple[bool, str]:
+    """Transition gig_id to rejected. Called by the deterministic button handler."""
+    row = _find_neg_row(gig_id)
+    if row is None:
+        return False, _neg_row_lookup_error(gig_id)
+    ok = application_store.transition_neg_pending(gig_id, to="rejected")
+    if not ok:
+        return False, "Already decided."
+    logger.info("NEG application rejected", extra={"gig_id": gig_id})
+    return True, "Draft rejected — no email sent."
+
+
+def neg_draft_view(gig_id: str) -> tuple[str, list[list[dict]]] | None:
+    """Current draft text + Accept/Edit/Reject buttons for gig_id, or None if
+    it's not a pending draft (already decided or unknown id)."""
+    row = _find_neg_row(gig_id)
+    if row is None:
+        return None
+    text = (
+        f"Draft email — id: {gig_id}\n\n"
+        f"Subject: {row.get('draft_subject')}\n\n"
+        f"{_neg_body_as_text(row.get('draft_body') or '')}"
+    )
+    return text, _draft_buttons(gig_id)
+
+
 @_handler("list_neg_pending")
 async def _handle_list_neg_pending(input_data: dict, chat_id: int) -> str:
     rows = application_store.list_neg_pending()
@@ -2168,6 +2264,8 @@ def reset_conversation(chat_id: int) -> None:
     _last_invoice.pop(chat_id, None)
     _last_gig_listing.pop(chat_id, None)
     _last_application_listing.pop(chat_id, None)
+    _active_neg_draft.pop(chat_id, None)
+    _pending_neg_instruction.pop(chat_id, None)
     _hydrated.discard(chat_id)
     agent_state.save_chat(chat_id, {})
 
