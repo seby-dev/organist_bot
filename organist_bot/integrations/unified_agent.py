@@ -2072,7 +2072,11 @@ async def _handle_manage_config(input_data: dict, chat_id: int) -> str:
     return json.dumps({"error": f"Unknown action: {action}"})
 
 
-async def process_message(chat_id: int, text: str) -> list[AgentResponse]:
+async def process_message(
+    chat_id: int,
+    text: str,
+    on_step: Callable[[str], Awaitable[None]] | None = None,
+) -> list[AgentResponse]:
     import anthropic
 
     client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
@@ -2085,6 +2089,7 @@ async def process_message(chat_id: int, text: str) -> list[AgentResponse]:
     _histories[chat_id].append({"role": "user", "content": text})
 
     responses: list[AgentResponse] = []
+    steps: list[str] = []
 
     while True:
         response = await client.messages.create(
@@ -2112,11 +2117,20 @@ async def process_message(chat_id: int, text: str) -> list[AgentResponse]:
             if block.type != "tool_use":
                 continue
             logger.info("Unified agent tool call: %s(%s)", block.name, json.dumps(block.input))
+
+            steps.append(f"🔧 {block.name}")
+            if on_step is not None:
+                await on_step("\n".join(steps))
+
             try:
                 result = await _execute_tool(block.name, block.input, chat_id)
             except Exception as e:
                 logger.error("Tool execution failed: %s", e)
                 result = json.dumps({"error": str(e)})
+
+            steps[-1] = f"✅ {block.name}"
+            if on_step is not None:
+                await on_step("\n".join(steps))
 
             if block.name in _VERBATIM_RESPONSE_TOOLS:
                 try:
