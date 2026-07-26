@@ -84,6 +84,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 # ── Free-text handler ─────────────────────────────────────────────────────────
 
 
+async def _delete_quietly(
+    context: ContextTypes.DEFAULT_TYPE, chat_id: int, message_id: int
+) -> None:
+    try:
+        await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
+    except BadRequest as exc:
+        logger.debug("Telegram: progress message delete failed: %s", exc)
+
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _is_authorised(update):
         _reject(update)
@@ -94,8 +103,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     chat_id = update.effective_chat.id
     text = update.message.text or ""
 
+    status_msg = await update.message.reply_text("🤔 Thinking…")
+
+    async def on_step(status_text: str) -> None:
+        try:
+            await context.bot.edit_message_text(
+                chat_id=chat_id, message_id=status_msg.message_id, text=status_text
+            )
+        except BadRequest as exc:
+            if "message is not modified" not in str(exc).lower():
+                logger.debug("Telegram: progress edit failed: %s", exc)
+
     try:
-        responses = await unified_agent.process_message(chat_id, text)
+        responses = await unified_agent.process_message(chat_id, text, on_step=on_step)
+        await _delete_quietly(context, chat_id, status_msg.message_id)
         for resp in responses:
             if resp.file_path:
                 with open(resp.file_path, "rb") as f:
@@ -109,6 +130,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 await _reply(update.message, resp.text)
     except Exception as exc:
         logger.exception("Telegram: unified agent error")
+        await _delete_quietly(context, chat_id, status_msg.message_id)
         await update.message.reply_text(f"❌ Unexpected error: {exc}")
 
 

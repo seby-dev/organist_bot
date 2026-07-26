@@ -17,8 +17,16 @@ def _make_update(chat_id: int = 7973955362, text: str = "") -> MagicMock:
     update = MagicMock()
     update.effective_chat.id = chat_id
     update.message.text = text
-    update.message.reply_text = AsyncMock()
+    update.message.reply_text = AsyncMock(return_value=MagicMock(message_id=111))
     return update
+
+
+def _make_context() -> MagicMock:
+    context = MagicMock()
+    context.bot.edit_message_text = AsyncMock()
+    context.bot.delete_message = AsyncMock()
+    context.bot.send_document = AsyncMock()
+    return context
 
 
 # ── _is_authorised ────────────────────────────────────────────────────────────
@@ -64,23 +72,25 @@ class TestHandleMessage:
         update.message.reply_text.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_sends_text_response(self):
+    async def test_sends_placeholder_then_text_response(self):
         update = _make_update(text="List my clients")
+        context = _make_context()
         responses = [AgentResponse(text="You have 3 clients.")]
         with patch(
             "organist_bot.integrations.unified_agent.process_message",
             new=AsyncMock(return_value=responses),
         ):
-            await handle_message(update, MagicMock())
-        update.message.reply_text.assert_called_once_with(
-            "You have 3 clients.", parse_mode="Markdown"
+            await handle_message(update, context)
+        update.message.reply_text.assert_any_call("🤔 Thinking…")
+        update.message.reply_text.assert_any_call("You have 3 clients.", parse_mode="Markdown")
+        context.bot.delete_message.assert_called_once_with(
+            chat_id=update.effective_chat.id, message_id=111
         )
 
     @pytest.mark.asyncio
     async def test_sends_file_response(self):
         update = _make_update(text="Generate invoice for holy-cross")
-        context = MagicMock()
-        context.bot.send_document = AsyncMock()
+        context = _make_context()
         with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
             tmp_path = tmp.name
         try:
@@ -103,8 +113,10 @@ class TestHandleMessage:
         parser can't balance into valid entities. The reply must still be
         delivered, as plain text."""
         update = _make_update(text="what can you do across filter management")
+        context = _make_context()
         update.message.reply_text = AsyncMock(
             side_effect=[
+                MagicMock(message_id=111),  # placeholder
                 BadRequest("Can't parse entities: can't find end of the entity at byte offset 658"),
                 None,
             ]
@@ -114,9 +126,10 @@ class TestHandleMessage:
             "organist_bot.integrations.unified_agent.process_message",
             new=AsyncMock(return_value=responses),
         ):
-            await handle_message(update, MagicMock())
-        assert update.message.reply_text.call_count == 2
-        first_call, second_call = update.message.reply_text.call_args_list
+            await handle_message(update, context)
+        assert update.message.reply_text.call_count == 3
+        placeholder_call, first_call, second_call = update.message.reply_text.call_args_list
+        assert placeholder_call.args == ("🤔 Thinking…",)
         assert first_call.kwargs.get("parse_mode") == "Markdown"
         assert second_call.args == ("Use manage_filter_suspensions to *pause* a filter.",)
         assert "parse_mode" not in second_call.kwargs
@@ -124,28 +137,89 @@ class TestHandleMessage:
     @pytest.mark.asyncio
     async def test_reraises_non_markdown_bad_request(self):
         update = _make_update(text="hello")
-        # First call (the Markdown attempt) fails for an unrelated reason and
-        # must propagate out of _reply; second call is handle_message's own
-        # error-reporting reply_text, which should succeed normally.
-        update.message.reply_text = AsyncMock(side_effect=[BadRequest("Chat not found"), None])
+        context = _make_context()
+        # First call after the placeholder (the Markdown attempt) fails for an
+        # unrelated reason and must propagate out of _reply; the last call is
+        # handle_message's own error-reporting reply_text, which succeeds.
+        update.message.reply_text = AsyncMock(
+            side_effect=[
+                MagicMock(message_id=111),  # placeholder
+                BadRequest("Chat not found"),
+                None,
+            ]
+        )
         responses = [AgentResponse(text="hi there")]
         with patch(
             "organist_bot.integrations.unified_agent.process_message",
             new=AsyncMock(return_value=responses),
         ):
-            await handle_message(update, MagicMock())
+            await handle_message(update, context)
         # handle_message's own try/except catches it and reports the error back
-        assert update.message.reply_text.call_count == 2
+        assert update.message.reply_text.call_count == 3
         reply = update.message.reply_text.call_args[0][0]
         assert "❌" in reply
 
     @pytest.mark.asyncio
     async def test_handles_agent_error(self):
         update = _make_update(text="crash please")
+        context = _make_context()
         with patch(
             "organist_bot.integrations.unified_agent.process_message",
             new=AsyncMock(side_effect=RuntimeError("boom")),
         ):
-            await handle_message(update, MagicMock())
+            await handle_message(update, context)
         reply = update.message.reply_text.call_args[0][0]
         assert "❌" in reply or "error" in reply.lower()
+        context.bot.delete_message.assert_called_once_with(
+            chat_id=update.effective_chat.id, message_id=111
+        )
+
+    @pytest.mark.asyncio
+    async def test_on_step_edits_placeholder_message(self):
+        """The on_step callback passed into process_message must edit the
+        placeholder message in place with each step's text."""
+        update = _make_update(text="add a gig")
+        context = _make_context()
+
+        async def fake_process_message(chat_id, text, on_step=None):
+            await on_step("🔧 add_gig")
+            await on_step("✅ add_gig")
+            return [AgentResponse(text="Added.")]
+
+        with patch(
+            "organist_bot.integrations.unified_agent.process_message",
+            new=fake_process_message,
+        ):
+            await handle_message(update, context)
+
+        assert context.bot.edit_message_text.call_count == 2
+        first_kwargs = context.bot.edit_message_text.call_args_list[0].kwargs
+        assert first_kwargs == {
+            "chat_id": update.effective_chat.id,
+            "message_id": 111,
+            "text": "🔧 add_gig",
+        }
+        second_kwargs = context.bot.edit_message_text.call_args_list[1].kwargs
+        assert second_kwargs["text"] == "✅ add_gig"
+
+    @pytest.mark.asyncio
+    async def test_on_step_swallows_not_modified_error(self):
+        """Telegram raises BadRequest('message is not modified') when two
+        consecutive edits produce identical text — this must not propagate."""
+        update = _make_update(text="add a gig")
+        context = _make_context()
+        context.bot.edit_message_text = AsyncMock(
+            side_effect=BadRequest("Bad Request: message is not modified")
+        )
+
+        async def fake_process_message(chat_id, text, on_step=None):
+            await on_step("🔧 add_gig")  # must not raise
+            return [AgentResponse(text="Added.")]
+
+        with patch(
+            "organist_bot.integrations.unified_agent.process_message",
+            new=fake_process_message,
+        ):
+            await handle_message(update, context)  # must not raise
+
+        update.message.reply_text.assert_any_call("Added.", parse_mode="Markdown")
