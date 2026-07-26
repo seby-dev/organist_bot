@@ -22,6 +22,7 @@ def test_load_missing_chat_returns_none_fields(tmp_path, monkeypatch):
         "last_invoice": None,
         "last_gig_listing": None,
         "last_application_listing": None,
+        "active_neg_draft": None,
     }
 
 
