@@ -2,7 +2,7 @@
 
 import datetime
 import json
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -677,8 +677,6 @@ class TestInvoiceGenerationTools:
 
     @pytest.mark.asyncio
     async def test_generate_invoice_stores_in_last_invoice(self):
-        from unittest.mock import AsyncMock
-
         fake_result = {
             "pdf_path": "/tmp/inv.pdf",
             "client_key": "a",
@@ -2293,3 +2291,83 @@ class TestNegTools:
         assert "rejected" in out["result"].lower()
         mock_send.assert_not_called()
         assert application_store._read()[0]["status"] == "rejected"
+
+
+# ── process_message on_step progress reporting ──────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_process_message_reports_on_step_progress(tmp_path, monkeypatch):
+    """process_message must report a 🔧 step when a tool call starts and flip
+    it to ✅ once the tool call returns, via the on_step callback."""
+    import sys
+    from types import SimpleNamespace
+
+    from organist_bot.integrations import agent_state, unified_agent
+
+    monkeypatch.setattr(agent_state, "_PATH", tmp_path / "agent_state.json")
+    cid = 314159
+    unified_agent._hydrated.discard(cid)
+
+    tool_use_block = SimpleNamespace(
+        type="tool_use",
+        name="add_gig",
+        input={"url": "https://example.com/gig/1"},
+        id="tool_1",
+    )
+    tool_use_response = SimpleNamespace(content=[tool_use_block], stop_reason="tool_use")
+
+    text_block = SimpleNamespace(type="text", text="Added the gig.")
+    end_turn_response = SimpleNamespace(content=[text_block], stop_reason="end_turn")
+
+    fake_client = MagicMock()
+    fake_client.messages.create = AsyncMock(side_effect=[tool_use_response, end_turn_response])
+    fake_anthropic_module = SimpleNamespace(AsyncAnthropic=MagicMock(return_value=fake_client))
+    monkeypatch.setitem(sys.modules, "anthropic", fake_anthropic_module)
+
+    monkeypatch.setattr(
+        unified_agent, "_execute_tool", AsyncMock(return_value=json.dumps({"result": "ok"}))
+    )
+
+    steps: list[str] = []
+
+    async def on_step(status_text: str) -> None:
+        steps.append(status_text)
+
+    try:
+        responses = await unified_agent.process_message(cid, "add this gig", on_step=on_step)
+    finally:
+        unified_agent._histories.pop(cid, None)
+        unified_agent._hydrated.discard(cid)
+
+    assert steps == ["🔧 add_gig", "✅ add_gig"]
+    assert responses == [unified_agent.AgentResponse(text="Added the gig.")]
+
+
+@pytest.mark.asyncio
+async def test_process_message_without_on_step_is_unaffected(tmp_path, monkeypatch):
+    """Omitting on_step (the default) must not change existing behavior."""
+    import sys
+    from types import SimpleNamespace
+
+    from organist_bot.integrations import agent_state, unified_agent
+
+    monkeypatch.setattr(agent_state, "_PATH", tmp_path / "agent_state.json")
+    cid = 271828
+    unified_agent._hydrated.discard(cid)
+
+    text_block = SimpleNamespace(type="text", text="All set.")
+    end_turn_response = SimpleNamespace(content=[text_block], stop_reason="end_turn")
+
+    fake_client = MagicMock()
+    fake_client.messages.create = AsyncMock(return_value=end_turn_response)
+    fake_anthropic_module = SimpleNamespace(AsyncAnthropic=MagicMock(return_value=fake_client))
+    monkeypatch.setitem(sys.modules, "anthropic", fake_anthropic_module)
+
+    try:
+        responses = await unified_agent.process_message(cid, "hello")
+    finally:
+        unified_agent._histories.pop(cid, None)
+        unified_agent._hydrated.discard(cid)
+
+    assert responses == [unified_agent.AgentResponse(text="All set.")]
