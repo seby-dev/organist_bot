@@ -248,7 +248,7 @@ TOOLS: list[dict] = [
                 "name": {"type": "string", "description": "Contact name, e.g. 'The Secretary'"},
                 "address": {
                     "type": "string",
-                    "description": "Full address (use <br> for line breaks)",
+                    "description": "Full address as plain text (use newlines for line breaks, not HTML)",
                 },
                 "email": {"type": "string", "description": "Client email address"},
                 "cc": {
@@ -270,7 +270,7 @@ TOOLS: list[dict] = [
                 "name": {"type": "string", "description": "New contact name"},
                 "address": {
                     "type": "string",
-                    "description": "New address (use <br> for line breaks)",
+                    "description": "New address as plain text (use newlines for line breaks, not HTML)",
                 },
                 "email": {"type": "string", "description": "New email address"},
                 "cc": {

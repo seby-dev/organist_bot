@@ -285,14 +285,14 @@
           <div class="meta-label">From</div>
           <div class="meta-value">
             <strong>{{ from_name }}</strong>
-            {{ from_address }}
+            {% for line in from_address_lines %}{{ line }}{% if not loop.last %}<br>{% endif %}{% endfor %}
           </div>
         </div>
         <div class="meta-block">
           <div class="meta-label">Bill To</div>
           <div class="meta-value">
             <strong>{{ bill_to_name }}</strong>
-            {{ bill_to_address }}
+            {% for line in bill_to_address_lines %}{{ line }}{% if not loop.last %}<br>{% endif %}{% endfor %}
           </div>
         </div>
         <div class="meta-block">

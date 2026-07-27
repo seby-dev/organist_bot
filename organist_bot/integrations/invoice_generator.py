@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -27,6 +28,24 @@ CLIENTS_FILE = _PROJ_ROOT / "clients.json"
 INVOICES_FILE = _PROJ_ROOT / "invoices.json"
 
 logger = logging.getLogger(__name__)
+
+
+# Addresses reach us from two eras of the client store: some hold literal
+# ``<br>`` markup (the old add_client convention), some hold real newlines.
+# Both are data, not markup — the template owns the line-break markup.
+_ADDRESS_LINE_SPLIT = re.compile(r"<br\s*/?>|\r\n|\r|\n", re.IGNORECASE)
+
+
+def address_lines(address: str | None) -> list[str]:
+    """Split a stored address into plain-text lines for templating.
+
+    Tolerates both storage conventions (``<br>`` variants and newlines) so the
+    template can emit its own ``<br>`` markup while autoescaping stays on and
+    the address text itself remains escaped.
+    """
+    if not address:
+        return []
+    return [line.strip() for line in _ADDRESS_LINE_SPLIT.split(address) if line.strip()]
 
 
 def _now_iso() -> str:
@@ -228,9 +247,9 @@ async def generate_invoice(client_key: str, items: list[dict]) -> dict:
 
     html = template.render(
         from_name=settings.from_name,
-        from_address=settings.from_address,
+        from_address_lines=address_lines(settings.from_address),
         bill_to_name=client["name"],
-        bill_to_address=client["address"],
+        bill_to_address_lines=address_lines(client["address"]),
         date=date_str,
         invoice_number=invoice_number,
         items=processed_items,
