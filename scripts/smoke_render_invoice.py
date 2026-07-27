@@ -7,10 +7,16 @@ to output/invoice_samples/ so the live template change can be eyeballed end-to-e
 from __future__ import annotations
 
 import asyncio
+import sys
 from pathlib import Path
 
-from jinja2 import Environment, FileSystemLoader
+from jinja2 import Environment, FileSystemLoader, select_autoescape
 from playwright.async_api import async_playwright
+
+# Allow running from project root without installing the package
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from organist_bot.integrations.invoice_generator import address_lines  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 TEMPLATES_DIR = ROOT / "organist_bot" / "templates"
@@ -18,9 +24,9 @@ OUT_DIR = ROOT / "output" / "invoice_samples"
 
 MOCK = {
     "from_name": "Sebastian Daku",
-    "from_address": "12 Wren Avenue<br>London, NW3 4QZ",
+    "from_address_lines": address_lines("12 Wren Avenue\nLondon, NW3 4QZ"),
     "bill_to_name": "St. Augustine's Church",
-    "bill_to_address": "Highbury Park<br>London, N5 1RR",
+    "bill_to_address_lines": address_lines("Highbury Park\nLondon, N5 1RR"),
     "date": "2 June 2026",
     "invoice_number": "SMOKE-2026-000",
     "items": [
@@ -44,7 +50,11 @@ MOCK = {
 async def main() -> None:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    env = Environment(loader=FileSystemLoader(str(TEMPLATES_DIR)))
+    # Must match invoice_generator's env exactly — an autoescape mismatch here
+    # would hide escaping bugs that only show up in the real PDF.
+    env = Environment(
+        loader=FileSystemLoader(str(TEMPLATES_DIR)), autoescape=select_autoescape(["html"])
+    )
     html = env.get_template("invoice.html").render(**MOCK)
 
     html_path = OUT_DIR / "_smoke_render.html"
