@@ -2265,9 +2265,9 @@ class TestNegTools:
         assert "EDITED" in out["result"]
         assert out["buttons"] == [
             [
-                {"text": "Accept", "callback_data": f"neg:accept:{gig_id}"},
-                {"text": "Edit", "callback_data": f"neg:edit:{gig_id}"},
-                {"text": "Reject", "callback_data": f"neg:reject:{gig_id}"},
+                {"text": "✅ Accept", "callback_data": f"neg:accept:{gig_id}"},
+                {"text": "✏️ Edit", "callback_data": f"neg:edit:{gig_id}"},
+                {"text": "❌ Reject", "callback_data": f"neg:reject:{gig_id}"},
             ]
         ]
         r = application_store._read()[0]
@@ -2391,6 +2391,23 @@ class TestNegDeterministicActions:
         assert "failed" in msg.lower()
         assert application_store._read()[0]["status"] == "neg_pending"
 
+    async def test_neg_confirm_send_reports_sent_when_transition_fails(self, neg_store):
+        """If the email send succeeds but recording the transition fails (a
+        losing race, or a disk write error), the message must say the email
+        was sent — not leave the user thinking it wasn't."""
+        gig_id = _seed_neg_pending()
+        with (
+            patch("organist_bot.integrations.unified_agent.send_application_email"),
+            patch(
+                "organist_bot.integrations.unified_agent.application_store.transition_neg_pending",
+                return_value=False,
+            ),
+        ):
+            ok, msg = await unified_agent.neg_confirm_send(gig_id)
+        assert ok is False
+        assert "sent to" in msg.lower()
+        assert "failed to record" in msg.lower()
+
     def test_neg_confirm_reject_success(self, neg_store):
         gig_id = _seed_neg_pending()
         ok, msg = unified_agent.neg_confirm_reject(gig_id)
@@ -2412,9 +2429,9 @@ class TestNegDeterministicActions:
         assert gig_id in text
         assert buttons == [
             [
-                {"text": "Accept", "callback_data": f"neg:accept:{gig_id}"},
-                {"text": "Edit", "callback_data": f"neg:edit:{gig_id}"},
-                {"text": "Reject", "callback_data": f"neg:reject:{gig_id}"},
+                {"text": "✅ Accept", "callback_data": f"neg:accept:{gig_id}"},
+                {"text": "✏️ Edit", "callback_data": f"neg:edit:{gig_id}"},
+                {"text": "❌ Reject", "callback_data": f"neg:reject:{gig_id}"},
             ]
         ]
 

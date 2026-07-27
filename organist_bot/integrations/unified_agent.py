@@ -1822,9 +1822,9 @@ def pop_pending_neg_instruction(chat_id: int) -> str | None:
 def _draft_buttons(gig_id: str) -> list[list[dict]]:
     return [
         [
-            {"text": "Accept", "callback_data": f"neg:accept:{gig_id}"},
-            {"text": "Edit", "callback_data": f"neg:edit:{gig_id}"},
-            {"text": "Reject", "callback_data": f"neg:reject:{gig_id}"},
+            {"text": "✅ Accept", "callback_data": f"neg:accept:{gig_id}"},
+            {"text": "✏️ Edit", "callback_data": f"neg:edit:{gig_id}"},
+            {"text": "❌ Reject", "callback_data": f"neg:reject:{gig_id}"},
         ]
     ]
 
@@ -1862,7 +1862,13 @@ async def neg_confirm_send(gig_id: str) -> tuple[bool, str]:
         return False, f"Send failed: {exc}"
     ok = application_store.transition_neg_pending(gig_id, to="applied", sent_body=row["draft_body"])
     if not ok:
-        return False, "Already sent or no longer pending."
+        # The email above was sent successfully — this call just lost the
+        # race to record it (a concurrent tap got there first, or the write
+        # itself failed). Either way the send already happened; say so.
+        logger.warning(
+            "NEG confirm_send: email sent but transition failed", extra={"gig_id": gig_id}
+        )
+        return False, f"Sent to {row.get('email')}, but failed to record — check applications.json."
     logger.info("NEG application sent", extra={"gig_id": gig_id})
     return True, f"Sent to {row.get('email')}."
 

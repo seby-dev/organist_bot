@@ -291,6 +291,7 @@ class TestHandleNegCallback:
         await handle_neg_callback(update, context)
         context.bot.edit_message_reply_markup.assert_not_called()
         context.bot.edit_message_text.assert_not_called()
+        update.callback_query.answer.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_accept_swaps_to_confirm_send_buttons(self):
@@ -305,23 +306,37 @@ class TestHandleNegCallback:
         kwargs = context.bot.edit_message_reply_markup.call_args.kwargs
         assert kwargs["chat_id"] == 7973955362
         assert kwargs["message_id"] == 55
+        markup = kwargs["reply_markup"]
+        assert markup.inline_keyboard[0][0].text == "Confirm"
+        assert markup.inline_keyboard[0][0].callback_data == "neg:confirm_send:abc123"
 
     @pytest.mark.asyncio
     async def test_reject_swaps_to_confirm_reject_buttons(self):
         update = _make_callback_update(data="neg:reject:abc123")
         context = _make_context()
         with patch("organist_bot.integrations.unified_agent.neg_confirm_buttons") as mock_buttons:
-            mock_buttons.return_value = []
+            mock_buttons.return_value = [
+                [{"text": "Confirm", "callback_data": "neg:confirm_reject:abc123"}]
+            ]
             await handle_neg_callback(update, context)
         mock_buttons.assert_called_once_with("abc123", send=False)
+        kwargs = context.bot.edit_message_reply_markup.call_args.kwargs
+        markup = kwargs["reply_markup"]
+        assert markup.inline_keyboard[0][0].callback_data == "neg:confirm_reject:abc123"
 
     @pytest.mark.asyncio
     async def test_edit_sets_active_draft_and_prompts(self):
         update = _make_callback_update(data="neg:edit:abc123")
         context = _make_context()
-        with patch("organist_bot.integrations.unified_agent.set_active_neg_draft") as mock_set:
+        with (
+            patch("organist_bot.integrations.unified_agent.set_active_neg_draft") as mock_set,
+            patch("organist_bot.integrations.unified_agent._persist_chat") as mock_persist,
+        ):
             await handle_neg_callback(update, context)
         mock_set.assert_called_once_with(7973955362, "abc123")
+        # Persisted immediately (not deferred to the next process_message call)
+        # so a restart between this tap and the user's reply doesn't lose it.
+        mock_persist.assert_called_once_with(7973955362)
         context.bot.edit_message_text.assert_called_once()
         assert (
             "what would you like to change"
@@ -378,6 +393,9 @@ class TestHandleNegCallback:
             await handle_neg_callback(update, context)
         kwargs = context.bot.edit_message_text.call_args.kwargs
         assert kwargs["text"] == view_text
+        markup = kwargs["reply_markup"]
+        assert markup.inline_keyboard[0][0].text == "Accept"
+        assert markup.inline_keyboard[0][0].callback_data == "neg:accept:abc123"
 
     @pytest.mark.asyncio
     async def test_cancel_when_draft_gone(self):

@@ -539,7 +539,8 @@ class TestNegPending:
         gig_id = store.record_neg_pending(
             _neg_gig(), draft_subject="S", draft_body="old body", negotiable_fee=120
         )
-        store.update_neg_draft(gig_id, draft_body="only body changed")
+        ok = store.update_neg_draft(gig_id, draft_body="only body changed")
+        assert ok is True
         r = store._read()[0]
         assert r["draft_subject"] == "S"
         assert r["draft_body"] == "only body changed"
