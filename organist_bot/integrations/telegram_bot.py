@@ -209,6 +209,10 @@ async def handle_neg_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
     elif action == "edit":
         unified_agent.set_active_neg_draft(chat_id, gig_id)
+        # Persist immediately — unlike the LLM path, nothing else will call
+        # _persist_chat before the user's next message, so a restart between
+        # this tap and that message would otherwise lose the active draft.
+        unified_agent._persist_chat(chat_id)
         await _edit_text_quietly(
             context, chat_id, message_id, "✏️ What would you like to change about this draft?"
         )
