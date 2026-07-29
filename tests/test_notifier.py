@@ -216,6 +216,19 @@ class TestNegotiationTemplate:
         assert "Video 1" not in rendered
         assert "Video 2" not in rendered
 
+    def test_video_urls_survive_the_telegram_tag_strip(self):
+        """The approval preview strips tags, so the URL must be link *text* too."""
+        from organist_bot.integrations.unified_agent import _neg_body_as_text
+
+        plain = _neg_body_as_text(
+            _render_negotiation(
+                applicant_video_1="https://yt/v1",
+                applicant_video_2="https://yt/v2",
+            )
+        )
+        assert "Video 1 → https://yt/v1" in plain
+        assert "Video 2 → https://yt/v2" in plain
+
 
 class TestDraftNegotiation:
     def test_returns_subject_and_body(self):

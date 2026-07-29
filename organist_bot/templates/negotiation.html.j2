@@ -17,10 +17,12 @@
 
   {% if applicant_video_1 or applicant_video_2 %}
   <p>Please find below links to my videos showcasing my musical abilities:</p>
-  <ul>
-    {% if applicant_video_1 %}<li><a href="{{ applicant_video_1 }}">Video 1</a></li>{% endif %}
-    {% if applicant_video_2 %}<li><a href="{{ applicant_video_2 }}">Video 2</a></li>{% endif %}
-  </ul>
+  {# URL is both the href and the link text so it survives the crude tag-strip
+     used for the Telegram approval preview (unified_agent._neg_body_as_text). #}
+  <p>
+    {% if applicant_video_1 %}Video 1 &rarr; <a href="{{ applicant_video_1 }}">{{ applicant_video_1 }}</a><br/>{% endif %}
+    {% if applicant_video_2 %}Video 2 &rarr; <a href="{{ applicant_video_2 }}">{{ applicant_video_2 }}</a>{% endif %}
+  </p>
   {% endif %}
 
   <p>Kind regards,<br/>
