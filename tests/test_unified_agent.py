@@ -2338,6 +2338,69 @@ class TestNegActiveDraftState:
         assert unified_agent.pop_pending_neg_instruction(999) is None
 
 
+# ── _trim_history ─────────────────────────────────────────────────────────────
+
+
+def _turn_with_tool_call(n: int) -> list[dict]:
+    """One user(str) turn followed by an assistant tool_use + user(list) tool_result pair."""
+    return [
+        {"role": "user", "content": f"do thing {n}"},
+        {
+            "role": "assistant",
+            "content": [{"type": "tool_use", "id": f"tool_{n}", "name": "noop", "input": {}}],
+        },
+        {
+            "role": "user",
+            "content": [{"type": "tool_result", "tool_use_id": f"tool_{n}", "content": "ok"}],
+        },
+    ]
+
+
+class TestTrimHistory:
+    CHAT_ID = 777
+
+    def teardown_method(self):
+        unified_agent._histories.pop(self.CHAT_ID, None)
+
+    def test_under_cap_is_untouched(self):
+        history = _turn_with_tool_call(1) + _turn_with_tool_call(2)
+        unified_agent._histories[self.CHAT_ID] = list(history)
+        unified_agent._trim_history(self.CHAT_ID)
+        assert unified_agent._histories[self.CHAT_ID] == history
+
+    def test_over_cap_trims_to_a_user_text_boundary(self):
+        # 30 turns * 3 entries = 90 messages, well past _MAX_HISTORY_MESSAGES (60).
+        history: list[dict] = []
+        for i in range(30):
+            history.extend(_turn_with_tool_call(i))
+        unified_agent._histories[self.CHAT_ID] = list(history)
+
+        unified_agent._trim_history(self.CHAT_ID)
+        trimmed = unified_agent._histories[self.CHAT_ID]
+
+        assert len(trimmed) <= unified_agent._MAX_HISTORY_MESSAGES
+        assert len(trimmed) < len(history)
+        # Must start on a real user-text turn, never inside a tool_use/tool_result pair.
+        assert trimmed[0]["role"] == "user"
+        assert isinstance(trimmed[0]["content"], str)
+        # No tool_use block should be left without its matching tool_result.
+        pending_tool_use_ids: set[str] = set()
+        for msg in trimmed:
+            content = msg["content"]
+            if not isinstance(content, list):
+                continue
+            for block in content:
+                if block.get("type") == "tool_use":
+                    pending_tool_use_ids.add(block["id"])
+                elif block.get("type") == "tool_result":
+                    pending_tool_use_ids.discard(block["tool_use_id"])
+        assert pending_tool_use_ids == set()
+
+    def test_missing_chat_id_is_a_noop(self):
+        unified_agent._trim_history(self.CHAT_ID)  # no entry for this chat_id at all
+        assert self.CHAT_ID not in unified_agent._histories
+
+
 class TestNegConfirmButtons:
     def test_send_buttons_use_confirm_send_callback(self):
         buttons = unified_agent.neg_confirm_buttons("abc123", send=True)
