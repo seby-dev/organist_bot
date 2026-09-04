@@ -94,13 +94,29 @@ maps provider name to the `Settings` field to check for configuration.
 
 `organist_bot/runtime_config_store.py` is currently typed for `int` values only
 (`min_fee`, `max_travel_minutes`, `poll_minutes`, `negotiable_fee`). Widen its value type
-to `int | str` (a `RuntimeValue = int | str` type alias, updating `get`/`set`/`all`'s
-signatures) rather than adding a new store file — `llm_provider`/`llm_model` are
+to `int | str` rather than adding a new store file — `llm_provider`/`llm_model` are
 conceptually the same kind of thing (a global runtime override with a `.env`-derived
 default), and this keeps one file/one tool-family for "runtime config" rather than
 proliferating JSON stores. `data/runtime_config.json` gains two new possible keys:
 `llm_provider` (default `"anthropic"`), `llm_model` (default the resolved
 `anthropic/claude-sonnet-4-6` string, i.e. `_PROVIDER_MODELS["anthropic"]["sonnet"]`).
+
+**`get()`'s widening must use `@overload`, not a flat `int | str` return type** — existing
+callers (e.g. the scheduler's `runtime_config.get("poll_minutes", settings.poll_minutes)`,
+used arithmetically) assume an `int` back and would fail mypy under a flattened
+`int | str` return:
+
+```python
+@overload
+def get(self, key: str, default: int) -> int: ...
+@overload
+def get(self, key: str, default: str) -> str: ...
+def get(self, key: str, default: int | str) -> int | str:
+    return _read().get(key, default)
+```
+
+`set(self, key: str, value: int | str) -> None` needs no overload — passing an `int`
+already satisfies a widened `int | str` parameter, so no existing caller breaks.
 
 `manage_config`'s existing `_RANGES`/`_DEFAULTS`-based int validation is untouched — it
 only ever reads/writes its existing four int keys, unaffected by the wider store type.
@@ -120,7 +136,8 @@ Added to `TOOLS`, alongside `manage_config`, using the same `action` pattern:
         "Use action='set' with 'provider' to switch — if 'model' is omitted, list that "
         "provider's options and ask the user to pick one before calling set again. "
         "Use action='reset' to restore the default (anthropic/sonnet). "
-        "Refuses to switch to a provider whose API key isn't configured."
+        "Checks the provider's API key is configured before doing anything else — "
+        "refuses immediately (even before listing model options) if it isn't."
     ),
     "input_schema": {
         "type": "object",
@@ -149,17 +166,19 @@ in `_VERBATIM_RESPONSE_TOOLS`):
 
 - `get`: reads `runtime_config.get("llm_provider", _DEFAULT_PROVIDER)` and
   `runtime_config.get("llm_model", <default model string>)`, returns them formatted.
+- `set` with no `provider` at all (schema only requires `action`, not `provider`):
+  explicit error — `"provider is required for action='set'."`
 - `set` with `provider` not in `_PROVIDER_MODELS`: error listing valid providers.
-- `set` with valid `provider` but missing/invalid `model`: checks
-  `settings.<provider>_api_key` is non-empty first (see Error Handling) — if the key
-  *is* configured, returns the curated list for that provider as plain text (e.g. "Which
-  OpenAI model? gpt-6-astra (flagship) or gpt-5.6-luna (cost-efficient)") and does
-  **not** change any config. No new stashing/callback-button plumbing is needed here
-  (unlike the NEG-draft picker) — the *current* provider is still active, so the agent
-  can just ask conversationally and the user's next natural-language reply (e.g.
-  "gpt-6-astra") drives a
-  second `set` call with `model` filled in, entirely within the existing tool-calling
-  loop.
+- `set` with valid `provider`: checks `settings.<provider>_api_key` is non-empty
+  *first, before anything else* (see Error Handling) — refuses immediately if not, even
+  before getting to the missing/invalid-`model` case below.
+- `set` with valid, configured `provider` but missing/invalid `model`: returns the
+  curated list for that provider as plain text (e.g. "Which OpenAI model? gpt-6-astra
+  (flagship) or gpt-5.6-luna (cost-efficient)") and does **not** change any config. No
+  new stashing/callback-button plumbing is needed here (unlike the NEG-draft picker) —
+  the *current* provider is still active, so the agent can just ask conversationally and
+  the user's next natural-language reply (e.g. "gpt-6-astra") drives a second `set` call
+  with `model` filled in, entirely within the existing tool-calling loop.
 - `set` with valid `provider` and `model`: validates `settings.<provider>_api_key` is
   set (else refuses — see Error Handling), then
   `runtime_config.set("llm_provider", provider)` and
@@ -198,6 +217,13 @@ New (provider-agnostic, via LiteLLM):
 import litellm
 
 provider = runtime_config.get("llm_provider", _DEFAULT_PROVIDER)
+if provider not in _PROVIDER_MODELS:
+    # Guards against a stale/invalid value left in runtime_config.json — e.g. from a
+    # prior session, after a future code update removes a provider from the registry.
+    logger.warning("Unknown stored llm_provider %r, resetting to default", provider)
+    runtime_config.reset("llm_provider")
+    runtime_config.reset("llm_model")
+    provider = _DEFAULT_PROVIDER
 model = runtime_config.get("llm_model", _PROVIDER_MODELS[_DEFAULT_PROVIDER][_DEFAULT_MODEL_KEY])
 api_key = getattr(settings, _PROVIDER_API_KEY_FIELD[provider])
 ...
@@ -207,7 +233,7 @@ response = await litellm.acompletion(
     tools=TOOLS,  # now OpenAI function-calling shape — see item 7
 )
 msg = response.choices[0].message
-_histories[chat_id].append(msg.model_dump(exclude_none=True))
+_histories[chat_id].append(msg.model_dump())  # NOT exclude_none=True — see note below
 if not msg.tool_calls:
     if msg.content:
         responses.append(AgentResponse(text=msg.content))
@@ -226,9 +252,19 @@ Key changes from today: system prompt is passed as the first `messages` entry (n
 separate `system=` kwarg — Anthropic-only concept; LiteLLM translates a `system` role
 message into whatever the backend provider expects), tool results become `role: "tool"`
 messages appended flat to history (not nested inside a `role: "user"` content-block
-list), and `msg.model_dump(exclude_none=True)` stores a plain, JSON-serializable dict
-instead of raw Anthropic SDK objects (today's `response.content` is stored as literal SDK
-objects — this was never provider-portable, and this rewrite fixes that as a byproduct).
+list), and `msg.model_dump()` stores a plain, JSON-serializable dict instead of raw
+Anthropic SDK objects (today's `response.content` is stored as literal SDK objects — this
+was never provider-portable, and this rewrite fixes that as a byproduct).
+
+**Do not pass `exclude_none=True` to `model_dump()`.** A tool-call turn has
+`content: None` alongside `tool_calls: [...]`; dropping the `None` key entirely (rather
+than keeping it as an explicit null) breaks the *next* call when the active provider is
+Anthropic — LiteLLM's Anthropic translation requires `content` to be present on every
+message (empty string/list, never an absent key), so a history built with
+`exclude_none=True` works on turn 1 but raises a validation error on turn 2 whenever the
+previous turn was a tool call. Caught in spec review, not by construction — confirm this
+with a real multi-turn tool-call test against `anthropic/...` during implementation, not
+just a shape assertion.
 
 `_execute_tool`, all `_TOOL_HANDLERS` implementations, `on_step` progress callbacks,
 `_VERBATIM_RESPONSE_TOOLS`/`_PDF_RESPONSE_TOOLS` special-casing, and
@@ -261,9 +297,20 @@ key off `name` alone and are unaffected.
 never nested inside a `user` turn — so the same "cut only at a plain-string `user`
 message" rule still correctly avoids ever separating an `assistant` tool-call message
 from its `tool` result message(s), since those always sit strictly *after* the `user`
-turn that triggered them and *before* the next one. No logic change needed, but the
-existing test (`TestTrimHistory` in `tests/test_unified_agent.py`) must be rewritten to
-build fixtures in the new flat shape instead of the nested Anthropic one.
+turn that triggered them and *before* the next one. No `_trim_history` logic change
+needed.
+
+**The existing `TestTrimHistory` test (`tests/test_unified_agent.py`) needs more than a
+fixture swap, though.** Its current pairing-check walks each message's list-type
+`content` looking for `type: "tool_use"`/`type: "tool_result"` blocks to detect an
+orphaned pair — that's an Anthropic-shape-specific check. Under the new flat shape, tool
+call IDs live on the assistant message's top-level `tool_calls` field and results are
+top-level `role: "tool"` messages, neither of which is inside a list-content block. If
+only the fixture data is swapped to the new shape and this check is left as-is, the loop
+finds no list-content blocks to iterate, `pending_tool_use_ids` never gets populated, and
+the assertion passes vacuously — silently testing nothing. The pairing-check *logic*
+must be rewritten too, walking `tool_calls` on assistant messages and matching against
+`tool_call_id` on subsequent `role: "tool"` messages.
 
 ### 9. System prompt
 
@@ -307,12 +354,28 @@ documenting the new tool:
   `.message.content`).
 - **New tests** for `manage_llm_provider`: `get` (default + after a set), `set` with a
   configured key (success), `set` with a missing key (refusal, no config mutation), `set`
-  with no model (returns curated list, no config mutation), `set` with an unknown
-  provider/model, `reset`.
-- **Rewrite** `TestTrimHistory`'s fixtures to the new flat `role: "tool"` shape (item 8).
+  with no `provider` at all, `set` with no model (returns curated list, no config
+  mutation), `set` with an unknown provider/model, `reset`, and a stale/invalid stored
+  `llm_provider` value falling back to the default instead of crashing.
+- **Rewrite** `TestTrimHistory` — both the fixtures (flat `role: "tool"` shape) *and* the
+  pairing-check assertion logic itself, which currently only understands Anthropic's
+  nested content-block shape and would otherwise pass vacuously against the new format
+  (item 8).
 - **New test**: `TOOLS` list — every entry has the new
   `{"type": "function", "function": {...}}` shape (a single structural assertion over
   the whole list catches any entry accidentally left in the old shape).
+- **Fix existing test** `test_seen_not_in_manage_filter_suspensions_enum`
+  (`tests/test_unified_agent.py:1032-1034`) — breaks in two ways under the new `TOOLS`
+  shape, not just one: `next(t for t in TOOLS if t["name"] == "manage_filter_suspensions")`
+  raises `KeyError` on `t["name"]` (name moves to `t["function"]["name"]`), and even once
+  that's fixed, `tool_def["input_schema"]["properties"]["filter"]["enum"]` must become
+  `tool_def["function"]["parameters"]["properties"]["filter"]["enum"]`. This is the only
+  existing test in the file found reading a tool's schema directly by key (confirmed via
+  `grep -n '"input_schema"' tests/test_unified_agent.py` — one hit), but re-run that grep
+  during implementation in case another was added since.
+- A real multi-turn tool-call conversation against `model="anthropic/..."` (not just a
+  response-shape assertion) to catch the `content: None` history round-trip issue noted
+  in item 6 before it reaches production.
 - Existing tests for individual tool handlers (`_TOOL_HANDLERS["add_gig"]` etc.) are
   **unaffected** — they call handlers directly, never through `process_message()`.
 
@@ -324,9 +387,9 @@ documenting the new tool:
 |------|--------|
 | `pyproject.toml` | Add `litellm` dependency |
 | `organist_bot/config.py` | Add `openai_api_key`, `gemini_api_key` fields |
-| `organist_bot/runtime_config_store.py` | Widen value type `int` → `int \| str` |
+| `organist_bot/runtime_config_store.py` | Widen value type `int` → `int \| str`; add `@overload` to `get()` |
 | `organist_bot/integrations/unified_agent.py` | New `_PROVIDER_MODELS` registry; new `manage_llm_provider` tool + handler; rewrite `process_message()` to use `litellm.acompletion`; rewrite `TOOLS` to OpenAI function-calling shape; add "LLM provider" system-prompt section |
-| `tests/test_unified_agent.py` | Rewrite `process_message()`-level tests to mock `litellm.acompletion`; rewrite `TestTrimHistory` fixtures; new `manage_llm_provider` tests; new `TOOLS`-shape test |
+| `tests/test_unified_agent.py` | Rewrite `process_message()`-level tests to mock `litellm.acompletion`; rewrite `TestTrimHistory` fixtures *and* pairing-check logic; new `manage_llm_provider` tests; new `TOOLS`-shape test; fix `test_seen_not_in_manage_filter_suspensions_enum`'s schema key path |
 | `README.md` / `CLAUDE.md` | Document `OPENAI_API_KEY`/`GEMINI_API_KEY` config, the `manage_llm_provider` tool, and update the "~33 tools" count to ~34 |
 
 ---
