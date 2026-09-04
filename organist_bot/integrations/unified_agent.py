@@ -114,7 +114,7 @@ You are an assistant for an organist. You handle three areas:
 - When a tool returns a pre-formatted list (e.g. availability periods, invoices), relay it VERBATIM — do not reformat, renumber, or convert it into a table. You may append a short follow-up note after the list.
 """
 
-TOOLS: list[dict] = [
+_TOOLS_SCHEMA: list[dict] = [
     # ── Gig — scraping & calendar add ──────────────────────────────────────
     {
         "name": "fetch_gig_details",
@@ -675,6 +675,23 @@ TOOLS: list[dict] = [
         },
     },
 ]
+
+
+def _to_function_tool(tool: dict) -> dict:
+    """Wrap one Anthropic-shaped tool schema into OpenAI's function-calling shape —
+    LiteLLM's canonical `tools=` input format regardless of which backend provider
+    actually handles the request."""
+    return {
+        "type": "function",
+        "function": {
+            "name": tool["name"],
+            "description": tool["description"],
+            "parameters": tool["input_schema"],
+        },
+    }
+
+
+TOOLS: list[dict] = [_to_function_tool(t) for t in _TOOLS_SCHEMA]
 
 
 @dataclass

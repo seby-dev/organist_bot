@@ -1030,8 +1030,8 @@ class TestFilterTools:
         assert "no matching" in data["result"].lower()
 
     def test_seen_not_in_manage_filter_suspensions_enum(self):
-        tool_def = next(t for t in TOOLS if t["name"] == "manage_filter_suspensions")
-        assert "seen" not in tool_def["input_schema"]["properties"]["filter"]["enum"]
+        tool_def = next(t for t in TOOLS if t["function"]["name"] == "manage_filter_suspensions")
+        assert "seen" not in tool_def["function"]["parameters"]["properties"]["filter"]["enum"]
 
 
 # ── clear_conversation ────────────────────────────────────────────────────────
@@ -2410,6 +2410,20 @@ def test_agent_response_buttons_defaults_to_none():
     assert AgentResponse(text="hi", buttons=[[{"text": "A", "callback_data": "x"}]]).buttons == [
         [{"text": "A", "callback_data": "x"}]
     ]
+
+
+def test_every_tool_uses_openai_function_calling_shape():
+    from organist_bot.integrations.unified_agent import TOOLS
+
+    assert len(TOOLS) > 0
+    for tool in TOOLS:
+        assert tool["type"] == "function"
+        fn = tool["function"]
+        assert isinstance(fn["name"], str) and fn["name"]
+        assert isinstance(fn["description"], str) and fn["description"]
+        assert isinstance(fn["parameters"], dict)
+        assert "input_schema" not in tool
+        assert "name" not in tool  # top-level — only under "function"
 
 
 # ── process_message on_step progress reporting ──────────────────────────────
