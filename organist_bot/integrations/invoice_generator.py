@@ -240,12 +240,14 @@ async def generate_invoice(client_key: str, items: list[dict]) -> dict:
     date_str = datetime.now().strftime("%-d %B %Y")
     currency = settings.currency
 
-    env = Environment(
+    # Not a Flask app (render_template() doesn't apply); autoescape=select_autoescape(["html"])
+    # already provides the HTML-escaping this rule is checking for.
+    env = Environment(  # nosemgrep: python.flask.security.xss.audit.direct-use-of-jinja2.direct-use-of-jinja2
         loader=FileSystemLoader(str(TEMPLATES_DIR)), autoescape=select_autoescape(["html"])
     )
     template = env.get_template("invoice.html")
 
-    html = template.render(
+    html = template.render(  # nosemgrep: python.flask.security.xss.audit.direct-use-of-jinja2.direct-use-of-jinja2
         from_name=settings.from_name,
         from_address_lines=address_lines(settings.from_address),
         bill_to_name=client["name"],
