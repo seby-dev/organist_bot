@@ -2578,3 +2578,11 @@ async def test_process_message_stashes_instruction_on_needs_pick(tmp_path, monke
         unified_agent._pending_neg_instruction.pop(cid, None)
 
     assert responses[0].buttons == picker_buttons
+
+
+def test_settings_has_openai_and_gemini_api_key_fields():
+    from organist_bot.config import Settings
+
+    s = Settings(email_sender="a@b.com", email_password="x", cc_email="a@b.com")
+    assert s.openai_api_key == ""
+    assert s.gemini_api_key == ""

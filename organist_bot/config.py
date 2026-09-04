@@ -41,6 +41,8 @@ class Settings(BaseSettings):
 
     # ── Invoice agent ─────────────────────────────────────────────────────────
     anthropic_api_key: str = ""
+    openai_api_key: str = ""
+    gemini_api_key: str = ""
     from_name: str = ""
     from_address: str = ""
     from_email: str = ""
