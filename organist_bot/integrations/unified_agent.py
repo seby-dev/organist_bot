@@ -2185,7 +2185,7 @@ async def _handle_manage_llm_provider(input_data: dict, chat_id: int) -> str:
         api_key_field = _PROVIDER_API_KEY_FIELD[provider]
         if not getattr(settings, api_key_field):
             return json.dumps(
-                {"result": f"Can't switch to {provider} — {api_key_field} isn't set."}
+                {"result": f"Can't switch to {provider} — {api_key_field.upper()} isn't set."}
             )
 
         model_key = input_data.get("model", "")

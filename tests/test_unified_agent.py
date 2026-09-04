@@ -2357,7 +2357,7 @@ class TestManageLlmProvider:
             "manage_llm_provider", {"action": "set", "provider": "openai"}, CHAT_ID
         )
         data = json.loads(result)
-        assert "openai_api_key" in data["result"]
+        assert "OPENAI_API_KEY" in data["result"]
         from organist_bot.runtime_config_store import runtime_config
 
         assert runtime_config.get("llm_provider", "anthropic") == "anthropic"
