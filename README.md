@@ -58,8 +58,6 @@ cp .env.example .env
 | `MAX_TRAVEL_MINUTES` | Max travel time in minutes (default: 45) |
 | `GOOGLE_CALENDAR_ID` | Your Google Calendar ID (from Settings → Integrate calendar) |
 | `GOOGLE_CALENDAR_CREDENTIALS_FILE` | Path to your service account JSON key |
-| `GOOGLE_SHEETS_ID` | Spreadsheet ID for run logs (optional) |
-| `GOOGLE_SHEETS_CREDENTIALS_FILE` | Path to service account JSON key for Sheets (falls back to calendar key) |
 | `TELEGRAM_BOT_TOKEN` | Token from @BotFather |
 | `TELEGRAM_CHAT_ID` | Your personal Telegram chat ID |
 | `ANTHROPIC_API_KEY` | API key for the invoice AI agent |
@@ -206,19 +204,6 @@ ENABLE_AVAILABILITY_FILTER=true
 
 ---
 
-## Google Sheets Log Rotation
-
-Run logs are streamed to a Google Sheet tab (`Logs`). When a tab approaches the 1M-cell limit, the bot automatically creates the next tab (`Logs 2`, `Logs 3`, …) and continues logging there seamlessly.
-
-Set the Sheet ID and credentials in `.env`:
-
-```env
-GOOGLE_SHEETS_ID=your_spreadsheet_id
-GOOGLE_SHEETS_CREDENTIALS_FILE=credentials.json
-```
-
----
-
 ## Logging
 
 Every run produces structured logs in two places:
@@ -300,7 +285,6 @@ organist_bot/
 │   ├── logging_config.py    # Structured logging (console + rotating JSON file)
 │   ├── integrations/
 │   │   ├── calendar_client.py   # Google Calendar API wrapper
-│   │   ├── sheets_logger.py     # Google Sheets run-log writer with auto tab rotation
 │   │   ├── telegram_bot.py      # Unified Telegram bot (calendar + invoicing + filters)
 │   │   ├── invoice_agent.py     # Claude AI agentic loop for invoice management
 │   │   ├── invoice_generator.py # PDF invoice generation via Playwright + Jinja2

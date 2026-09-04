@@ -30,7 +30,6 @@ from organist_bot.filters import (
     is_negotiable,
 )
 from organist_bot.integrations.calendar_client import GoogleCalendarClient
-from organist_bot.integrations.sheets_logger import SheetsLogger
 from organist_bot.logging_config import set_run_id, setup_logging
 from organist_bot.models import Gig
 from organist_bot.notifier import Notifier, SMTPTransport
@@ -121,7 +120,6 @@ def warn_if_gmail_monitoring_unconfigured() -> None:
 
 def main(
     scraper: Scraper,
-    sheets_logger: SheetsLogger | None = None,
     dry_run: bool = False,
     lock_file: str | None = None,
 ) -> None:
@@ -137,7 +135,7 @@ def main(
         return
 
     try:
-        _run(scraper, sheets_logger, dry_run=dry_run)
+        _run(scraper, dry_run=dry_run)
     finally:
         fcntl.flock(lock, fcntl.LOCK_UN)
         lock.close()
@@ -152,7 +150,6 @@ def main(
 
 def _run(
     scraper: Scraper,
-    sheets_logger: SheetsLogger | None = None,
     dry_run: bool = False,
 ) -> None:
     run_id = uuid.uuid4().hex[:8]
@@ -279,9 +276,6 @@ def _run(
     # Skip the full pipeline if the gig listings haven't changed since last run.
     # We hash the serialised gig elements rather than the full HTML to ignore
     # dynamic page content (e.g. ASP.NET __VIEWSTATE) that rotates every request.
-    # Note: buffered SheetsLogger records from this run are not drained here — they
-    # flush with the next changed-page run. Skipped runs therefore appear in Sheets
-    # with a slight timestamp lag, not in real time.
     listings_content = "".join(str(el) for el in gigs_div)
     current_hash = hashlib.sha256(listings_content.encode()).hexdigest()
     if load_listings_hash() == current_hash:
@@ -329,7 +323,7 @@ def _run(
             f"out of {len(gigs_div)} listed. Check logs for detail."
         )
 
-    # Emit Phase-1 pre-filter breakdown so the dashboard counts which filters
+    # Emit Phase-1 pre-filter breakdown for log-based observability — which filters
     # rejected gigs before the detail-page fetch.
     pre_filter.log_and_reset_counts(total_in=len(gigs_div), passed=pre_filter_passed)
 
@@ -566,19 +560,6 @@ def _run(
     else:
         save_listings_hash(current_hash)
 
-    # ── Flush logs to Google Sheets ───────────────────────────────────────────
-    if sheets_logger is not None and not dry_run:
-        try:
-            rows = sheets_logger.drain()
-            logger.info("Sheets flush complete", extra={"rows_written": rows})
-        except Exception as exc:
-            logger.warning(
-                "Sheets flush failed — rows queued for next run",
-                exc_info=True,
-                extra={"error": str(exc)},
-            )
-            alert.send_alert(f"⚠️ Sheets flush failed — {exc}")
-
 
 if __name__ == "__main__":
     _parser = argparse.ArgumentParser(description="OrganistBot scheduler")
@@ -597,39 +578,16 @@ if __name__ == "__main__":
         extra={"poll_minutes": settings.poll_minutes, "dry_run": _dry_run},
     )
     if _dry_run:
-        logger.info("DRY-RUN mode active — no emails, no state writes, no Sheets drain")
+        logger.info("DRY-RUN mode active — no emails, no state writes")
     else:
         alert.send_alert(f"🔄 Scheduler started (polling every {settings.poll_minutes} min)")
         warn_if_gmail_monitoring_unconfigured()
 
-    # ── Google Sheets logger (optional) ───────────────────────────────────────
-    sheets_logger: SheetsLogger | None = None
-    if settings.google_sheets_id:
-        creds_file = (
-            settings.google_sheets_credentials_file or settings.google_calendar_credentials_file
-        )
-        if creds_file:
-            try:
-                sheets_logger = SheetsLogger(
-                    spreadsheet_id=settings.google_sheets_id,
-                    credentials_file=creds_file,
-                )
-                logging.getLogger().addHandler(sheets_logger)
-            except Exception:
-                logger.warning("SheetsLogger init failed — Sheets logging disabled")
-        else:
-            logger.info(
-                "SheetsLogger disabled — no credentials file configured "
-                "(set GOOGLE_SHEETS_CREDENTIALS_FILE or GOOGLE_CALENDAR_CREDENTIALS_FILE)"
-            )
-
     scraper = Scraper()
     try:
-        main(
-            scraper, sheets_logger, dry_run=_dry_run
-        )  # run immediately on startup, then on schedule
+        main(scraper, dry_run=_dry_run)  # run immediately on startup, then on schedule
         current_poll = runtime_config.get("poll_minutes", settings.poll_minutes)
-        job = schedule.every(current_poll).minutes.do(main, scraper, sheets_logger, _dry_run)
+        job = schedule.every(current_poll).minutes.do(main, scraper, _dry_run)
 
         _tick = 0
         while True:
@@ -644,9 +602,7 @@ if __name__ == "__main__":
                 desired_poll = runtime_config.get("poll_minutes", settings.poll_minutes)
                 if desired_poll != current_poll:
                     schedule.cancel_job(job)
-                    job = schedule.every(desired_poll).minutes.do(
-                        main, scraper, sheets_logger, _dry_run
-                    )
+                    job = schedule.every(desired_poll).minutes.do(main, scraper, _dry_run)
                     current_poll = desired_poll
                     logger.info(
                         "Poll interval updated",

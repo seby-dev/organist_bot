@@ -96,25 +96,6 @@ class TestDryRunNoWrites:
 
         MockNotifier.assert_not_called()
 
-    def test_dry_run_does_not_drain_sheets(self):
-        """sheets_logger.drain must NOT be called in dry-run mode."""
-        scraper = _make_scraper_with_gig()
-        mock_sheets = MagicMock()
-        with (
-            patch("main.settings", _make_settings()),
-            patch("main.load_seen_gigs", return_value=set()),
-            patch("main.load_listings_hash", return_value="old"),
-            patch("main.save_listings_hash"),
-            patch("main.save_seen_gigs"),
-            patch("main.set_run_id"),
-            patch("main.filter_store"),
-            patch("main.Notifier"),
-            patch("main.SMTPTransport"),
-        ):
-            main_module.main(scraper, sheets_logger=mock_sheets, dry_run=True)
-
-        mock_sheets.drain.assert_not_called()
-
 
 class TestDryRunLogs:
     def test_dry_run_logs_banner(self, caplog):

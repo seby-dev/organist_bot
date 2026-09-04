@@ -28,7 +28,7 @@ def _silence_telegram_alerts(monkeypatch):
 
     Many error-path tests deliberately exercise corrupt-data / API-failure code
     paths that call ``alert.send_alert(...)`` (e.g. atomic_store corrupt-read,
-    SheetsLogger batch-append failure, CalendarFilter/PostcodeFilter API errors).
+    CalendarFilter/PostcodeFilter API errors).
     With a real ``TELEGRAM_BOT_TOKEN`` in the dev ``.env`` those calls POST to the
     live chat on every run — and the edit-triggered test hook turns that into a
     flood during development.

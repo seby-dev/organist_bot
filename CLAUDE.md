@@ -87,26 +87,23 @@ The project has two long-running processes that share the `organist_bot` package
 
 Polls `organistsonline.org` every `POLL_MINUTES` and runs a 3-phase pipeline per tick. A `fcntl` exclusive lock on `/tmp/organistbot_scheduler.lock` prevents overlapping ticks (e.g. after an auto-deploy restart).
 
-**Short-circuit**: each tick first hashes the listings HTML and compares it against `data/listings_hash.txt`. If unchanged, the run skips the rest of the pipeline (Sheets buffer drains on the next changed run, so skipped ticks have a slight timestamp lag).
+**Short-circuit**: each tick first hashes the listings HTML and compares it against `data/listings_hash.txt`. If unchanged, the run skips the rest of the pipeline.
 
 1. **Scrape** (`scraper.py`) — fetches the listings page, extracts basic fields, then fetches each detail page for gigs that survive the pre-filter. The pre-filter (Phase 1) deliberately includes `SeenFilter` and `CalendarFilter` to avoid the detail-page HTTP fetch for gigs that would be rejected anyway.
-2. **Filter** (`filters.py`) — applies the full `GigFilterChain` on detail-enriched `Gig` objects (Phase 2). Per-filter rejection counts are logged structured to Sheets.
+2. **Filter** (`filters.py`) — applies the full `GigFilterChain` on detail-enriched `Gig` objects (Phase 2). Per-filter rejection counts are logged.
 3. **Notify** (`notifier.py`) — sends an email summary via SMTP and auto-applies to each gig via a Jinja2 template. Each application is recorded in `data/applications.json` via `application_store.record_application`. Seen gigs are then persisted to `data/seen_gigs.csv`.
 
 **Post-pipeline steps** (run every tick, even when no new gigs):
 - `application_store.expire_past_applied()` — flips `applied` rows whose gig date is in the past to `no_response`.
 - `reply_monitor.check_replies()` — polls Gmail for replies to active applications and classifies each with Claude Haiku (`accepted` / `rejected` / `cancellation` / `unclear`). On `accepted` it upserts the application as accepted, creates a Google Calendar event, and pings Telegram.
 
-Finally, `SheetsLogger` (a buffering `logging.Handler` subclass) drains its in-memory record buffer into the Google Sheet in one batch. It rotates to a new `Logs N` tab when the active tab nears Sheets' per-sheet cell limit, and — since Sheets also enforces a hard 10M-cell-per-workbook cap — prunes (deletes) any `Logs N` tab whose newest row is older than `_RETENTION_DAYS` (60 days) each time it rotates, so historical tabs don't accumulate forever.
-
 ### `telegram_bot.py` — Unified Telegram bot
 
-A single python-telegram-bot polling bot, gated by `TELEGRAM_CHAT_ID`. **Every free-text message is forwarded to `unified_agent.process_message`** (`integrations/unified_agent.py`) — a multi-domain Claude Sonnet 4.6 agent with ~27 tools spanning:
+A single python-telegram-bot polling bot, gated by `TELEGRAM_CHAT_ID`. **Every free-text message is forwarded to `unified_agent.process_message`** (`integrations/unified_agent.py`) — a multi-domain Claude Sonnet 4.6 agent with ~33 tools spanning:
 - **Gig calendar** — `add_gig` (from URL or fields), `list_upcoming_gigs`, `manage_competing_gigs`
 - **Invoicing** — `generate_invoice`, `email_invoice`, `list_clients`, `list_invoices`
 - **Filter management** — `manage_blacklist`, `manage_unavailable`, `manage_available` (writes to `filter_store`), `manage_filter_suspensions` (writes to `filter_suspension_store`)
 - **Runtime config** — `manage_config` (writes to `runtime_config_store`: `min_fee`, `max_travel_minutes`, `poll_minutes`)
-- **Pipeline observability** — `get_gig_stats` (queries Sheets via `SheetsLogger.query_run_stats`)
 - **Applications & income** — `manage_applications`, `get_income_forecast` (reads from `application_store`)
 
 Per-chat history, last-invoice context, and last-gig-listing context live in process memory keyed by `chat_id`. The reference-context fields (last invoice / gig-listing / application-listing — but **not** history) are also persisted to `data/agent_state.json` via `integrations/agent_state.py`: `process_message` lazily hydrates a chat's context on its first message (so it survives a bot restart) and saves it after each turn. On startup the bot calls `sync_calendar_blocks` (mirrors `filter_store.unavailable_periods()` into Google Calendar) and fires `alert.send_alert("🤖 Telegram bot started")`. The old 7-step `ConversationHandler` and the separate `invoice_agent.py` no longer exist — all interactions go through the unified agent.
@@ -130,10 +127,9 @@ Per-chat history, last-invoice context, and last-gig-listing context live in pro
 ### `organist_bot/integrations/`
 
 - `calendar_client.py` — `GoogleCalendarClient` (service account; `has_event_on_date`, `add_gig`, `block_period`, `unblock_period`)
-- `sheets_logger.py` — buffering `logging.Handler` + `query_run_stats` for the dashboard
 - `gmail_client.py` — OAuth2 Gmail read-only; refreshes token + atomic write with `0o600`
 - `telegram_bot.py` — the bot module the entry point delegates to
-- `unified_agent.py` — Claude SDK agentic loop, ~27 tools, per-chat state
+- `unified_agent.py` — Claude SDK agentic loop, ~33 tools, per-chat state
 - `invoice_generator.py` — Playwright headless Chromium → PDF from Jinja2 `invoice.html`
 - `email_sender.py` — SMTP invoice email sender
 
@@ -147,7 +143,6 @@ Optional sections in `.env`:
 - **Scraper** — `MIN_FEE` (default 100), `NEGOTIABLE_FEE` (default 120; proposed fee for NEG-flagged gigs), `POLL_MINUTES` (default 2), `TARGET_URL`, applicant fields (`APPLICANT_NAME`, `APPLICANT_MOBILE`, `APPLICANT_VIDEO_1/2`)
 - **Postcode / distance** — `HOME_POSTCODE`, `GOOGLE_MAPS_API_KEY`, `MAX_TRAVEL_MINUTES` (default 45)
 - **Google Calendar** — `GOOGLE_CALENDAR_ID`, `GOOGLE_CALENDAR_CREDENTIALS_FILE`
-- **Google Sheets** — `GOOGLE_SHEETS_ID`, `GOOGLE_SHEETS_CREDENTIALS_FILE` (falls back to the calendar creds file)
 - **Telegram** — `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`
 - **Gmail reply monitor** — `GMAIL_CREDENTIALS_FILE`, `GMAIL_TOKEN_FILE` (default `data/gmail_token.json`); run `scripts/setup_gmail_auth.py` once to mint the token
 - **Anthropic** — `ANTHROPIC_API_KEY`
@@ -195,7 +190,7 @@ The user approves/edits/rejects via Telegram chat (unified-agent tools, two-step
 
 Past-date `neg_pending` rows auto-flip to `expired` via `expire_past_applied`. `ENABLE_NEG_DRAFTS=false` reverts to the old behavior (NEG gigs rejected by `FeeFilter`).
 
-Two intentional visibility caveats: (1) `neg_pending`/`rejected`/`expired` NEG rows have no `applied_at`, so they never appear in `manage_applications` summaries or analytics — only `list_neg_pending` shows drafts, and approved drafts become normal `applied` rows; (2) with NEG drafting active, `FeeFilter` disappears from the dashboard's `filter_breakdown` metric — the "Fee partition applied" log (normal/neg/dropped counts) replaces it.
+One intentional visibility caveat: `neg_pending`/`rejected`/`expired` NEG rows have no `applied_at`, so they never appear in `manage_applications` summaries or analytics — only `list_neg_pending` shows drafts, and approved drafts become normal `applied` rows.
 
 ### Filter suspensions
 
