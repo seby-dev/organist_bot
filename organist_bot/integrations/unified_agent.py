@@ -2218,9 +2218,16 @@ async def process_message(
     text: str,
     on_step: Callable[[str], Awaitable[None]] | None = None,
 ) -> list[AgentResponse]:
-    import anthropic
+    import litellm
 
-    client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
+    provider = runtime_config.get("llm_provider", _DEFAULT_PROVIDER)
+    if provider not in _PROVIDER_MODELS:
+        logger.warning("Unknown stored llm_provider %r, resetting to default", provider)
+        runtime_config.reset("llm_provider")
+        runtime_config.reset("llm_model")
+        provider = _DEFAULT_PROVIDER
+    model = runtime_config.get("llm_model", _default_model_string())
+    api_key = getattr(settings, _PROVIDER_API_KEY_FIELD[provider])
 
     _hydrate_chat(chat_id)
 
@@ -2233,47 +2240,51 @@ async def process_message(
     steps: list[str] = []
 
     while True:
-        response = await client.messages.create(
-            model="claude-sonnet-4-6",
+        response = await litellm.acompletion(
+            model=model,
             max_tokens=4096,
-            system=SYSTEM_PROMPT,
-            tools=TOOLS,  # type: ignore[arg-type]
-            messages=_histories[chat_id],  # type: ignore[arg-type]
+            api_key=api_key,
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                *_histories[chat_id],
+            ],
+            tools=TOOLS,
         )
 
-        _histories[chat_id].append({"role": "assistant", "content": response.content})
+        msg = response.choices[0].message
+        # NOT exclude_none=True — see Global Constraints. A tool-call turn has
+        # content: None alongside tool_calls; dropping that key entirely (rather
+        # than keeping it as an explicit null) breaks the Anthropic backend on the
+        # NEXT turn, since LiteLLM's Anthropic translation requires `content` to be
+        # present on every message.
+        _histories[chat_id].append(msg.model_dump())
 
-        if response.stop_reason == "end_turn":
-            for block in response.content:
-                if hasattr(block, "text"):
-                    responses.append(AgentResponse(text=block.text))
-            break
-
-        if response.stop_reason != "tool_use":
-            responses.append(AgentResponse(text="(response truncated — please try again)"))
+        if not msg.tool_calls:
+            if msg.content:
+                responses.append(AgentResponse(text=msg.content))
             break
 
         tool_results = []
-        for block in response.content:
-            if block.type != "tool_use":
-                continue
-            logger.info("Unified agent tool call: %s(%s)", block.name, json.dumps(block.input))
+        for tc in msg.tool_calls:
+            name = tc.function.name
+            args = json.loads(tc.function.arguments)
+            logger.info("Unified agent tool call: %s(%s)", name, json.dumps(args))
 
-            steps.append(f"🔧 {block.name}")
+            steps.append(f"🔧 {name}")
             if on_step is not None:
                 await on_step("\n".join(steps))
 
             try:
-                result = await _execute_tool(block.name, block.input, chat_id)
+                result = await _execute_tool(name, args, chat_id)
             except Exception as e:
                 logger.error("Tool execution failed: %s", e)
                 result = json.dumps({"error": str(e)})
 
-            steps[-1] = f"✅ {block.name}"
+            steps[-1] = f"✅ {name}"
             if on_step is not None:
                 await on_step("\n".join(steps))
 
-            if block.name in _VERBATIM_RESPONSE_TOOLS:
+            if name in _VERBATIM_RESPONSE_TOOLS:
                 try:
                     data = json.loads(result)
                     if "result" in data:
@@ -2286,9 +2297,11 @@ async def process_message(
                 except (json.JSONDecodeError, KeyError):
                     pass
 
-            tool_results.append({"type": "tool_result", "tool_use_id": block.id, "content": result})
+            tool_results.append(
+                {"role": "tool", "tool_call_id": tc.id, "name": name, "content": result}
+            )
 
-            if block.name in _PDF_RESPONSE_TOOLS and chat_id in _last_invoice:
+            if name in _PDF_RESPONSE_TOOLS and chat_id in _last_invoice:
                 pdf_path = _last_invoice[chat_id].get("pdf_path")
                 if pdf_path:
                     inv_num = _last_invoice[chat_id].get("invoice_number", "")
@@ -2302,7 +2315,7 @@ async def process_message(
             )
             break
 
-        _histories[chat_id].append({"role": "user", "content": tool_results})
+        _histories[chat_id].extend(tool_results)
 
     _trim_history(chat_id)
     _persist_chat(chat_id)

@@ -2,6 +2,7 @@
 
 import datetime
 import json
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -2534,6 +2535,40 @@ def test_every_tool_uses_openai_function_calling_shape():
         assert "name" not in tool  # top-level — only under "function"
 
 
+def _fake_tool_call(call_id: str, name: str, arguments: dict) -> SimpleNamespace:
+    return SimpleNamespace(
+        id=call_id,
+        function=SimpleNamespace(name=name, arguments=json.dumps(arguments)),
+    )
+
+
+def _fake_litellm_response(
+    content: str | None = None, tool_calls: list | None = None
+) -> SimpleNamespace:
+    dumped = {
+        "role": "assistant",
+        "content": content,
+        "tool_calls": (
+            [
+                {
+                    "id": tc.id,
+                    "type": "function",
+                    "function": {"name": tc.function.name, "arguments": tc.function.arguments},
+                }
+                for tc in tool_calls
+            ]
+            if tool_calls
+            else None
+        ),
+    }
+    # Intentionally takes NO kwargs: if process_message() ever calls
+    # msg.model_dump(exclude_none=True), this raises TypeError instead of silently
+    # dropping the `content: None` key — pinning the history round-trip bug fixed
+    # during spec review (see Global Constraints in the plan/spec).
+    message = SimpleNamespace(content=content, tool_calls=tool_calls, model_dump=lambda: dumped)
+    return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+
+
 # ── process_message on_step progress reporting ──────────────────────────────
 
 
@@ -2541,8 +2576,7 @@ def test_every_tool_uses_openai_function_calling_shape():
 async def test_process_message_reports_on_step_progress(tmp_path, monkeypatch):
     """process_message must report a 🔧 step when a tool call starts and flip
     it to ✅ once the tool call returns, via the on_step callback."""
-    import sys
-    from types import SimpleNamespace
+    import litellm
 
     from organist_bot.integrations import agent_state, unified_agent
 
@@ -2550,22 +2584,14 @@ async def test_process_message_reports_on_step_progress(tmp_path, monkeypatch):
     cid = 314159
     unified_agent._hydrated.discard(cid)
 
-    tool_use_block = SimpleNamespace(
-        type="tool_use",
-        name="add_gig",
-        input={"url": "https://example.com/gig/1"},
-        id="tool_1",
+    tool_use_response = _fake_litellm_response(
+        tool_calls=[_fake_tool_call("tool_1", "add_gig", {"url": "https://example.com/gig/1"})]
     )
-    tool_use_response = SimpleNamespace(content=[tool_use_block], stop_reason="tool_use")
+    end_turn_response = _fake_litellm_response(content="Added the gig.")
 
-    text_block = SimpleNamespace(type="text", text="Added the gig.")
-    end_turn_response = SimpleNamespace(content=[text_block], stop_reason="end_turn")
-
-    fake_client = MagicMock()
-    fake_client.messages.create = AsyncMock(side_effect=[tool_use_response, end_turn_response])
-    fake_anthropic_module = SimpleNamespace(AsyncAnthropic=MagicMock(return_value=fake_client))
-    monkeypatch.setitem(sys.modules, "anthropic", fake_anthropic_module)
-
+    monkeypatch.setattr(
+        litellm, "acompletion", AsyncMock(side_effect=[tool_use_response, end_turn_response])
+    )
     monkeypatch.setattr(
         unified_agent, "_execute_tool", AsyncMock(return_value=json.dumps({"result": "ok"}))
     )
@@ -2577,6 +2603,16 @@ async def test_process_message_reports_on_step_progress(tmp_path, monkeypatch):
 
     try:
         responses = await unified_agent.process_message(cid, "add this gig", on_step=on_step)
+        # Confirms the history round-trip: the assistant's tool-call turn keeps an
+        # explicit content: None (not a dropped key), and the tool result landed as
+        # a flat role="tool" message — both required for the Anthropic backend to
+        # accept the next turn.
+        history = unified_agent._histories[cid]
+        assistant_turn = next(m for m in history if m["role"] == "assistant")
+        assert assistant_turn["content"] is None
+        assert "tool_calls" in assistant_turn
+        tool_turn = next(m for m in history if m["role"] == "tool")
+        assert tool_turn["tool_call_id"] == "tool_1"
     finally:
         unified_agent._histories.pop(cid, None)
         unified_agent._hydrated.discard(cid)
@@ -2588,8 +2624,7 @@ async def test_process_message_reports_on_step_progress(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_process_message_without_on_step_is_unaffected(tmp_path, monkeypatch):
     """Omitting on_step (the default) must not change existing behavior."""
-    import sys
-    from types import SimpleNamespace
+    import litellm
 
     from organist_bot.integrations import agent_state, unified_agent
 
@@ -2597,13 +2632,8 @@ async def test_process_message_without_on_step_is_unaffected(tmp_path, monkeypat
     cid = 271828
     unified_agent._hydrated.discard(cid)
 
-    text_block = SimpleNamespace(type="text", text="All set.")
-    end_turn_response = SimpleNamespace(content=[text_block], stop_reason="end_turn")
-
-    fake_client = MagicMock()
-    fake_client.messages.create = AsyncMock(return_value=end_turn_response)
-    fake_anthropic_module = SimpleNamespace(AsyncAnthropic=MagicMock(return_value=fake_client))
-    monkeypatch.setitem(sys.modules, "anthropic", fake_anthropic_module)
+    end_turn_response = _fake_litellm_response(content="All set.")
+    monkeypatch.setattr(litellm, "acompletion", AsyncMock(return_value=end_turn_response))
 
     try:
         responses = await unified_agent.process_message(cid, "hello")
@@ -2619,8 +2649,7 @@ async def test_process_message_without_on_step_is_unaffected(tmp_path, monkeypat
 
 @pytest.mark.asyncio
 async def test_process_message_passes_through_tool_buttons(tmp_path, monkeypatch):
-    import sys
-    from types import SimpleNamespace
+    import litellm
 
     from organist_bot.integrations import agent_state, unified_agent
 
@@ -2628,17 +2657,14 @@ async def test_process_message_passes_through_tool_buttons(tmp_path, monkeypatch
     cid = 424242
     unified_agent._hydrated.discard(cid)
 
-    tool_use_block = SimpleNamespace(
-        type="tool_use", name="approve_neg_application", input={"gig_id": "abc123"}, id="t1"
+    tool_use_response = _fake_litellm_response(
+        tool_calls=[_fake_tool_call("t1", "approve_neg_application", {"gig_id": "abc123"})]
     )
-    tool_use_response = SimpleNamespace(content=[tool_use_block], stop_reason="tool_use")
-    text_block = SimpleNamespace(type="text", text="ok")
-    end_turn_response = SimpleNamespace(content=[text_block], stop_reason="end_turn")
+    end_turn_response = _fake_litellm_response(content="ok")
 
-    fake_client = MagicMock()
-    fake_client.messages.create = AsyncMock(side_effect=[tool_use_response, end_turn_response])
-    fake_anthropic_module = SimpleNamespace(AsyncAnthropic=MagicMock(return_value=fake_client))
-    monkeypatch.setitem(sys.modules, "anthropic", fake_anthropic_module)
+    monkeypatch.setattr(
+        litellm, "acompletion", AsyncMock(side_effect=[tool_use_response, end_turn_response])
+    )
 
     buttons = [[{"text": "Confirm", "callback_data": "neg:confirm_send:abc123"}]]
     monkeypatch.setattr(
@@ -2658,8 +2684,7 @@ async def test_process_message_passes_through_tool_buttons(tmp_path, monkeypatch
 
 @pytest.mark.asyncio
 async def test_process_message_stashes_instruction_on_needs_pick(tmp_path, monkeypatch):
-    import sys
-    from types import SimpleNamespace
+    import litellm
 
     from organist_bot.integrations import agent_state, unified_agent
 
@@ -2668,17 +2693,14 @@ async def test_process_message_stashes_instruction_on_needs_pick(tmp_path, monke
     unified_agent._hydrated.discard(cid)
     unified_agent._pending_neg_instruction.pop(cid, None)
 
-    tool_use_block = SimpleNamespace(
-        type="tool_use", name="approve_neg_application", input={}, id="t1"
+    tool_use_response = _fake_litellm_response(
+        tool_calls=[_fake_tool_call("t1", "approve_neg_application", {})]
     )
-    tool_use_response = SimpleNamespace(content=[tool_use_block], stop_reason="tool_use")
-    text_block = SimpleNamespace(type="text", text="ok")
-    end_turn_response = SimpleNamespace(content=[text_block], stop_reason="end_turn")
+    end_turn_response = _fake_litellm_response(content="ok")
 
-    fake_client = MagicMock()
-    fake_client.messages.create = AsyncMock(side_effect=[tool_use_response, end_turn_response])
-    fake_anthropic_module = SimpleNamespace(AsyncAnthropic=MagicMock(return_value=fake_client))
-    monkeypatch.setitem(sys.modules, "anthropic", fake_anthropic_module)
+    monkeypatch.setattr(
+        litellm, "acompletion", AsyncMock(side_effect=[tool_use_response, end_turn_response])
+    )
 
     picker_buttons = [[{"text": "A", "callback_data": "neg:pick:aaa"}]]
     monkeypatch.setattr(
