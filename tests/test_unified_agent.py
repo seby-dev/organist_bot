@@ -2244,17 +2244,23 @@ class TestNegActiveDraftState:
 
 
 def _turn_with_tool_call(n: int) -> list[dict]:
-    """One user(str) turn followed by an assistant tool_use + user(list) tool_result pair."""
+    """One user(str) turn followed by an assistant tool_calls turn and a flat
+    role="tool" result message — the shape litellm.acompletion's response actually
+    produces (see process_message() in unified_agent.py)."""
     return [
         {"role": "user", "content": f"do thing {n}"},
         {
             "role": "assistant",
-            "content": [{"type": "tool_use", "id": f"tool_{n}", "name": "noop", "input": {}}],
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": f"tool_{n}",
+                    "type": "function",
+                    "function": {"name": "noop", "arguments": "{}"},
+                }
+            ],
         },
-        {
-            "role": "user",
-            "content": [{"type": "tool_result", "tool_use_id": f"tool_{n}", "content": "ok"}],
-        },
+        {"role": "tool", "tool_call_id": f"tool_{n}", "name": "noop", "content": "ok"},
     ]
 
 
@@ -2285,18 +2291,16 @@ class TestTrimHistory:
         # Must start on a real user-text turn, never inside a tool_use/tool_result pair.
         assert trimmed[0]["role"] == "user"
         assert isinstance(trimmed[0]["content"], str)
-        # No tool_use block should be left without its matching tool_result.
-        pending_tool_use_ids: set[str] = set()
+        # No assistant tool_calls entry should be left without its matching
+        # role="tool" result message.
+        pending_tool_call_ids: set[str] = set()
         for msg in trimmed:
-            content = msg["content"]
-            if not isinstance(content, list):
-                continue
-            for block in content:
-                if block.get("type") == "tool_use":
-                    pending_tool_use_ids.add(block["id"])
-                elif block.get("type") == "tool_result":
-                    pending_tool_use_ids.discard(block["tool_use_id"])
-        assert pending_tool_use_ids == set()
+            if msg["role"] == "assistant" and msg.get("tool_calls"):
+                for tc in msg["tool_calls"]:
+                    pending_tool_call_ids.add(tc["id"])
+            elif msg["role"] == "tool":
+                pending_tool_call_ids.discard(msg["tool_call_id"])
+        assert pending_tool_call_ids == set()
 
     def test_missing_chat_id_is_a_noop(self):
         unified_agent._trim_history(self.CHAT_ID)  # no entry for this chat_id at all
