@@ -63,6 +63,9 @@ class GmailClient:
                     creds.refresh(Request())
                     _write_token_secure(token_path, creds.to_json())
                 except Exception as exc:
+                    # False positive: this logs the exception object, not a credential — the
+                    # message text merely mentions "token" in the word "refresh failed".
+                    # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
                     logger.warning("Gmail: token refresh failed: %s", exc)
                     raise
             else:
