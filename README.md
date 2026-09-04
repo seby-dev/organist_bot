@@ -24,7 +24,7 @@ A personal automation bot that scrapes organ gig listings from [organistsonline.
   - Google Maps Distance Matrix API enabled
   - A service account with a JSON key file (`credentials.json`)
 - A Telegram bot token from [@BotFather](https://t.me/botfather)
-- An [Anthropic API key](https://console.anthropic.com/) for the invoice AI agent
+- An [Anthropic API key](https://console.anthropic.com/) for the default LLM provider (Claude) used by the Telegram agent
 
 ---
 

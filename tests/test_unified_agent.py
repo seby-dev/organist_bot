@@ -2648,6 +2648,38 @@ async def test_process_message_without_on_step_is_unaffected(tmp_path, monkeypat
     assert responses == [unified_agent.AgentResponse(text="All set.")]
 
 
+@pytest.mark.asyncio
+async def test_process_message_stale_provider_resets_to_default(tmp_path, monkeypatch):
+    """A stale/invalid llm_provider in runtime_config must reset to the default
+    instead of crashing — the guard at the top of process_message() handles this."""
+    import litellm
+
+    from organist_bot.integrations import agent_state, unified_agent
+    from organist_bot.runtime_config_store import runtime_config
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(agent_state, "_PATH", tmp_path / "agent_state.json")
+    cid = 161803
+    unified_agent._hydrated.discard(cid)
+
+    # Plant a provider name that is not in _PROVIDER_MODELS.
+    runtime_config.set("llm_provider", "cohere")
+
+    end_turn_response = _fake_litellm_response(content="ok")
+    monkeypatch.setattr(litellm, "acompletion", AsyncMock(return_value=end_turn_response))
+
+    try:
+        responses = await unified_agent.process_message(cid, "hello")
+    finally:
+        unified_agent._histories.pop(cid, None)
+        unified_agent._hydrated.discard(cid)
+        runtime_config.reset("llm_provider")
+        runtime_config.reset("llm_model")
+
+    assert responses == [unified_agent.AgentResponse(text="ok")]
+    assert runtime_config.get("llm_provider", "anthropic") == "anthropic"
+
+
 # ── process_message NEG buttons/picker plumbing ─────────────────────────────
 
 
