@@ -109,9 +109,12 @@ Change it to:
 
 - [ ] **Step 4: Write a test confirming the fields exist with the right defaults**
 
-Add this to `tests/test_unified_agent.py` (top-level, not inside a class — place it
-right after the existing top-level `test_agent_response_buttons_defaults_to_none`
-function so config-adjacent smoke tests live together):
+Add this to the very end of `tests/test_unified_agent.py` (top-level, not inside a
+class — append it as the last thing in the file, after
+`test_process_message_stashes_instruction_on_needs_pick`). Deliberately not placed near
+`test_agent_response_buttons_defaults_to_none` — Task 3 inserts its own new test at that
+exact spot, and Tasks 1 and 3 run in parallel against the same file, so they must not
+target the same insertion point:
 
 ```python
 def test_settings_has_openai_and_gemini_api_key_fields():
@@ -406,8 +409,7 @@ Leave every entry inside the list (all ~33 of them, down to the closing `]` at w
 currently line 677) completely untouched — same `"name"`/`"description"`/`"input_schema"`
 keys, same content, same comments, same order.
 
-Then, immediately after the closing `]` of that list (i.e. right before the blank lines
-leading into `_TOOL_HANDLERS: dict[...] = {}`), add:
+Then, immediately after the closing `]` of that list, add:
 
 ```python
 def _to_function_tool(tool: dict) -> dict:
@@ -747,11 +749,26 @@ _VERBATIM_RESPONSE_TOOLS = {
 
 - [ ] **Step 6: Add the handler**
 
-In `organist_bot/integrations/unified_agent.py`, immediately after `_handle_manage_config`'s
-closing (i.e. right after the line `return json.dumps({"error": f"Unknown action: {action}"})`
-that ends that function, right before `async def process_message(`), add:
+In `organist_bot/integrations/unified_agent.py`, `_handle_manage_config` is immediately
+followed by `async def process_message(`. The exact string
+`return json.dumps({"error": f"Unknown action: {action}"})` is **not unique** in this
+file — it appears 6 times (it's `manage_config`'s own generic fallback, reused
+verbatim by several other action-based handlers) — so anchor the edit on the full
+boundary between the two functions instead. Find:
 
 ```python
+    return json.dumps({"error": f"Unknown action: {action}"})
+
+
+async def process_message(
+```
+
+Replace it with the same three lines plus the new handler inserted between them:
+
+```python
+    return json.dumps({"error": f"Unknown action: {action}"})
+
+
 @_handler("manage_llm_provider")
 async def _handle_manage_llm_provider(input_data: dict, chat_id: int) -> str:
     action = input_data.get("action", "")
@@ -804,7 +821,13 @@ async def _handle_manage_llm_provider(input_data: dict, chat_id: int) -> str:
     return json.dumps({"error": f"Unknown action: {action}"})
 
 
+async def process_message(
 ```
+
+(That last `async def process_message(` line is the same line the `old_string` ended
+on — restoring it, unmodified, is what keeps this an insertion rather than a deletion.
+Task 5 replaces the *body* of `process_message` later; this step only touches what comes
+immediately before it.)
 
 - [ ] **Step 7: Add the system-prompt section**
 
