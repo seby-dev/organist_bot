@@ -2322,6 +2322,114 @@ class TestNegConfirmButtons:
         ]
 
 
+class TestManageLlmProvider:
+    def teardown_method(self):
+        from organist_bot.runtime_config_store import runtime_config
+
+        runtime_config.reset("llm_provider")
+        runtime_config.reset("llm_model")
+
+    async def test_get_returns_default_before_any_switch(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        result = await _execute_tool("manage_llm_provider", {"action": "get"}, CHAT_ID)
+        data = json.loads(result)
+        assert "anthropic" in data["result"]
+        assert "claude-sonnet-4-6" in data["result"]
+
+    async def test_set_missing_provider_returns_error(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        result = await _execute_tool("manage_llm_provider", {"action": "set"}, CHAT_ID)
+        data = json.loads(result)
+        assert "provider is required" in data["result"].lower()
+
+    async def test_set_unknown_provider_returns_error(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        result = await _execute_tool(
+            "manage_llm_provider", {"action": "set", "provider": "cohere"}, CHAT_ID
+        )
+        data = json.loads(result)
+        assert "unknown provider" in data["result"].lower()
+
+    async def test_set_without_configured_key_refuses(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(unified_agent.settings, "openai_api_key", "")
+        result = await _execute_tool(
+            "manage_llm_provider", {"action": "set", "provider": "openai"}, CHAT_ID
+        )
+        data = json.loads(result)
+        assert "openai_api_key" in data["result"]
+        from organist_bot.runtime_config_store import runtime_config
+
+        assert runtime_config.get("llm_provider", "anthropic") == "anthropic"
+
+    async def test_set_without_model_lists_options_and_does_not_switch(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(unified_agent.settings, "openai_api_key", "sk-test")
+        result = await _execute_tool(
+            "manage_llm_provider", {"action": "set", "provider": "openai"}, CHAT_ID
+        )
+        data = json.loads(result)
+        assert "gpt-6-astra" in data["result"]
+        assert "gpt-5.6-luna" in data["result"]
+        from organist_bot.runtime_config_store import runtime_config
+
+        assert runtime_config.get("llm_provider", "anthropic") == "anthropic"
+
+    async def test_set_unknown_model_returns_error(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(unified_agent.settings, "openai_api_key", "sk-test")
+        result = await _execute_tool(
+            "manage_llm_provider",
+            {"action": "set", "provider": "openai", "model": "gpt-9-fictional"},
+            CHAT_ID,
+        )
+        data = json.loads(result)
+        assert "unknown model" in data["result"].lower()
+
+    async def test_set_with_valid_provider_and_model_switches(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(unified_agent.settings, "openai_api_key", "sk-test")
+        result = await _execute_tool(
+            "manage_llm_provider",
+            {"action": "set", "provider": "openai", "model": "gpt-5.6-luna"},
+            CHAT_ID,
+        )
+        data = json.loads(result)
+        assert "switched" in data["result"].lower()
+        from organist_bot.runtime_config_store import runtime_config
+
+        assert runtime_config.get("llm_provider", "") == "openai"
+        assert runtime_config.get("llm_model", "") == "openai/gpt-5.6-luna"
+
+    async def test_get_reflects_switch(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(unified_agent.settings, "openai_api_key", "sk-test")
+        await _execute_tool(
+            "manage_llm_provider",
+            {"action": "set", "provider": "openai", "model": "gpt-5.6-luna"},
+            CHAT_ID,
+        )
+        result = await _execute_tool("manage_llm_provider", {"action": "get"}, CHAT_ID)
+        data = json.loads(result)
+        assert "openai" in data["result"]
+        assert "gpt-5.6-luna" in data["result"] or "openai/gpt-5.6-luna" in data["result"]
+
+    async def test_reset_restores_default(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(unified_agent.settings, "openai_api_key", "sk-test")
+        await _execute_tool(
+            "manage_llm_provider",
+            {"action": "set", "provider": "openai", "model": "gpt-5.6-luna"},
+            CHAT_ID,
+        )
+        result = await _execute_tool("manage_llm_provider", {"action": "reset"}, CHAT_ID)
+        data = json.loads(result)
+        assert "reset" in data["result"].lower() or "default" in data["result"].lower()
+        from organist_bot.runtime_config_store import runtime_config
+
+        assert runtime_config.get("llm_provider", "anthropic") == "anthropic"
+
+
 class TestNegDeterministicActions:
     async def test_neg_confirm_send_success(self, neg_store):
         gig_id = _seed_neg_pending()

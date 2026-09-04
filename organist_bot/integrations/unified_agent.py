@@ -43,6 +43,34 @@ from organist_bot.scraper import Scraper
 
 logger = logging.getLogger(__name__)
 
+_PROVIDER_MODELS: dict[str, dict[str, str]] = {
+    "anthropic": {
+        "sonnet": "anthropic/claude-sonnet-4-6",
+        "opus": "anthropic/claude-opus-4-6",
+        "haiku": "anthropic/claude-haiku-4-5-20251001",
+    },
+    "openai": {
+        "gpt-6-astra": "openai/gpt-6-astra",
+        "gpt-5.6-luna": "openai/gpt-5.6-luna",
+    },
+    "gemini": {
+        "gemini-pro": "gemini/gemini-3.1-pro-preview",
+        "gemini-3.8-flash": "gemini/gemini-3.8-flash",
+    },
+}
+_DEFAULT_PROVIDER = "anthropic"
+_DEFAULT_MODEL_KEY = "sonnet"
+_PROVIDER_API_KEY_FIELD = {
+    "anthropic": "anthropic_api_key",
+    "openai": "openai_api_key",
+    "gemini": "gemini_api_key",
+}
+
+
+def _default_model_string() -> str:
+    return _PROVIDER_MODELS[_DEFAULT_PROVIDER][_DEFAULT_MODEL_KEY]
+
+
 SYSTEM_PROMPT = """\
 You are an assistant for an organist. You handle three areas:
 
@@ -86,6 +114,10 @@ You are an assistant for an organist. You handle three areas:
 - "Set min fee to 150" → manage_config(action=set, key=min_fee, value=150).
 - "Reset min fee to default" → manage_config(action=reset, key=min_fee).
 - Editable keys: min_fee, max_travel_minutes, poll_minutes, negotiable_fee.
+
+## LLM provider
+- "Switch to GPT-6 Astra" / "use Gemini" / "what model are we using?" → manage_llm_provider.
+- If you say a provider without a model, I'll list that provider's options and ask which one.
 
 ## Application tracking
 - "What applications are pending?" / "show my applications" → manage_applications(action=list).
@@ -508,6 +540,40 @@ _TOOLS_SCHEMA: list[dict] = [
             "required": ["action"],
         },
     },
+    # ── LLM provider ─────────────────────────────────────────────────────────
+    {
+        "name": "manage_llm_provider",
+        "description": (
+            "Read or switch which LLM provider/model powers this conversation. "
+            "Providers: anthropic (sonnet/opus/haiku), openai (gpt-6-astra/gpt-5.6-luna), "
+            "gemini (gemini-pro/gemini-3.8-flash). "
+            "Use action='get' to show the current provider/model. "
+            "Use action='set' with 'provider' to switch — if 'model' is omitted, list "
+            "that provider's options and ask the user to pick one before calling set "
+            "again. Use action='reset' to restore the default (anthropic/sonnet). "
+            "Checks the provider's API key is configured before doing anything else — "
+            "refuses immediately (even before listing model options) if it isn't."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["get", "set", "reset"]},
+                "provider": {
+                    "type": "string",
+                    "enum": ["anthropic", "openai", "gemini"],
+                    "description": "Required for set.",
+                },
+                "model": {
+                    "type": "string",
+                    "description": (
+                        "One of that provider's curated model keys (e.g. 'sonnet', "
+                        "'gpt-5.6-luna'). Optional for set — omit to see the options."
+                    ),
+                },
+            },
+            "required": ["action"],
+        },
+    },
     # ── Application tracking ────────────────────────────────────────────────
     {
         "name": "manage_applications",
@@ -794,6 +860,7 @@ _PDF_RESPONSE_TOOLS = {"generate_invoice", "duplicate_invoice", "get_invoice"}
 _VERBATIM_RESPONSE_TOOLS = {
     "list_upcoming_gigs",
     "manage_config",
+    "manage_llm_provider",
     "manage_applications",
     "get_income_forecast",
     "get_application_analytics",
@@ -2094,6 +2161,54 @@ async def _handle_manage_config(input_data: dict, chat_id: int) -> str:
         if existed:
             return json.dumps({"result": f"{key} reset to default ({_DEFAULTS[key]})."})
         return json.dumps({"result": f"{key} was already using the default ({_DEFAULTS[key]})."})
+
+    return json.dumps({"error": f"Unknown action: {action}"})
+
+
+@_handler("manage_llm_provider")
+async def _handle_manage_llm_provider(input_data: dict, chat_id: int) -> str:
+    action = input_data.get("action", "")
+
+    if action == "get":
+        provider = runtime_config.get("llm_provider", _DEFAULT_PROVIDER)
+        model = runtime_config.get("llm_model", _default_model_string())
+        return json.dumps({"result": f"Current provider: {provider}\nCurrent model: {model}"})
+
+    if action == "set":
+        provider = input_data.get("provider", "")
+        if not provider:
+            return json.dumps({"result": "provider is required for action='set'."})
+        if provider not in _PROVIDER_MODELS:
+            valid = ", ".join(_PROVIDER_MODELS)
+            return json.dumps({"result": f"Unknown provider '{provider}'. Valid: {valid}."})
+
+        api_key_field = _PROVIDER_API_KEY_FIELD[provider]
+        if not getattr(settings, api_key_field):
+            return json.dumps(
+                {"result": f"Can't switch to {provider} — {api_key_field} isn't set."}
+            )
+
+        model_key = input_data.get("model", "")
+        provider_models = _PROVIDER_MODELS[provider]
+        if not model_key:
+            options = ", ".join(provider_models)
+            return json.dumps({"result": f"Which {provider} model? Options: {options}."})
+        if model_key not in provider_models:
+            valid = ", ".join(provider_models)
+            return json.dumps(
+                {"result": f"Unknown model '{model_key}' for {provider}. Valid: {valid}."}
+            )
+
+        runtime_config.set("llm_provider", provider)
+        runtime_config.set("llm_model", provider_models[model_key])
+        return json.dumps(
+            {"result": (f"Switched to {provider}/{model_key}. Takes effect on your next message.")}
+        )
+
+    if action == "reset":
+        runtime_config.reset("llm_provider")
+        runtime_config.reset("llm_model")
+        return json.dumps({"result": "Reset to default (anthropic/sonnet)."})
 
     return json.dumps({"error": f"Unknown action: {action}"})
 
