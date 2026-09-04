@@ -128,7 +128,9 @@ class Notifier:
     def __init__(self, settings: Settings, transport: Transport) -> None:
         self._settings = settings
         self._transport = transport
-        self._env = Environment(
+        # Not a Flask app (render_template() doesn't apply); autoescape=select_autoescape(...)
+        # already provides the HTML-escaping this rule is checking for.
+        self._env = Environment(  # nosemgrep: python.flask.security.xss.audit.direct-use-of-jinja2.direct-use-of-jinja2
             loader=FileSystemLoader(TEMPLATES_DIR),
             autoescape=select_autoescape(["html", "j2"]),
         )
