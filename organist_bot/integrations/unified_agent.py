@@ -81,10 +81,6 @@ You are an assistant for an organist. You handle three areas:
 - "Resume the postcode filter" → manage_filter_suspensions(action=remove, filter=postcode, period=<period from the last list>).
 - The 'seen' filter cannot be suspended — if asked, explain that suspending it would just resend the same application every poll tick instead of exempting a category of gig.
 
-## Pipeline stats
-- "Show stats" / "how's the pipeline?" / "gig stats this week" → call get_gig_stats.
-- Accept an optional number of days: "stats for the last 30 days" → get_gig_stats(days=30).
-
 ## Runtime config
 - "What's the current config?" / "show config" → manage_config(action=get).
 - "Set min fee to 150" → manage_config(action=set, key=min_fee, value=150).
@@ -478,25 +474,6 @@ TOOLS: list[dict] = [
         "description": "Clear this chat's conversation history and all cached state.",
         "input_schema": {"type": "object", "properties": {}, "required": []},
     },
-    # ── Pipeline stats ──────────────────────────────────────────────────────
-    {
-        "name": "get_gig_stats",
-        "description": (
-            "Query the Google Sheets log and return pipeline stats. "
-            "Shows total runs, gigs listed/filtered/valid, filter rejection breakdown, "
-            "and the most recent run. Accepts optional 'days' parameter (default 7, max 90)."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "days": {
-                    "type": "integer",
-                    "description": "Number of days to look back (default 7, max 90).",
-                }
-            },
-            "required": [],
-        },
-    },
     # ── Runtime config ──────────────────────────────────────────────────────
     {
         "name": "manage_config",
@@ -799,7 +776,6 @@ def _handler(name: str) -> Callable[[Callable], Callable]:
 _PDF_RESPONSE_TOOLS = {"generate_invoice", "duplicate_invoice", "get_invoice"}
 _VERBATIM_RESPONSE_TOOLS = {
     "list_upcoming_gigs",
-    "get_gig_stats",
     "manage_config",
     "manage_applications",
     "get_income_forecast",
@@ -824,29 +800,6 @@ def sync_calendar_blocks(cal: GoogleCalendarClient) -> None:
         except Exception:
             logger.warning("sync_calendar_blocks: failed for %r", period, exc_info=True)
     logger.info("sync_calendar_blocks: synced %d period(s)", len(periods))
-
-
-def _make_sheets_logger():
-    """Return a SheetsLogger if Sheets is configured, else None."""
-    if not settings.google_sheets_id:
-        logger.debug("_make_sheets_logger: GOOGLE_SHEETS_ID not set")
-        return None
-    creds_file = (
-        settings.google_sheets_credentials_file or settings.google_calendar_credentials_file
-    )
-    if not creds_file:
-        logger.debug("_make_sheets_logger: no credentials file")
-        return None
-    try:
-        from organist_bot.integrations.sheets_logger import SheetsLogger
-
-        return SheetsLogger(
-            spreadsheet_id=settings.google_sheets_id,
-            credentials_file=creds_file,
-        )
-    except Exception as exc:
-        logger.warning("_make_sheets_logger: failed — %s", exc)
-        return None
 
 
 def _resolve_period(text: str) -> str:
@@ -2059,72 +2012,6 @@ async def _handle_reject_neg(input_data: dict, chat_id: int) -> str:
             "buttons": neg_confirm_buttons(gig_id, send=False),
         }
     )
-
-
-@_handler("get_gig_stats")
-async def _handle_get_gig_stats(input_data: dict, chat_id: int) -> str:
-    days = min(max(int(input_data.get("days", 7)), 1), 90)
-    sl = _make_sheets_logger()
-    if sl is None:
-        return json.dumps({"result": "Google Sheets is not configured (GOOGLE_SHEETS_ID missing)."})
-    try:
-        runs = sl.query_run_stats(days)
-    except Exception as exc:
-        return json.dumps({"result": f"Could not reach Google Sheets: {exc}"})
-
-    if not runs:
-        return json.dumps({"result": f"No pipeline runs logged in the last {days} days."})
-
-    total_runs = len(runs)
-    total_listed = sum(r.get("listed", 0) for r in runs)
-    total_pre = sum(r.get("pre_filter_passed", 0) for r in runs)
-    total_valid = sum(r.get("valid", 0) for r in runs)
-    total_errors = sum(r.get("gig_errors", 0) for r in runs)
-    avg_listed = round(total_listed / total_runs, 1)
-    avg_pre = round(total_pre / total_runs, 1)
-    avg_valid = round(total_valid / total_runs, 1)
-
-    # Aggregate filter breakdown, stripping repr params and deduplicating.
-    # e.g. "AvailabilityFilter(mode='block', periods=7)" → "AvailabilityFilter"
-    name_totals: dict[str, int] = {}
-    for r in runs:
-        for k, v in r.get("filter_breakdown", {}).items():
-            name = k.split("(")[0]
-            name_totals[name] = name_totals.get(name, 0) + v
-    active_filters = [
-        (k, v) for k, v in sorted(name_totals.items(), key=lambda x: x[1], reverse=True) if v > 0
-    ]
-
-    def _fmt_elapsed(ms: int) -> str:
-        return f"{ms / 1000:.1f}s" if ms >= 1000 else f"{ms}ms"
-
-    lines = [
-        f"📊 *Pipeline stats — last {days} days*",
-        "",
-        f"*Runs:* {total_runs}",
-        f"*Listed:*      {total_listed:>5}  ({avg_listed}/run)",
-        f"*Pre-filter:*  {total_pre:>5}  ({avg_pre}/run)",
-        f"*Valid:*       {total_valid:>5}  ({avg_valid}/run)",
-        f"*Errors:* {total_errors}",
-    ]
-
-    if active_filters:
-        max_len = max(len(k) for k, _ in active_filters)
-        lines += ["", "*🔍 Filter rejections:*"]
-        for k, v in active_filters:
-            pct = round(v / total_listed * 100) if total_listed else 0
-            lines.append(f"`{k:<{max_len}}  {v:>4}  ({pct}%)`")
-
-    lines += ["", "*📅 Recent runs:*"]
-    for r in runs[:5]:
-        ts = r["timestamp"][:16].replace("T", " ")
-        listed = r.get("listed", 0)
-        pre = r.get("pre_filter_passed", 0)
-        valid = r.get("valid", 0)
-        t = _fmt_elapsed(r.get("elapsed_ms", 0))
-        lines.append(f"`{ts}  {listed}→{pre}→{valid}  {t}`")
-
-    return json.dumps({"result": "\n".join(lines)})
 
 
 # ── Config tools ─────────────────────────────────────────────────────────────
