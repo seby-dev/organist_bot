@@ -60,7 +60,7 @@ A small module-level registry, one canonical LiteLLM `model=` string per entry:
 _PROVIDER_MODELS: dict[str, dict[str, str]] = {
     "anthropic": {
         "sonnet": "anthropic/claude-sonnet-4-6",   # today's existing default — unchanged
-        "opus": "anthropic/claude-opus-4-6",         # VERIFY exact ID at implementation time
+        "opus": "anthropic/claude-opus-4-6",         # confirmed real ID, same "4-6" generation as sonnet
         "haiku": "anthropic/claude-haiku-4-5-20251001",  # matches reply_monitor.py's existing string
     },
     "openai": {
@@ -68,7 +68,7 @@ _PROVIDER_MODELS: dict[str, dict[str, str]] = {
         "gpt-5.6-luna": "openai/gpt-5.6-luna",        # cost-efficient tier — confirmed via OpenAI's own model docs
     },
     "gemini": {
-        "gemini-pro": "gemini/gemini-3.1-pro-preview",  # UNCONFIRMED — sources disagreed (see note below)
+        "gemini-pro": "gemini/gemini-3.1-pro-preview",  # confirmed — Google publishes a dedicated docs page for this exact ID
         "gemini-3.8-flash": "gemini/gemini-3.8-flash",  # flash tier — confirmed via Gemini's own model docs
     },
 }
@@ -76,16 +76,13 @@ _DEFAULT_PROVIDER = "anthropic"
 _DEFAULT_MODEL_KEY = "sonnet"  # -> anthropic/claude-sonnet-4-6, today's unchanged default
 ```
 
-Verified against each provider's own model documentation on 2026-09-04 (not guessed) —
-except the Gemini pro-tier ID, where two lookups disagreed: one indicated
-`gemini-3.1-pro-preview` is the current top-tier model, another (likely surfacing a
-stale example from Google's docs) said `gemini-2.5-pro`. **Confirm the actual current
-Gemini pro-tier ID via Google AI Studio's live model picker before implementation** —
-everything else in this registry is confirmed. This is the one open item this spec
-defers to implementation time; the *structure* (three providers, 2 curated options each,
-one designated default) is otherwise fully specified. Model names drift fast regardless,
-so re-verify all of these immediately before writing the code, not from this document
-alone.
+Every ID above is verified against each provider's own model documentation on 2026-09-04
+(not guessed) — including the Gemini pro-tier ID, which an earlier lookup during spec
+review had flagged as uncertain (one source suggested a stale `gemini-2.5-pro`); Google's
+own docs publish a dedicated page for `gemini-3.1-pro-preview` specifically, confirming
+it over the stale alternative. Model names drift fast regardless, so if significant time
+passes between this spec and implementation, re-verify before writing the code rather
+than trusting this document blindly.
 
 `_PROVIDER_API_KEY_FIELD = {"anthropic": "anthropic_api_key", "openai": "openai_api_key", "gemini": "gemini_api_key"}`
 maps provider name to the `Settings` field to check for configuration.
