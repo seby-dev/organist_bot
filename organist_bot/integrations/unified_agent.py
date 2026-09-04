@@ -710,6 +710,9 @@ class AgentResponse:
 
 # Per-chat state
 _histories: dict[int, list[dict]] = {}
+# Caps a chat's in-memory history so a long-lived conversation can't grow
+# without bound and eventually exceed the model's context window.
+_MAX_HISTORY_MESSAGES = 60
 _last_invoice: dict[int, dict] = {}
 _last_gig_listing: dict[int, list[dict]] = {}
 _last_application_listing: dict[int, list[dict]] = {}
@@ -718,6 +721,24 @@ _pending_neg_instruction: dict[int, str] = {}
 
 # Chats whose persisted reference-context has been loaded this process.
 _hydrated: set[int] = set()
+
+
+def _trim_history(chat_id: int) -> None:
+    """Drop the oldest turns once a chat's history exceeds _MAX_HISTORY_MESSAGES.
+
+    Only cuts at a real user-text turn (role "user" with plain string content),
+    never inside a tool_use/tool_result pair — cutting mid-pair would leave a
+    dangling tool_use with no matching tool_result, which the API rejects.
+    """
+    history = _histories.get(chat_id)
+    if history is None or len(history) <= _MAX_HISTORY_MESSAGES:
+        return
+    cut = len(history) - _MAX_HISTORY_MESSAGES
+    while cut < len(history) and not (
+        history[cut]["role"] == "user" and isinstance(history[cut]["content"], str)
+    ):
+        cut += 1
+    _histories[chat_id] = history[cut:]
 
 
 def _hydrate_chat(chat_id: int) -> None:
@@ -2264,6 +2285,7 @@ async def process_message(
 
         _histories[chat_id].append({"role": "user", "content": tool_results})
 
+    _trim_history(chat_id)
     _persist_chat(chat_id)
     return responses
 
