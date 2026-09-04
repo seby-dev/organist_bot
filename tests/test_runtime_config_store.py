@@ -81,3 +81,20 @@ class TestRuntimeConfigStore:
         store.reset("min_fee")
         assert store.get("min_fee", 100) == 100
         assert store.get("max_travel_minutes", 45) == 60
+
+    def test_get_returns_string_override_when_set(self, tmp_path, monkeypatch):
+        from organist_bot.runtime_config_store import RuntimeConfigStore
+
+        monkeypatch.chdir(tmp_path)
+        store = RuntimeConfigStore()
+        store.set("llm_provider", "openai")
+        assert store.get("llm_provider", "anthropic") == "openai"
+
+    def test_string_and_int_values_coexist(self, tmp_path, monkeypatch):
+        from organist_bot.runtime_config_store import RuntimeConfigStore
+
+        monkeypatch.chdir(tmp_path)
+        store = RuntimeConfigStore()
+        store.set("min_fee", 150)
+        store.set("llm_provider", "gemini")
+        assert store.all() == {"min_fee": 150, "llm_provider": "gemini"}

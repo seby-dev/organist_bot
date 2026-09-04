@@ -24,7 +24,7 @@ A personal automation bot that scrapes organ gig listings from [organistsonline.
   - Google Maps Distance Matrix API enabled
   - A service account with a JSON key file (`credentials.json`)
 - A Telegram bot token from [@BotFather](https://t.me/botfather)
-- An [Anthropic API key](https://console.anthropic.com/) for the invoice AI agent
+- An [Anthropic API key](https://console.anthropic.com/) for the default LLM provider (Claude) used by the Telegram agent
 
 ---
 
@@ -60,7 +60,9 @@ cp .env.example .env
 | `GOOGLE_CALENDAR_CREDENTIALS_FILE` | Path to your service account JSON key |
 | `TELEGRAM_BOT_TOKEN` | Token from @BotFather |
 | `TELEGRAM_CHAT_ID` | Your personal Telegram chat ID |
-| `ANTHROPIC_API_KEY` | API key for the invoice AI agent |
+| `ANTHROPIC_API_KEY` | API key for the default LLM provider (Claude) |
+| `OPENAI_API_KEY` | API key for OpenAI, if you switch the agent to it via `manage_llm_provider` |
+| `GEMINI_API_KEY` | API key for Gemini, if you switch the agent to it via `manage_llm_provider` |
 | `APPLICANT_NAME` | Your name (used in application emails) |
 | `APPLICANT_MOBILE` | Your mobile number |
 | `APPLICANT_VIDEO_1` | Optional performance video link |

@@ -17,6 +17,7 @@ dependencies = [
     "python-telegram-bot>=20.0",
     "protobuf",
     "anthropic>=0.40",
+    "litellm>=1.80",
     "playwright>=1.40",
     "google-auth-oauthlib>=1.0",
 ]

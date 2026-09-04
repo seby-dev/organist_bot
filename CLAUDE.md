@@ -99,12 +99,15 @@ Polls `organistsonline.org` every `POLL_MINUTES` and runs a 3-phase pipeline per
 
 ### `telegram_bot.py` — Unified Telegram bot
 
-A single python-telegram-bot polling bot, gated by `TELEGRAM_CHAT_ID`. **Every free-text message is forwarded to `unified_agent.process_message`** (`integrations/unified_agent.py`) — a multi-domain Claude Sonnet 4.6 agent with ~33 tools spanning:
+A single python-telegram-bot polling bot, gated by `TELEGRAM_CHAT_ID`. **Every free-text message is forwarded to `unified_agent.process_message`** (`integrations/unified_agent.py`) — a multi-domain agent with ~34 tools spanning:
 - **Gig calendar** — `add_gig` (from URL or fields), `list_upcoming_gigs`, `manage_competing_gigs`
 - **Invoicing** — `generate_invoice`, `email_invoice`, `list_clients`, `list_invoices`
 - **Filter management** — `manage_blacklist`, `manage_unavailable`, `manage_available` (writes to `filter_store`), `manage_filter_suspensions` (writes to `filter_suspension_store`)
 - **Runtime config** — `manage_config` (writes to `runtime_config_store`: `min_fee`, `max_travel_minutes`, `poll_minutes`)
+- **LLM provider** — `manage_llm_provider` (switches between Claude/OpenAI/Gemini via `litellm.acompletion`, backed by `runtime_config_store`'s `llm_provider`/`llm_model` keys)
 - **Applications & income** — `manage_applications`, `get_income_forecast` (reads from `application_store`)
+
+The agent runs on whichever provider/model `runtime_config_store` currently holds (default: Anthropic Claude Sonnet, `anthropic/claude-sonnet-4-6`) — see "LLM providers" below.
 
 Per-chat history, last-invoice context, and last-gig-listing context live in process memory keyed by `chat_id`. The reference-context fields (last invoice / gig-listing / application-listing — but **not** history) are also persisted to `data/agent_state.json` via `integrations/agent_state.py`: `process_message` lazily hydrates a chat's context on its first message (so it survives a bot restart) and saves it after each turn. On startup the bot calls `sync_calendar_blocks` (mirrors `filter_store.unavailable_periods()` into Google Calendar) and fires `alert.send_alert("🤖 Telegram bot started")`. The old 7-step `ConversationHandler` and the separate `invoice_agent.py` no longer exist — all interactions go through the unified agent.
 
@@ -129,7 +132,7 @@ Per-chat history, last-invoice context, and last-gig-listing context live in pro
 - `calendar_client.py` — `GoogleCalendarClient` (service account; `has_event_on_date`, `add_gig`, `block_period`, `unblock_period`)
 - `gmail_client.py` — OAuth2 Gmail read-only; refreshes token + atomic write with `0o600`
 - `telegram_bot.py` — the bot module the entry point delegates to
-- `unified_agent.py` — Claude SDK agentic loop, ~33 tools, per-chat state
+- `unified_agent.py` — litellm-backed agentic loop (Claude/OpenAI/Gemini), ~34 tools, per-chat state
 - `invoice_generator.py` — Playwright headless Chromium → PDF from Jinja2 `invoice.html`
 - `email_sender.py` — SMTP invoice email sender
 
@@ -145,7 +148,7 @@ Optional sections in `.env`:
 - **Google Calendar** — `GOOGLE_CALENDAR_ID`, `GOOGLE_CALENDAR_CREDENTIALS_FILE`
 - **Telegram** — `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`
 - **Gmail reply monitor** — `GMAIL_CREDENTIALS_FILE`, `GMAIL_TOKEN_FILE` (default `data/gmail_token.json`); run `scripts/setup_gmail_auth.py` once to mint the token
-- **Anthropic** — `ANTHROPIC_API_KEY`
+- **LLM providers** — `ANTHROPIC_API_KEY` (default provider), `OPENAI_API_KEY`, `GEMINI_API_KEY` (all optional; `manage_llm_provider` refuses to switch to a provider whose key isn't set)
 - **Invoice / SMTP** — `FROM_NAME`, `FROM_ADDRESS`, `CURRENCY`, payment fields, `SMTP_HOST/PORT/USER/PASSWORD`
 - **Filter toggles** — `ENABLE_FEE_FILTER`, `ENABLE_SUNDAY_TIME_FILTER`, `ENABLE_BLACKLIST_FILTER`, `ENABLE_SEEN_FILTER`, `ENABLE_POSTCODE_FILTER`, `ENABLE_CALENDAR_FILTER`, `ENABLE_AVAILABILITY_FILTER`, `ENABLE_NEG_DRAFTS` (all default `True`)
 

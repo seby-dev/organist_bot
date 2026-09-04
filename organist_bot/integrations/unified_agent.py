@@ -43,6 +43,34 @@ from organist_bot.scraper import Scraper
 
 logger = logging.getLogger(__name__)
 
+_PROVIDER_MODELS: dict[str, dict[str, str]] = {
+    "anthropic": {
+        "sonnet": "anthropic/claude-sonnet-4-6",
+        "opus": "anthropic/claude-opus-4-6",
+        "haiku": "anthropic/claude-haiku-4-5-20251001",
+    },
+    "openai": {
+        "gpt-6-astra": "openai/gpt-6-astra",
+        "gpt-5.6-luna": "openai/gpt-5.6-luna",
+    },
+    "gemini": {
+        "gemini-pro": "gemini/gemini-3.1-pro-preview",
+        "gemini-3.8-flash": "gemini/gemini-3.8-flash",
+    },
+}
+_DEFAULT_PROVIDER = "anthropic"
+_DEFAULT_MODEL_KEY = "sonnet"
+_PROVIDER_API_KEY_FIELD = {
+    "anthropic": "anthropic_api_key",
+    "openai": "openai_api_key",
+    "gemini": "gemini_api_key",
+}
+
+
+def _default_model_string() -> str:
+    return _PROVIDER_MODELS[_DEFAULT_PROVIDER][_DEFAULT_MODEL_KEY]
+
+
 SYSTEM_PROMPT = """\
 You are an assistant for an organist. You handle three areas:
 
@@ -87,6 +115,10 @@ You are an assistant for an organist. You handle three areas:
 - "Reset min fee to default" → manage_config(action=reset, key=min_fee).
 - Editable keys: min_fee, max_travel_minutes, poll_minutes, negotiable_fee.
 
+## LLM provider
+- "Switch to GPT-6 Astra" / "use Gemini" / "what model are we using?" → manage_llm_provider.
+- If you say a provider without a model, I'll list that provider's options and ask which one.
+
 ## Application tracking
 - "What applications are pending?" / "show my applications" → manage_applications(action=list).
 - "Application summary" / "how many gigs have I applied to?" → manage_applications(action=summary).
@@ -114,7 +146,7 @@ You are an assistant for an organist. You handle three areas:
 - When a tool returns a pre-formatted list (e.g. availability periods, invoices), relay it VERBATIM — do not reformat, renumber, or convert it into a table. You may append a short follow-up note after the list.
 """
 
-TOOLS: list[dict] = [
+_TOOLS_SCHEMA: list[dict] = [
     # ── Gig — scraping & calendar add ──────────────────────────────────────
     {
         "name": "fetch_gig_details",
@@ -508,6 +540,40 @@ TOOLS: list[dict] = [
             "required": ["action"],
         },
     },
+    # ── LLM provider ─────────────────────────────────────────────────────────
+    {
+        "name": "manage_llm_provider",
+        "description": (
+            "Read or switch which LLM provider/model powers this conversation. "
+            "Providers: anthropic (sonnet/opus/haiku), openai (gpt-6-astra/gpt-5.6-luna), "
+            "gemini (gemini-pro/gemini-3.8-flash). "
+            "Use action='get' to show the current provider/model. "
+            "Use action='set' with 'provider' to switch — if 'model' is omitted, list "
+            "that provider's options and ask the user to pick one before calling set "
+            "again. Use action='reset' to restore the default (anthropic/sonnet). "
+            "Checks the provider's API key is configured before doing anything else — "
+            "refuses immediately (even before listing model options) if it isn't."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["get", "set", "reset"]},
+                "provider": {
+                    "type": "string",
+                    "enum": ["anthropic", "openai", "gemini"],
+                    "description": "Required for set.",
+                },
+                "model": {
+                    "type": "string",
+                    "description": (
+                        "One of that provider's curated model keys (e.g. 'sonnet', "
+                        "'gpt-5.6-luna'). Optional for set — omit to see the options."
+                    ),
+                },
+            },
+            "required": ["action"],
+        },
+    },
     # ── Application tracking ────────────────────────────────────────────────
     {
         "name": "manage_applications",
@@ -677,6 +743,23 @@ TOOLS: list[dict] = [
 ]
 
 
+def _to_function_tool(tool: dict) -> dict:
+    """Wrap one Anthropic-shaped tool schema into OpenAI's function-calling shape —
+    LiteLLM's canonical `tools=` input format regardless of which backend provider
+    actually handles the request."""
+    return {
+        "type": "function",
+        "function": {
+            "name": tool["name"],
+            "description": tool["description"],
+            "parameters": tool["input_schema"],
+        },
+    }
+
+
+TOOLS: list[dict] = [_to_function_tool(t) for t in _TOOLS_SCHEMA]
+
+
 @dataclass
 class AgentResponse:
     text: str | None = None
@@ -777,6 +860,7 @@ _PDF_RESPONSE_TOOLS = {"generate_invoice", "duplicate_invoice", "get_invoice"}
 _VERBATIM_RESPONSE_TOOLS = {
     "list_upcoming_gigs",
     "manage_config",
+    "manage_llm_provider",
     "manage_applications",
     "get_income_forecast",
     "get_application_analytics",
@@ -2081,14 +2165,69 @@ async def _handle_manage_config(input_data: dict, chat_id: int) -> str:
     return json.dumps({"error": f"Unknown action: {action}"})
 
 
+@_handler("manage_llm_provider")
+async def _handle_manage_llm_provider(input_data: dict, chat_id: int) -> str:
+    action = input_data.get("action", "")
+
+    if action == "get":
+        provider = runtime_config.get("llm_provider", _DEFAULT_PROVIDER)
+        model = runtime_config.get("llm_model", _default_model_string())
+        return json.dumps({"result": f"Current provider: {provider}\nCurrent model: {model}"})
+
+    if action == "set":
+        provider = input_data.get("provider", "")
+        if not provider:
+            return json.dumps({"result": "provider is required for action='set'."})
+        if provider not in _PROVIDER_MODELS:
+            valid = ", ".join(_PROVIDER_MODELS)
+            return json.dumps({"result": f"Unknown provider '{provider}'. Valid: {valid}."})
+
+        api_key_field = _PROVIDER_API_KEY_FIELD[provider]
+        if not getattr(settings, api_key_field):
+            return json.dumps(
+                {"result": f"Can't switch to {provider} — {api_key_field.upper()} isn't set."}
+            )
+
+        model_key = input_data.get("model", "")
+        provider_models = _PROVIDER_MODELS[provider]
+        if not model_key:
+            options = ", ".join(provider_models)
+            return json.dumps({"result": f"Which {provider} model? Options: {options}."})
+        if model_key not in provider_models:
+            valid = ", ".join(provider_models)
+            return json.dumps(
+                {"result": f"Unknown model '{model_key}' for {provider}. Valid: {valid}."}
+            )
+
+        runtime_config.set("llm_provider", provider)
+        runtime_config.set("llm_model", provider_models[model_key])
+        return json.dumps(
+            {"result": (f"Switched to {provider}/{model_key}. Takes effect on your next message.")}
+        )
+
+    if action == "reset":
+        runtime_config.reset("llm_provider")
+        runtime_config.reset("llm_model")
+        return json.dumps({"result": "Reset to default (anthropic/sonnet)."})
+
+    return json.dumps({"error": f"Unknown action: {action}"})
+
+
 async def process_message(
     chat_id: int,
     text: str,
     on_step: Callable[[str], Awaitable[None]] | None = None,
 ) -> list[AgentResponse]:
-    import anthropic
+    import litellm
 
-    client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
+    provider = runtime_config.get("llm_provider", _DEFAULT_PROVIDER)
+    if provider not in _PROVIDER_MODELS:
+        logger.warning("Unknown stored llm_provider %r, resetting to default", provider)
+        runtime_config.reset("llm_provider")
+        runtime_config.reset("llm_model")
+        provider = _DEFAULT_PROVIDER
+    model = runtime_config.get("llm_model", _default_model_string())
+    api_key = getattr(settings, _PROVIDER_API_KEY_FIELD[provider])
 
     _hydrate_chat(chat_id)
 
@@ -2101,47 +2240,51 @@ async def process_message(
     steps: list[str] = []
 
     while True:
-        response = await client.messages.create(
-            model="claude-sonnet-4-6",
+        response = await litellm.acompletion(
+            model=model,
             max_tokens=4096,
-            system=SYSTEM_PROMPT,
-            tools=TOOLS,  # type: ignore[arg-type]
-            messages=_histories[chat_id],  # type: ignore[arg-type]
+            api_key=api_key,
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                *_histories[chat_id],
+            ],
+            tools=TOOLS,
         )
 
-        _histories[chat_id].append({"role": "assistant", "content": response.content})
+        msg = response.choices[0].message
+        # NOT exclude_none=True — see Global Constraints. A tool-call turn has
+        # content: None alongside tool_calls; dropping that key entirely (rather
+        # than keeping it as an explicit null) breaks the Anthropic backend on the
+        # NEXT turn, since LiteLLM's Anthropic translation requires `content` to be
+        # present on every message.
+        _histories[chat_id].append(msg.model_dump())
 
-        if response.stop_reason == "end_turn":
-            for block in response.content:
-                if hasattr(block, "text"):
-                    responses.append(AgentResponse(text=block.text))
-            break
-
-        if response.stop_reason != "tool_use":
-            responses.append(AgentResponse(text="(response truncated — please try again)"))
+        if not msg.tool_calls:
+            if msg.content:
+                responses.append(AgentResponse(text=msg.content))
             break
 
         tool_results = []
-        for block in response.content:
-            if block.type != "tool_use":
-                continue
-            logger.info("Unified agent tool call: %s(%s)", block.name, json.dumps(block.input))
+        for tc in msg.tool_calls:
+            name = tc.function.name
+            args = json.loads(tc.function.arguments)
+            logger.info("Unified agent tool call: %s(%s)", name, json.dumps(args))
 
-            steps.append(f"🔧 {block.name}")
+            steps.append(f"🔧 {name}")
             if on_step is not None:
                 await on_step("\n".join(steps))
 
             try:
-                result = await _execute_tool(block.name, block.input, chat_id)
+                result = await _execute_tool(name, args, chat_id)
             except Exception as e:
                 logger.error("Tool execution failed: %s", e)
                 result = json.dumps({"error": str(e)})
 
-            steps[-1] = f"✅ {block.name}"
+            steps[-1] = f"✅ {name}"
             if on_step is not None:
                 await on_step("\n".join(steps))
 
-            if block.name in _VERBATIM_RESPONSE_TOOLS:
+            if name in _VERBATIM_RESPONSE_TOOLS:
                 try:
                     data = json.loads(result)
                     if "result" in data:
@@ -2154,9 +2297,11 @@ async def process_message(
                 except (json.JSONDecodeError, KeyError):
                     pass
 
-            tool_results.append({"type": "tool_result", "tool_use_id": block.id, "content": result})
+            tool_results.append(
+                {"role": "tool", "tool_call_id": tc.id, "name": name, "content": result}
+            )
 
-            if block.name in _PDF_RESPONSE_TOOLS and chat_id in _last_invoice:
+            if name in _PDF_RESPONSE_TOOLS and chat_id in _last_invoice:
                 pdf_path = _last_invoice[chat_id].get("pdf_path")
                 if pdf_path:
                     inv_num = _last_invoice[chat_id].get("invoice_number", "")
@@ -2170,7 +2315,7 @@ async def process_message(
             )
             break
 
-        _histories[chat_id].append({"role": "user", "content": tool_results})
+        _histories[chat_id].extend(tool_results)
 
     _trim_history(chat_id)
     _persist_chat(chat_id)

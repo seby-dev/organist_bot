@@ -2,6 +2,7 @@
 
 import datetime
 import json
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -1030,8 +1031,8 @@ class TestFilterTools:
         assert "no matching" in data["result"].lower()
 
     def test_seen_not_in_manage_filter_suspensions_enum(self):
-        tool_def = next(t for t in TOOLS if t["name"] == "manage_filter_suspensions")
-        assert "seen" not in tool_def["input_schema"]["properties"]["filter"]["enum"]
+        tool_def = next(t for t in TOOLS if t["function"]["name"] == "manage_filter_suspensions")
+        assert "seen" not in tool_def["function"]["parameters"]["properties"]["filter"]["enum"]
 
 
 # ── clear_conversation ────────────────────────────────────────────────────────
@@ -2243,17 +2244,23 @@ class TestNegActiveDraftState:
 
 
 def _turn_with_tool_call(n: int) -> list[dict]:
-    """One user(str) turn followed by an assistant tool_use + user(list) tool_result pair."""
+    """One user(str) turn followed by an assistant tool_calls turn and a flat
+    role="tool" result message — the shape litellm.acompletion's response actually
+    produces (see process_message() in unified_agent.py)."""
     return [
         {"role": "user", "content": f"do thing {n}"},
         {
             "role": "assistant",
-            "content": [{"type": "tool_use", "id": f"tool_{n}", "name": "noop", "input": {}}],
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": f"tool_{n}",
+                    "type": "function",
+                    "function": {"name": "noop", "arguments": "{}"},
+                }
+            ],
         },
-        {
-            "role": "user",
-            "content": [{"type": "tool_result", "tool_use_id": f"tool_{n}", "content": "ok"}],
-        },
+        {"role": "tool", "tool_call_id": f"tool_{n}", "name": "noop", "content": "ok"},
     ]
 
 
@@ -2284,18 +2291,16 @@ class TestTrimHistory:
         # Must start on a real user-text turn, never inside a tool_use/tool_result pair.
         assert trimmed[0]["role"] == "user"
         assert isinstance(trimmed[0]["content"], str)
-        # No tool_use block should be left without its matching tool_result.
-        pending_tool_use_ids: set[str] = set()
+        # No assistant tool_calls entry should be left without its matching
+        # role="tool" result message.
+        pending_tool_call_ids: set[str] = set()
         for msg in trimmed:
-            content = msg["content"]
-            if not isinstance(content, list):
-                continue
-            for block in content:
-                if block.get("type") == "tool_use":
-                    pending_tool_use_ids.add(block["id"])
-                elif block.get("type") == "tool_result":
-                    pending_tool_use_ids.discard(block["tool_use_id"])
-        assert pending_tool_use_ids == set()
+            if msg["role"] == "assistant" and msg.get("tool_calls"):
+                for tc in msg["tool_calls"]:
+                    pending_tool_call_ids.add(tc["id"])
+            elif msg["role"] == "tool":
+                pending_tool_call_ids.discard(msg["tool_call_id"])
+        assert pending_tool_call_ids == set()
 
     def test_missing_chat_id_is_a_noop(self):
         unified_agent._trim_history(self.CHAT_ID)  # no entry for this chat_id at all
@@ -2320,6 +2325,114 @@ class TestNegConfirmButtons:
                 {"text": "Cancel", "callback_data": "neg:cancel:abc123"},
             ]
         ]
+
+
+class TestManageLlmProvider:
+    def teardown_method(self):
+        from organist_bot.runtime_config_store import runtime_config
+
+        runtime_config.reset("llm_provider")
+        runtime_config.reset("llm_model")
+
+    async def test_get_returns_default_before_any_switch(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        result = await _execute_tool("manage_llm_provider", {"action": "get"}, CHAT_ID)
+        data = json.loads(result)
+        assert "anthropic" in data["result"]
+        assert "claude-sonnet-4-6" in data["result"]
+
+    async def test_set_missing_provider_returns_error(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        result = await _execute_tool("manage_llm_provider", {"action": "set"}, CHAT_ID)
+        data = json.loads(result)
+        assert "provider is required" in data["result"].lower()
+
+    async def test_set_unknown_provider_returns_error(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        result = await _execute_tool(
+            "manage_llm_provider", {"action": "set", "provider": "cohere"}, CHAT_ID
+        )
+        data = json.loads(result)
+        assert "unknown provider" in data["result"].lower()
+
+    async def test_set_without_configured_key_refuses(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(unified_agent.settings, "openai_api_key", "")
+        result = await _execute_tool(
+            "manage_llm_provider", {"action": "set", "provider": "openai"}, CHAT_ID
+        )
+        data = json.loads(result)
+        assert "OPENAI_API_KEY" in data["result"]
+        from organist_bot.runtime_config_store import runtime_config
+
+        assert runtime_config.get("llm_provider", "anthropic") == "anthropic"
+
+    async def test_set_without_model_lists_options_and_does_not_switch(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(unified_agent.settings, "openai_api_key", "sk-test")
+        result = await _execute_tool(
+            "manage_llm_provider", {"action": "set", "provider": "openai"}, CHAT_ID
+        )
+        data = json.loads(result)
+        assert "gpt-6-astra" in data["result"]
+        assert "gpt-5.6-luna" in data["result"]
+        from organist_bot.runtime_config_store import runtime_config
+
+        assert runtime_config.get("llm_provider", "anthropic") == "anthropic"
+
+    async def test_set_unknown_model_returns_error(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(unified_agent.settings, "openai_api_key", "sk-test")
+        result = await _execute_tool(
+            "manage_llm_provider",
+            {"action": "set", "provider": "openai", "model": "gpt-9-fictional"},
+            CHAT_ID,
+        )
+        data = json.loads(result)
+        assert "unknown model" in data["result"].lower()
+
+    async def test_set_with_valid_provider_and_model_switches(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(unified_agent.settings, "openai_api_key", "sk-test")
+        result = await _execute_tool(
+            "manage_llm_provider",
+            {"action": "set", "provider": "openai", "model": "gpt-5.6-luna"},
+            CHAT_ID,
+        )
+        data = json.loads(result)
+        assert "switched" in data["result"].lower()
+        from organist_bot.runtime_config_store import runtime_config
+
+        assert runtime_config.get("llm_provider", "") == "openai"
+        assert runtime_config.get("llm_model", "") == "openai/gpt-5.6-luna"
+
+    async def test_get_reflects_switch(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(unified_agent.settings, "openai_api_key", "sk-test")
+        await _execute_tool(
+            "manage_llm_provider",
+            {"action": "set", "provider": "openai", "model": "gpt-5.6-luna"},
+            CHAT_ID,
+        )
+        result = await _execute_tool("manage_llm_provider", {"action": "get"}, CHAT_ID)
+        data = json.loads(result)
+        assert "openai" in data["result"]
+        assert "gpt-5.6-luna" in data["result"] or "openai/gpt-5.6-luna" in data["result"]
+
+    async def test_reset_restores_default(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(unified_agent.settings, "openai_api_key", "sk-test")
+        await _execute_tool(
+            "manage_llm_provider",
+            {"action": "set", "provider": "openai", "model": "gpt-5.6-luna"},
+            CHAT_ID,
+        )
+        result = await _execute_tool("manage_llm_provider", {"action": "reset"}, CHAT_ID)
+        data = json.loads(result)
+        assert "reset" in data["result"].lower() or "default" in data["result"].lower()
+        from organist_bot.runtime_config_store import runtime_config
+
+        assert runtime_config.get("llm_provider", "anthropic") == "anthropic"
 
 
 class TestNegDeterministicActions:
@@ -2412,6 +2525,54 @@ def test_agent_response_buttons_defaults_to_none():
     ]
 
 
+def test_every_tool_uses_openai_function_calling_shape():
+    from organist_bot.integrations.unified_agent import TOOLS
+
+    assert len(TOOLS) > 0
+    for tool in TOOLS:
+        assert tool["type"] == "function"
+        fn = tool["function"]
+        assert isinstance(fn["name"], str) and fn["name"]
+        assert isinstance(fn["description"], str) and fn["description"]
+        assert isinstance(fn["parameters"], dict)
+        assert "input_schema" not in tool
+        assert "name" not in tool  # top-level — only under "function"
+
+
+def _fake_tool_call(call_id: str, name: str, arguments: dict) -> SimpleNamespace:
+    return SimpleNamespace(
+        id=call_id,
+        function=SimpleNamespace(name=name, arguments=json.dumps(arguments)),
+    )
+
+
+def _fake_litellm_response(
+    content: str | None = None, tool_calls: list | None = None
+) -> SimpleNamespace:
+    dumped = {
+        "role": "assistant",
+        "content": content,
+        "tool_calls": (
+            [
+                {
+                    "id": tc.id,
+                    "type": "function",
+                    "function": {"name": tc.function.name, "arguments": tc.function.arguments},
+                }
+                for tc in tool_calls
+            ]
+            if tool_calls
+            else None
+        ),
+    }
+    # Intentionally takes NO kwargs: if process_message() ever calls
+    # msg.model_dump(exclude_none=True), this raises TypeError instead of silently
+    # dropping the `content: None` key — pinning the history round-trip bug fixed
+    # during spec review (see Global Constraints in the plan/spec).
+    message = SimpleNamespace(content=content, tool_calls=tool_calls, model_dump=lambda: dumped)
+    return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+
+
 # ── process_message on_step progress reporting ──────────────────────────────
 
 
@@ -2419,8 +2580,7 @@ def test_agent_response_buttons_defaults_to_none():
 async def test_process_message_reports_on_step_progress(tmp_path, monkeypatch):
     """process_message must report a 🔧 step when a tool call starts and flip
     it to ✅ once the tool call returns, via the on_step callback."""
-    import sys
-    from types import SimpleNamespace
+    import litellm
 
     from organist_bot.integrations import agent_state, unified_agent
 
@@ -2428,22 +2588,14 @@ async def test_process_message_reports_on_step_progress(tmp_path, monkeypatch):
     cid = 314159
     unified_agent._hydrated.discard(cid)
 
-    tool_use_block = SimpleNamespace(
-        type="tool_use",
-        name="add_gig",
-        input={"url": "https://example.com/gig/1"},
-        id="tool_1",
+    tool_use_response = _fake_litellm_response(
+        tool_calls=[_fake_tool_call("tool_1", "add_gig", {"url": "https://example.com/gig/1"})]
     )
-    tool_use_response = SimpleNamespace(content=[tool_use_block], stop_reason="tool_use")
+    end_turn_response = _fake_litellm_response(content="Added the gig.")
 
-    text_block = SimpleNamespace(type="text", text="Added the gig.")
-    end_turn_response = SimpleNamespace(content=[text_block], stop_reason="end_turn")
-
-    fake_client = MagicMock()
-    fake_client.messages.create = AsyncMock(side_effect=[tool_use_response, end_turn_response])
-    fake_anthropic_module = SimpleNamespace(AsyncAnthropic=MagicMock(return_value=fake_client))
-    monkeypatch.setitem(sys.modules, "anthropic", fake_anthropic_module)
-
+    monkeypatch.setattr(
+        litellm, "acompletion", AsyncMock(side_effect=[tool_use_response, end_turn_response])
+    )
     monkeypatch.setattr(
         unified_agent, "_execute_tool", AsyncMock(return_value=json.dumps({"result": "ok"}))
     )
@@ -2455,6 +2607,16 @@ async def test_process_message_reports_on_step_progress(tmp_path, monkeypatch):
 
     try:
         responses = await unified_agent.process_message(cid, "add this gig", on_step=on_step)
+        # Confirms the history round-trip: the assistant's tool-call turn keeps an
+        # explicit content: None (not a dropped key), and the tool result landed as
+        # a flat role="tool" message — both required for the Anthropic backend to
+        # accept the next turn.
+        history = unified_agent._histories[cid]
+        assistant_turn = next(m for m in history if m["role"] == "assistant")
+        assert assistant_turn["content"] is None
+        assert "tool_calls" in assistant_turn
+        tool_turn = next(m for m in history if m["role"] == "tool")
+        assert tool_turn["tool_call_id"] == "tool_1"
     finally:
         unified_agent._histories.pop(cid, None)
         unified_agent._hydrated.discard(cid)
@@ -2466,8 +2628,7 @@ async def test_process_message_reports_on_step_progress(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_process_message_without_on_step_is_unaffected(tmp_path, monkeypatch):
     """Omitting on_step (the default) must not change existing behavior."""
-    import sys
-    from types import SimpleNamespace
+    import litellm
 
     from organist_bot.integrations import agent_state, unified_agent
 
@@ -2475,13 +2636,8 @@ async def test_process_message_without_on_step_is_unaffected(tmp_path, monkeypat
     cid = 271828
     unified_agent._hydrated.discard(cid)
 
-    text_block = SimpleNamespace(type="text", text="All set.")
-    end_turn_response = SimpleNamespace(content=[text_block], stop_reason="end_turn")
-
-    fake_client = MagicMock()
-    fake_client.messages.create = AsyncMock(return_value=end_turn_response)
-    fake_anthropic_module = SimpleNamespace(AsyncAnthropic=MagicMock(return_value=fake_client))
-    monkeypatch.setitem(sys.modules, "anthropic", fake_anthropic_module)
+    end_turn_response = _fake_litellm_response(content="All set.")
+    monkeypatch.setattr(litellm, "acompletion", AsyncMock(return_value=end_turn_response))
 
     try:
         responses = await unified_agent.process_message(cid, "hello")
@@ -2492,13 +2648,44 @@ async def test_process_message_without_on_step_is_unaffected(tmp_path, monkeypat
     assert responses == [unified_agent.AgentResponse(text="All set.")]
 
 
+@pytest.mark.asyncio
+async def test_process_message_stale_provider_resets_to_default(tmp_path, monkeypatch):
+    """A stale/invalid llm_provider in runtime_config must reset to the default
+    instead of crashing — the guard at the top of process_message() handles this."""
+    import litellm
+
+    from organist_bot.integrations import agent_state, unified_agent
+    from organist_bot.runtime_config_store import runtime_config
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(agent_state, "_PATH", tmp_path / "agent_state.json")
+    cid = 161803
+    unified_agent._hydrated.discard(cid)
+
+    # Plant a provider name that is not in _PROVIDER_MODELS.
+    runtime_config.set("llm_provider", "cohere")
+
+    end_turn_response = _fake_litellm_response(content="ok")
+    monkeypatch.setattr(litellm, "acompletion", AsyncMock(return_value=end_turn_response))
+
+    try:
+        responses = await unified_agent.process_message(cid, "hello")
+    finally:
+        unified_agent._histories.pop(cid, None)
+        unified_agent._hydrated.discard(cid)
+        runtime_config.reset("llm_provider")
+        runtime_config.reset("llm_model")
+
+    assert responses == [unified_agent.AgentResponse(text="ok")]
+    assert runtime_config.get("llm_provider", "anthropic") == "anthropic"
+
+
 # ── process_message NEG buttons/picker plumbing ─────────────────────────────
 
 
 @pytest.mark.asyncio
 async def test_process_message_passes_through_tool_buttons(tmp_path, monkeypatch):
-    import sys
-    from types import SimpleNamespace
+    import litellm
 
     from organist_bot.integrations import agent_state, unified_agent
 
@@ -2506,17 +2693,14 @@ async def test_process_message_passes_through_tool_buttons(tmp_path, monkeypatch
     cid = 424242
     unified_agent._hydrated.discard(cid)
 
-    tool_use_block = SimpleNamespace(
-        type="tool_use", name="approve_neg_application", input={"gig_id": "abc123"}, id="t1"
+    tool_use_response = _fake_litellm_response(
+        tool_calls=[_fake_tool_call("t1", "approve_neg_application", {"gig_id": "abc123"})]
     )
-    tool_use_response = SimpleNamespace(content=[tool_use_block], stop_reason="tool_use")
-    text_block = SimpleNamespace(type="text", text="ok")
-    end_turn_response = SimpleNamespace(content=[text_block], stop_reason="end_turn")
+    end_turn_response = _fake_litellm_response(content="ok")
 
-    fake_client = MagicMock()
-    fake_client.messages.create = AsyncMock(side_effect=[tool_use_response, end_turn_response])
-    fake_anthropic_module = SimpleNamespace(AsyncAnthropic=MagicMock(return_value=fake_client))
-    monkeypatch.setitem(sys.modules, "anthropic", fake_anthropic_module)
+    monkeypatch.setattr(
+        litellm, "acompletion", AsyncMock(side_effect=[tool_use_response, end_turn_response])
+    )
 
     buttons = [[{"text": "Confirm", "callback_data": "neg:confirm_send:abc123"}]]
     monkeypatch.setattr(
@@ -2536,8 +2720,7 @@ async def test_process_message_passes_through_tool_buttons(tmp_path, monkeypatch
 
 @pytest.mark.asyncio
 async def test_process_message_stashes_instruction_on_needs_pick(tmp_path, monkeypatch):
-    import sys
-    from types import SimpleNamespace
+    import litellm
 
     from organist_bot.integrations import agent_state, unified_agent
 
@@ -2546,17 +2729,14 @@ async def test_process_message_stashes_instruction_on_needs_pick(tmp_path, monke
     unified_agent._hydrated.discard(cid)
     unified_agent._pending_neg_instruction.pop(cid, None)
 
-    tool_use_block = SimpleNamespace(
-        type="tool_use", name="approve_neg_application", input={}, id="t1"
+    tool_use_response = _fake_litellm_response(
+        tool_calls=[_fake_tool_call("t1", "approve_neg_application", {})]
     )
-    tool_use_response = SimpleNamespace(content=[tool_use_block], stop_reason="tool_use")
-    text_block = SimpleNamespace(type="text", text="ok")
-    end_turn_response = SimpleNamespace(content=[text_block], stop_reason="end_turn")
+    end_turn_response = _fake_litellm_response(content="ok")
 
-    fake_client = MagicMock()
-    fake_client.messages.create = AsyncMock(side_effect=[tool_use_response, end_turn_response])
-    fake_anthropic_module = SimpleNamespace(AsyncAnthropic=MagicMock(return_value=fake_client))
-    monkeypatch.setitem(sys.modules, "anthropic", fake_anthropic_module)
+    monkeypatch.setattr(
+        litellm, "acompletion", AsyncMock(side_effect=[tool_use_response, end_turn_response])
+    )
 
     picker_buttons = [[{"text": "A", "callback_data": "neg:pick:aaa"}]]
     monkeypatch.setattr(
@@ -2578,3 +2758,11 @@ async def test_process_message_stashes_instruction_on_needs_pick(tmp_path, monke
         unified_agent._pending_neg_instruction.pop(cid, None)
 
     assert responses[0].buttons == picker_buttons
+
+
+def test_settings_has_openai_and_gemini_api_key_fields():
+    from organist_bot.config import Settings
+
+    s = Settings(email_sender="a@b.com", email_password="x", cc_email="a@b.com")
+    assert s.openai_api_key == ""
+    assert s.gemini_api_key == ""
