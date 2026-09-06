@@ -108,6 +108,17 @@ def _record_llm_usage(provider: str, model: str, response) -> None:
         logger.warning("llm_usage_store: failed to record call", exc_info=True)
 
 
+_REASON_TRUNCATE_LEN = 300
+
+
+def _truncate_reason(exc: Exception) -> str:
+    """Cap a provider's exception text so a verbose provider error (looking
+    at you, Gemini's multi-KB quota-violation JSON) can't blow past Telegram's
+    4096-char message limit once several are joined into one alert/message."""
+    text = str(exc)
+    return text if len(text) <= _REASON_TRUNCATE_LEN else text[: _REASON_TRUNCATE_LEN - 1] + "…"
+
+
 async def _call_llm_with_failover(
     provider: str, model: str, messages: list[dict], tools: list[dict]
 ):
@@ -119,9 +130,13 @@ async def _call_llm_with_failover(
     On the first success after at least one failure, persists the working
     provider/model as the new default via runtime_config and fires a Telegram
     alert -- so a provider outage self-heals instead of silently breaking
-    every message until a human notices and switches manually. If every
-    configured provider fails, re-raises the last exception unchanged (same
-    as this project's existing uncaught-exception behavior for an LLM call).
+    every message until a human notices and switches manually. If EVERY
+    configured provider fails, fires a Telegram alert listing every provider
+    tried and its own error, then raises a RuntimeError whose message is that
+    same summary (chained onto the last provider's exception) -- so the
+    generic "Unexpected error" text the caller falls back to (see
+    telegram_bot.handle_message) shows what was actually tried instead of
+    just whichever provider happened to be attempted last.
 
     Returns (response, provider_used, model_used) so the caller's own
     provider/model tracking stays in sync for the rest of that conversation
@@ -135,25 +150,32 @@ async def _call_llm_with_failover(
             continue
         candidates.append((p, _PROVIDER_MODELS[p][_DEFAULT_MODEL_KEY_PER_PROVIDER[p]]))
 
-    last_exc: Exception | None = None
+    attempts: list[tuple[str, Exception]] = []
     for i, (p, m) in enumerate(candidates):
         try:
             response = await litellm.acompletion(
                 model=m,
-                max_tokens=4096,
+                # Not max_tokens: some providers' newer models (e.g. OpenAI's
+                # reasoning-style models) reject it outright and require
+                # max_completion_tokens instead. litellm's per-provider
+                # transformation layer accepts this generic name for every
+                # provider here and maps it to that provider's native param
+                # (Anthropic/Gemini included), so this one name is safe
+                # everywhere -- unlike max_tokens, which isn't for all of them.
+                max_completion_tokens=4096,
                 api_key=getattr(settings, _PROVIDER_API_KEY_FIELD[p]),
                 messages=messages,
                 tools=tools,
             )
         except Exception as exc:
             logger.warning("LLM call failed for provider %s: %s", p, exc)
-            last_exc = exc
+            attempts.append((p, exc))
             continue
 
         if i > 0:
             runtime_config.set("llm_provider", p)
             runtime_config.set("llm_model", m)
-            reason = alert.escape_markdown_v2(str(last_exc))
+            reason = alert.escape_markdown_v2(_truncate_reason(attempts[-1][1]))
             alert.send_alert(
                 f"🔀 *AI provider auto\\-switched*\n{provider} → {p}\n\nReason: {reason}",
                 parse_mode="MarkdownV2",
@@ -161,8 +183,15 @@ async def _call_llm_with_failover(
         _record_llm_usage(p, m, response)
         return response, p, m
 
-    assert last_exc is not None
-    raise last_exc
+    plain_summary = "\n".join(f"{p}: {_truncate_reason(exc)}" for p, exc in attempts)
+    escaped_summary = "\n".join(
+        f"{p}: {alert.escape_markdown_v2(_truncate_reason(exc))}" for p, exc in attempts
+    )
+    alert.send_alert(
+        f"🔴 *All configured AI providers failed*\n{escaped_summary}",
+        parse_mode="MarkdownV2",
+    )
+    raise RuntimeError(f"All configured providers failed:\n{plain_summary}") from attempts[-1][1]
 
 
 SYSTEM_PROMPT = """\
