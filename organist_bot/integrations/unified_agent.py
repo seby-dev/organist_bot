@@ -74,10 +74,17 @@ _PROVIDER_API_KEY_FIELD = {
 _FAILOVER_ORDER = ["anthropic", "openai", "gemini"]
 # Which curated model a provider fails over TO, since the currently-active
 # model key may not exist for that provider (e.g. "opus" has no OpenAI
-# equivalent key) -- each provider's own flagship entry.
+# equivalent key). Deliberately NOT each provider's flagship: OpenAI's
+# flagship "gpt-6-astra" is a reasoning model that OpenAI's own API refuses
+# to run with function tools at all on the chat-completions endpoint this
+# codebase uses (needs /v1/responses instead, and separately rejects
+# reasoning_effort="none" as a workaround) -- confirmed live against the real
+# API. Every conversation here always sends tools, so gpt-6-astra can never
+# actually serve a failover call; "gpt-5.6-luna" is openai's other curated
+# option and works fine with tools.
 _DEFAULT_MODEL_KEY_PER_PROVIDER = {
     "anthropic": "sonnet",
-    "openai": "gpt-6-astra",
+    "openai": "gpt-5.6-luna",
     "gemini": "gemini-pro",
 }
 
