@@ -2682,6 +2682,25 @@ class TestCallLlmWithFailover:
 
         assert runtime_config.get("llm_provider", "unset") == "unset"
 
+    async def test_uses_max_completion_tokens_not_max_tokens(self, tmp_path, monkeypatch):
+        """max_tokens breaks on some providers' newer models (e.g. OpenAI's
+        reasoning-style models reject it and require max_completion_tokens);
+        litellm accepts the latter as a generic name and translates it for
+        every provider here, so it must be the one actually sent."""
+        import litellm
+
+        monkeypatch.chdir(tmp_path)
+        mock_acompletion = AsyncMock(return_value=_fake_litellm_response(content="ok"))
+        monkeypatch.setattr(litellm, "acompletion", mock_acompletion)
+
+        await unified_agent._call_llm_with_failover(
+            "anthropic", "anthropic/claude-sonnet-4-6", messages=[], tools=[]
+        )
+
+        call_kwargs = mock_acompletion.call_args.kwargs
+        assert call_kwargs["max_completion_tokens"] == 4096
+        assert "max_tokens" not in call_kwargs
+
     async def test_failure_then_success_promotes_the_working_provider(self, tmp_path, monkeypatch):
         import litellm
 
@@ -2744,24 +2763,72 @@ class TestCallLlmWithFailover:
         # openai was skipped entirely -- no key configured, never attempted.
         assert calls == ["anthropic/claude-sonnet-4-6", "gemini/gemini-3.1-pro-preview"]
 
-    async def test_all_providers_failing_raises_the_last_exception(self, tmp_path, monkeypatch):
+    async def test_all_providers_failing_raises_a_summary_and_alerts(self, tmp_path, monkeypatch):
+        """When every configured provider fails, the raised error must
+        summarize every attempt (not just re-raise whichever failed last,
+        which would hide that failover was even tried) and an alert must go
+        out immediately, since there's no later success to alert about."""
+        import litellm
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(unified_agent.settings, "openai_api_key", "sk-test")
+        monkeypatch.setattr(unified_agent.settings, "gemini_api_key", "")
+
+        monkeypatch.setattr(
+            litellm,
+            "acompletion",
+            AsyncMock(
+                side_effect=[
+                    RuntimeError("anthropic is down"),
+                    RuntimeError("openai is down"),
+                ]
+            ),
+        )
+        alerts: list[tuple[str, dict]] = []
+        monkeypatch.setattr(
+            unified_agent.alert, "send_alert", lambda msg, **kw: alerts.append((msg, kw))
+        )
+
+        with pytest.raises(RuntimeError) as exc_info:
+            await unified_agent._call_llm_with_failover(
+                "anthropic", "anthropic/claude-sonnet-4-6", messages=[], tools=[]
+            )
+
+        assert "All configured providers failed" in str(exc_info.value)
+        assert "anthropic: anthropic is down" in str(exc_info.value)
+        assert "openai: openai is down" in str(exc_info.value)
+        assert isinstance(exc_info.value.__cause__, RuntimeError)
+        assert str(exc_info.value.__cause__) == "openai is down"
+
+        from organist_bot.runtime_config_store import runtime_config
+
+        assert runtime_config.get("llm_provider", "unset") == "unset"
+        assert len(alerts) == 1
+        message, kwargs = alerts[0]
+        assert "All configured AI providers failed" in message
+        assert "anthropic: anthropic is down" in message
+        assert "openai: openai is down" in message
+        assert kwargs == {"parse_mode": "MarkdownV2"}
+
+    async def test_all_providers_failing_truncates_long_reasons(self, tmp_path, monkeypatch):
         import litellm
 
         monkeypatch.chdir(tmp_path)
         monkeypatch.setattr(unified_agent.settings, "openai_api_key", "")
         monkeypatch.setattr(unified_agent.settings, "gemini_api_key", "")
 
-        monkeypatch.setattr(
-            litellm, "acompletion", AsyncMock(side_effect=RuntimeError("anthropic is down"))
-        )
+        monkeypatch.setattr(litellm, "acompletion", AsyncMock(side_effect=RuntimeError("x" * 1000)))
+        alerts: list[str] = []
+        monkeypatch.setattr(unified_agent.alert, "send_alert", lambda msg, **kw: alerts.append(msg))
 
-        with pytest.raises(RuntimeError, match="anthropic is down"):
+        with pytest.raises(RuntimeError) as exc_info:
             await unified_agent._call_llm_with_failover(
                 "anthropic", "anthropic/claude-sonnet-4-6", messages=[], tools=[]
             )
-        from organist_bot.runtime_config_store import runtime_config
 
-        assert runtime_config.get("llm_provider", "unset") == "unset"
+        assert len(str(exc_info.value)) < 400
+        assert str(exc_info.value).endswith("…")
+        assert len(alerts[0]) < 400
 
     async def test_records_usage_on_success(self, tmp_path, monkeypatch):
         import litellm
