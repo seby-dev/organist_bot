@@ -8,10 +8,12 @@ from dataclasses import dataclass
 from typing import cast
 
 from organist_bot import (
+    alert,
     analytics,
     application_store,
     filter_store,
     filter_suspension_store,
+    llm_usage_store,
     travel,
 )
 from organist_bot.config import settings
@@ -65,10 +67,100 @@ _PROVIDER_API_KEY_FIELD = {
     "openai": "openai_api_key",
     "gemini": "gemini_api_key",
 }
+# Fixed walk order for automatic failover -- deliberately not derived from
+# _PROVIDER_MODELS (dict insertion order is an implementation detail, not a
+# contract) and not configurable, matching this being a single global
+# default rather than a per-chat/per-tier setting.
+_FAILOVER_ORDER = ["anthropic", "openai", "gemini"]
+# Which curated model a provider fails over TO, since the currently-active
+# model key may not exist for that provider (e.g. "opus" has no OpenAI
+# equivalent key) -- each provider's own flagship entry.
+_DEFAULT_MODEL_KEY_PER_PROVIDER = {
+    "anthropic": "sonnet",
+    "openai": "gpt-6-astra",
+    "gemini": "gemini-pro",
+}
 
 
 def _default_model_string() -> str:
     return _PROVIDER_MODELS[_DEFAULT_PROVIDER][_DEFAULT_MODEL_KEY]
+
+
+def _configured_providers() -> list[str]:
+    """Providers with a non-empty API key, in the fixed failover order."""
+    return [p for p in _FAILOVER_ORDER if getattr(settings, _PROVIDER_API_KEY_FIELD[p])]
+
+
+def _record_llm_usage(provider: str, model: str, response) -> None:
+    """Best-effort usage tracking -- a logging/storage failure must never
+    break the chat turn that triggered the real LLM call it's recording."""
+    usage = getattr(response, "usage", None)
+    if usage is None:
+        return
+    try:
+        llm_usage_store.record_call(
+            provider,
+            model,
+            getattr(usage, "prompt_tokens", 0) or 0,
+            getattr(usage, "completion_tokens", 0) or 0,
+        )
+    except Exception:
+        logger.warning("llm_usage_store: failed to record call", exc_info=True)
+
+
+async def _call_llm_with_failover(
+    provider: str, model: str, messages: list[dict], tools: list[dict]
+):
+    """Call litellm.acompletion against `provider`/`model`; on failure, try
+    the other configured providers (fixed order, skipping any without an API
+    key and whichever was just attempted) until one succeeds. Records usage
+    for whichever call actually succeeded.
+
+    On the first success after at least one failure, persists the working
+    provider/model as the new default via runtime_config and fires a Telegram
+    alert -- so a provider outage self-heals instead of silently breaking
+    every message until a human notices and switches manually. If every
+    configured provider fails, re-raises the last exception unchanged (same
+    as this project's existing uncaught-exception behavior for an LLM call).
+
+    Returns (response, provider_used, model_used) so the caller's own
+    provider/model tracking stays in sync for the rest of that conversation
+    turn, not just for this one call.
+    """
+    import litellm
+
+    candidates = [(provider, model)]
+    for p in _configured_providers():
+        if p == provider:
+            continue
+        candidates.append((p, _PROVIDER_MODELS[p][_DEFAULT_MODEL_KEY_PER_PROVIDER[p]]))
+
+    last_exc: Exception | None = None
+    for i, (p, m) in enumerate(candidates):
+        try:
+            response = await litellm.acompletion(
+                model=m,
+                max_tokens=4096,
+                api_key=getattr(settings, _PROVIDER_API_KEY_FIELD[p]),
+                messages=messages,
+                tools=tools,
+            )
+        except Exception as exc:
+            logger.warning("LLM call failed for provider %s: %s", p, exc)
+            last_exc = exc
+            continue
+
+        if i > 0:
+            runtime_config.set("llm_provider", p)
+            runtime_config.set("llm_model", m)
+            alert.send_alert(
+                f"🔀 AI provider auto-switched from {provider} to {p} after a failure: {last_exc}"
+            )
+        _record_llm_usage(p, m, response)
+        return response, p, m
+
+    assert last_exc is not None
+    raise last_exc
 
 
 SYSTEM_PROMPT = """\
@@ -118,6 +210,10 @@ You are an assistant for an organist. You handle three areas:
 ## LLM provider
 - "Switch to GPT-6 Astra" / "use Gemini" / "what model are we using?" → manage_llm_provider.
 - If you say a provider without a model, I'll list that provider's options and ask which one.
+- A requested switch isn't immediate — I'll show a Confirm/Cancel button first.
+- If a provider errors mid-conversation, I automatically fail over to another configured
+  provider and let you know — you don't need to switch manually when one goes down.
+- "How much have I used?" / "usage summary" / "which provider costs more?" → get_llm_usage_summary.
 
 ## Application tracking
 - "What applications are pending?" / "show my applications" → manage_applications(action=list).
@@ -550,9 +646,13 @@ _TOOLS_SCHEMA: list[dict] = [
             "Use action='get' to show the current provider/model. "
             "Use action='set' with 'provider' to switch — if 'model' is omitted, list "
             "that provider's options and ask the user to pick one before calling set "
-            "again. Use action='reset' to restore the default (anthropic/sonnet). "
+            "again. A valid set does NOT switch immediately — it returns a Confirm/Cancel "
+            "button; the switch only applies once the user taps Confirm. "
+            "Use action='reset' to restore the default (anthropic/sonnet). "
             "Checks the provider's API key is configured before doing anything else — "
-            "refuses immediately (even before listing model options) if it isn't."
+            "refuses immediately (even before listing model options) if it isn't. "
+            "If the active provider errors mid-conversation, this bot automatically fails "
+            "over to another configured provider on its own — no tool call needed for that."
         ),
         "input_schema": {
             "type": "object",
@@ -573,6 +673,15 @@ _TOOLS_SCHEMA: list[dict] = [
             },
             "required": ["action"],
         },
+    },
+    {
+        "name": "get_llm_usage_summary",
+        "description": (
+            "Report LLM call counts and token usage per provider, for today and all-time. "
+            "Reflects real usage including any automatic failover, so it shows which "
+            "provider actually served requests, not just whichever was nominally active."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
     },
     # ── Application tracking ────────────────────────────────────────────────
     {
@@ -778,6 +887,12 @@ _last_gig_listing: dict[int, list[dict]] = {}
 _last_application_listing: dict[int, list[dict]] = {}
 _active_neg_draft: dict[int, str] = {}
 _pending_neg_instruction: dict[int, str] = {}
+# A provider/model switch awaiting Telegram confirm/cancel -- see
+# manage_llm_provider's "set" action and llm_confirm_switch/llm_cancel_switch
+# below. Not persisted across a restart (same treatment as
+# _pending_neg_instruction): losing an unconfirmed switch on restart is an
+# acceptable edge case for a short-lived confirmation prompt.
+_pending_llm_switch: dict[int, tuple[str, str]] = {}
 
 # Chats whose persisted reference-context has been loaded this process.
 _hydrated: set[int] = set()
@@ -861,6 +976,7 @@ _VERBATIM_RESPONSE_TOOLS = {
     "list_upcoming_gigs",
     "manage_config",
     "manage_llm_provider",
+    "get_llm_usage_summary",
     "manage_applications",
     "get_income_forecast",
     "get_application_analytics",
@@ -2199,10 +2315,12 @@ async def _handle_manage_llm_provider(input_data: dict, chat_id: int) -> str:
                 {"result": f"Unknown model '{model_key}' for {provider}. Valid: {valid}."}
             )
 
-        runtime_config.set("llm_provider", provider)
-        runtime_config.set("llm_model", provider_models[model_key])
+        _pending_llm_switch[chat_id] = (provider, model_key)
         return json.dumps(
-            {"result": (f"Switched to {provider}/{model_key}. Takes effect on your next message.")}
+            {
+                "result": f"Switch to {provider}/{model_key}?",
+                "buttons": _llm_switch_buttons(provider, model_key),
+            }
         )
 
     if action == "reset":
@@ -2213,13 +2331,64 @@ async def _handle_manage_llm_provider(input_data: dict, chat_id: int) -> str:
     return json.dumps({"error": f"Unknown action: {action}"})
 
 
+def _llm_switch_buttons(provider: str, model_key: str) -> list[list[dict]]:
+    target = f"{provider}/{model_key}"
+    return [
+        [
+            {"text": "Confirm", "callback_data": f"llm:confirm:{target}"},
+            {"text": "Cancel", "callback_data": f"llm:cancel:{target}"},
+        ]
+    ]
+
+
+def llm_confirm_switch(chat_id: int, provider: str, model_key: str) -> tuple[bool, str]:
+    """Apply a pending provider/model switch. Called by the deterministic
+    Telegram button handler, never by the LLM — same two-step pattern as
+    neg_confirm_send. Requires the (provider, model_key) target to still
+    match what's pending for this chat, so a stale or double-tapped button
+    can't apply a switch that a newer request already replaced."""
+    if _pending_llm_switch.get(chat_id) != (provider, model_key):
+        return False, "This switch is no longer pending — it may have been replaced or cancelled."
+    del _pending_llm_switch[chat_id]
+    runtime_config.set("llm_provider", provider)
+    runtime_config.set("llm_model", _PROVIDER_MODELS[provider][model_key])
+    return True, f"Switched to {provider}/{model_key}."
+
+
+def llm_cancel_switch(chat_id: int, provider: str, model_key: str) -> tuple[bool, str]:
+    """Discard a pending provider/model switch without applying it."""
+    if _pending_llm_switch.get(chat_id) != (provider, model_key):
+        return False, "This switch is no longer pending."
+    del _pending_llm_switch[chat_id]
+    return True, "Switch cancelled."
+
+
+@_handler("get_llm_usage_summary")
+async def _handle_get_llm_usage_summary(input_data: dict, chat_id: int) -> str:
+    now = datetime.datetime.now(datetime.UTC)
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    today = llm_usage_store.summary(since=today_start)
+    all_time = llm_usage_store.summary()
+
+    if not all_time:
+        return json.dumps({"result": "No LLM usage recorded yet."})
+
+    lines = ["LLM usage by provider:"]
+    for provider in sorted(all_time):
+        t = today.get(provider, {"call_count": 0, "total_tokens": 0})
+        a = all_time[provider]
+        lines.append(
+            f"- {provider}: today {t['call_count']} calls / {t['total_tokens']} tokens "
+            f"— all-time {a['call_count']} calls / {a['total_tokens']} tokens"
+        )
+    return json.dumps({"result": "\n".join(lines)})
+
+
 async def process_message(
     chat_id: int,
     text: str,
     on_step: Callable[[str], Awaitable[None]] | None = None,
 ) -> list[AgentResponse]:
-    import litellm
-
     provider = runtime_config.get("llm_provider", _DEFAULT_PROVIDER)
     if provider not in _PROVIDER_MODELS:
         logger.warning("Unknown stored llm_provider %r, resetting to default", provider)
@@ -2227,7 +2396,6 @@ async def process_message(
         runtime_config.reset("llm_model")
         provider = _DEFAULT_PROVIDER
     model = runtime_config.get("llm_model", _default_model_string())
-    api_key = getattr(settings, _PROVIDER_API_KEY_FIELD[provider])
 
     _hydrate_chat(chat_id)
 
@@ -2240,10 +2408,13 @@ async def process_message(
     steps: list[str] = []
 
     while True:
-        response = await litellm.acompletion(
-            model=model,
-            max_tokens=4096,
-            api_key=api_key,
+        # provider/model are updated from what actually served the call, so a
+        # mid-conversation failover (see _call_llm_with_failover) sticks for
+        # the rest of this turn's tool-calling loop instead of retrying the
+        # already-failed provider again on every iteration.
+        response, provider, model = await _call_llm_with_failover(
+            provider,
+            model,
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
                 *_histories[chat_id],
@@ -2329,6 +2500,7 @@ def reset_conversation(chat_id: int) -> None:
     _last_application_listing.pop(chat_id, None)
     _active_neg_draft.pop(chat_id, None)
     _pending_neg_instruction.pop(chat_id, None)
+    _pending_llm_switch.pop(chat_id, None)
     _hydrated.discard(chat_id)
     agent_state.save_chat(chat_id, {})
 

@@ -2333,6 +2333,7 @@ class TestManageLlmProvider:
 
         runtime_config.reset("llm_provider")
         runtime_config.reset("llm_model")
+        unified_agent._pending_llm_switch.pop(CHAT_ID, None)
 
     async def test_get_returns_default_before_any_switch(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
@@ -2391,7 +2392,13 @@ class TestManageLlmProvider:
         data = json.loads(result)
         assert "unknown model" in data["result"].lower()
 
-    async def test_set_with_valid_provider_and_model_switches(self, tmp_path, monkeypatch):
+    async def test_set_with_valid_provider_and_model_returns_confirm_buttons(
+        self, tmp_path, monkeypatch
+    ):
+        """set no longer switches immediately -- it stashes the target and
+        returns a Confirm/Cancel prompt; the actual switch only happens via
+        llm_confirm_switch (called by the deterministic Telegram button
+        handler, tested separately below)."""
         monkeypatch.chdir(tmp_path)
         monkeypatch.setattr(unified_agent.settings, "openai_api_key", "sk-test")
         result = await _execute_tool(
@@ -2400,13 +2407,19 @@ class TestManageLlmProvider:
             CHAT_ID,
         )
         data = json.loads(result)
-        assert "switched" in data["result"].lower()
+        assert "openai/gpt-5.6-luna" in data["result"]
+        assert data["buttons"] == [
+            [
+                {"text": "Confirm", "callback_data": "llm:confirm:openai/gpt-5.6-luna"},
+                {"text": "Cancel", "callback_data": "llm:cancel:openai/gpt-5.6-luna"},
+            ]
+        ]
         from organist_bot.runtime_config_store import runtime_config
 
-        assert runtime_config.get("llm_provider", "") == "openai"
-        assert runtime_config.get("llm_model", "") == "openai/gpt-5.6-luna"
+        assert runtime_config.get("llm_provider", "anthropic") == "anthropic"
+        assert unified_agent._pending_llm_switch[CHAT_ID] == ("openai", "gpt-5.6-luna")
 
-    async def test_get_reflects_switch(self, tmp_path, monkeypatch):
+    async def test_get_reflects_switch_only_after_confirm(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         monkeypatch.setattr(unified_agent.settings, "openai_api_key", "sk-test")
         await _execute_tool(
@@ -2414,8 +2427,15 @@ class TestManageLlmProvider:
             {"action": "set", "provider": "openai", "model": "gpt-5.6-luna"},
             CHAT_ID,
         )
-        result = await _execute_tool("manage_llm_provider", {"action": "get"}, CHAT_ID)
-        data = json.loads(result)
+
+        before = await _execute_tool("manage_llm_provider", {"action": "get"}, CHAT_ID)
+        assert "anthropic" in json.loads(before)["result"]
+
+        ok, _ = unified_agent.llm_confirm_switch(CHAT_ID, "openai", "gpt-5.6-luna")
+        assert ok is True
+
+        after = await _execute_tool("manage_llm_provider", {"action": "get"}, CHAT_ID)
+        data = json.loads(after)
         assert "openai" in data["result"]
         assert "gpt-5.6-luna" in data["result"] or "openai/gpt-5.6-luna" in data["result"]
 
@@ -2427,12 +2447,71 @@ class TestManageLlmProvider:
             {"action": "set", "provider": "openai", "model": "gpt-5.6-luna"},
             CHAT_ID,
         )
+        unified_agent.llm_confirm_switch(CHAT_ID, "openai", "gpt-5.6-luna")
+
         result = await _execute_tool("manage_llm_provider", {"action": "reset"}, CHAT_ID)
         data = json.loads(result)
         assert "reset" in data["result"].lower() or "default" in data["result"].lower()
         from organist_bot.runtime_config_store import runtime_config
 
         assert runtime_config.get("llm_provider", "anthropic") == "anthropic"
+
+
+class TestLlmConfirmAndCancelSwitch:
+    def teardown_method(self):
+        from organist_bot.runtime_config_store import runtime_config
+
+        runtime_config.reset("llm_provider")
+        runtime_config.reset("llm_model")
+        unified_agent._pending_llm_switch.pop(CHAT_ID, None)
+
+    def test_confirm_applies_the_pending_switch(self):
+        unified_agent._pending_llm_switch[CHAT_ID] = ("openai", "gpt-5.6-luna")
+        ok, message = unified_agent.llm_confirm_switch(CHAT_ID, "openai", "gpt-5.6-luna")
+        assert ok is True
+        assert "openai/gpt-5.6-luna" in message
+        from organist_bot.runtime_config_store import runtime_config
+
+        assert runtime_config.get("llm_provider", "") == "openai"
+        assert runtime_config.get("llm_model", "") == "openai/gpt-5.6-luna"
+        assert CHAT_ID not in unified_agent._pending_llm_switch
+
+    def test_confirm_with_no_pending_switch_is_a_noop(self):
+        ok, message = unified_agent.llm_confirm_switch(CHAT_ID, "openai", "gpt-5.6-luna")
+        assert ok is False
+        assert "no longer pending" in message.lower()
+        from organist_bot.runtime_config_store import runtime_config
+
+        assert runtime_config.get("llm_provider", "anthropic") == "anthropic"
+
+    def test_confirm_with_mismatched_target_does_not_apply_a_different_pending_switch(self):
+        """A stale button for an earlier request must not apply a switch the
+        user has since overwritten with a newer one."""
+        unified_agent._pending_llm_switch[CHAT_ID] = ("gemini", "gemini-pro")
+        ok, message = unified_agent.llm_confirm_switch(CHAT_ID, "openai", "gpt-5.6-luna")
+        assert ok is False
+        assert "no longer pending" in message.lower()
+        from organist_bot.runtime_config_store import runtime_config
+
+        assert runtime_config.get("llm_provider", "anthropic") == "anthropic"
+        # The still-pending gemini switch is untouched by the stale attempt.
+        assert unified_agent._pending_llm_switch[CHAT_ID] == ("gemini", "gemini-pro")
+
+    def test_cancel_discards_the_pending_switch_without_applying_it(self):
+        unified_agent._pending_llm_switch[CHAT_ID] = ("openai", "gpt-5.6-luna")
+        ok, message = unified_agent.llm_cancel_switch(CHAT_ID, "openai", "gpt-5.6-luna")
+        assert ok is True
+        assert "cancelled" in message.lower()
+        from organist_bot.runtime_config_store import runtime_config
+
+        assert runtime_config.get("llm_provider", "anthropic") == "anthropic"
+        assert CHAT_ID not in unified_agent._pending_llm_switch
+
+    def test_cancel_with_mismatched_target_is_a_noop(self):
+        unified_agent._pending_llm_switch[CHAT_ID] = ("gemini", "gemini-pro")
+        ok, message = unified_agent.llm_cancel_switch(CHAT_ID, "openai", "gpt-5.6-luna")
+        assert ok is False
+        assert unified_agent._pending_llm_switch[CHAT_ID] == ("gemini", "gemini-pro")
 
 
 class TestNegDeterministicActions:
@@ -2547,7 +2626,9 @@ def _fake_tool_call(call_id: str, name: str, arguments: dict) -> SimpleNamespace
 
 
 def _fake_litellm_response(
-    content: str | None = None, tool_calls: list | None = None
+    content: str | None = None,
+    tool_calls: list | None = None,
+    usage: SimpleNamespace | None = None,
 ) -> SimpleNamespace:
     dumped = {
         "role": "assistant",
@@ -2570,7 +2651,153 @@ def _fake_litellm_response(
     # dropping the `content: None` key — pinning the history round-trip bug fixed
     # during spec review (see Global Constraints in the plan/spec).
     message = SimpleNamespace(content=content, tool_calls=tool_calls, model_dump=lambda: dumped)
-    return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+    return SimpleNamespace(choices=[SimpleNamespace(message=message)], usage=usage)
+
+
+# ── LLM provider failover cascade ────────────────────────────────────────────
+
+
+class TestCallLlmWithFailover:
+    def teardown_method(self):
+        from organist_bot.runtime_config_store import runtime_config
+
+        runtime_config.reset("llm_provider")
+        runtime_config.reset("llm_model")
+
+    async def test_success_on_first_try_does_not_touch_runtime_config(self, tmp_path, monkeypatch):
+        import litellm
+
+        monkeypatch.chdir(tmp_path)
+        response = _fake_litellm_response(content="ok")
+        monkeypatch.setattr(litellm, "acompletion", AsyncMock(return_value=response))
+
+        result, provider, model = await unified_agent._call_llm_with_failover(
+            "anthropic", "anthropic/claude-sonnet-4-6", messages=[], tools=[]
+        )
+
+        assert result is response
+        assert provider == "anthropic"
+        assert model == "anthropic/claude-sonnet-4-6"
+        from organist_bot.runtime_config_store import runtime_config
+
+        assert runtime_config.get("llm_provider", "unset") == "unset"
+
+    async def test_failure_then_success_promotes_the_working_provider(self, tmp_path, monkeypatch):
+        import litellm
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(unified_agent.settings, "openai_api_key", "sk-test")
+        monkeypatch.setattr(unified_agent.settings, "gemini_api_key", "")
+
+        good_response = _fake_litellm_response(content="ok")
+        monkeypatch.setattr(
+            litellm,
+            "acompletion",
+            AsyncMock(side_effect=[RuntimeError("anthropic is down"), good_response]),
+        )
+        alerts: list[str] = []
+        monkeypatch.setattr(unified_agent.alert, "send_alert", lambda msg, **kw: alerts.append(msg))
+
+        result, provider, model = await unified_agent._call_llm_with_failover(
+            "anthropic", "anthropic/claude-sonnet-4-6", messages=[], tools=[]
+        )
+
+        assert result is good_response
+        assert provider == "openai"
+        assert model == "openai/gpt-6-astra"
+        from organist_bot.runtime_config_store import runtime_config
+
+        assert runtime_config.get("llm_provider", "") == "openai"
+        assert runtime_config.get("llm_model", "") == "openai/gpt-6-astra"
+        assert len(alerts) == 1
+        assert "anthropic" in alerts[0] and "openai" in alerts[0]
+
+    async def test_skips_providers_without_a_configured_api_key(self, tmp_path, monkeypatch):
+        import litellm
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(unified_agent.settings, "openai_api_key", "")
+        monkeypatch.setattr(unified_agent.settings, "gemini_api_key", "sk-test")
+
+        good_response = _fake_litellm_response(content="ok")
+        calls: list[str] = []
+
+        async def fake_acompletion(*, model, **kwargs):
+            calls.append(model)
+            if model == "anthropic/claude-sonnet-4-6":
+                raise RuntimeError("down")
+            return good_response
+
+        monkeypatch.setattr(litellm, "acompletion", fake_acompletion)
+
+        result, provider, model = await unified_agent._call_llm_with_failover(
+            "anthropic", "anthropic/claude-sonnet-4-6", messages=[], tools=[]
+        )
+
+        assert provider == "gemini"
+        # openai was skipped entirely -- no key configured, never attempted.
+        assert calls == ["anthropic/claude-sonnet-4-6", "gemini/gemini-3.1-pro-preview"]
+
+    async def test_all_providers_failing_raises_the_last_exception(self, tmp_path, monkeypatch):
+        import litellm
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(unified_agent.settings, "openai_api_key", "")
+        monkeypatch.setattr(unified_agent.settings, "gemini_api_key", "")
+
+        monkeypatch.setattr(
+            litellm, "acompletion", AsyncMock(side_effect=RuntimeError("anthropic is down"))
+        )
+
+        with pytest.raises(RuntimeError, match="anthropic is down"):
+            await unified_agent._call_llm_with_failover(
+                "anthropic", "anthropic/claude-sonnet-4-6", messages=[], tools=[]
+            )
+        from organist_bot.runtime_config_store import runtime_config
+
+        assert runtime_config.get("llm_provider", "unset") == "unset"
+
+    async def test_records_usage_on_success(self, tmp_path, monkeypatch):
+        import litellm
+
+        monkeypatch.chdir(tmp_path)
+        response = _fake_litellm_response(
+            content="ok", usage=SimpleNamespace(prompt_tokens=10, completion_tokens=5)
+        )
+        monkeypatch.setattr(litellm, "acompletion", AsyncMock(return_value=response))
+
+        await unified_agent._call_llm_with_failover(
+            "anthropic", "anthropic/claude-sonnet-4-6", messages=[], tools=[]
+        )
+
+        from organist_bot import llm_usage_store
+
+        summary = llm_usage_store.summary()
+        assert summary["anthropic"]["call_count"] == 1
+        assert summary["anthropic"]["prompt_tokens"] == 10
+        assert summary["anthropic"]["completion_tokens"] == 5
+
+
+class TestGetLlmUsageSummary:
+    async def test_no_usage_recorded_yet(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        result = await _execute_tool("get_llm_usage_summary", {}, CHAT_ID)
+        data = json.loads(result)
+        assert "no llm usage" in data["result"].lower()
+
+    async def test_summarizes_recorded_usage_by_provider(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        from organist_bot import llm_usage_store
+
+        llm_usage_store.record_call("anthropic", "anthropic/claude-sonnet-4-6", 100, 50)
+        llm_usage_store.record_call("openai", "openai/gpt-5.6-luna", 10, 5)
+
+        result = await _execute_tool("get_llm_usage_summary", {}, CHAT_ID)
+        data = json.loads(result)
+        assert "anthropic" in data["result"]
+        assert "openai" in data["result"]
+        assert "150" in data["result"]  # anthropic total tokens
+        assert "15" in data["result"]  # openai total tokens
 
 
 # ── process_message on_step progress reporting ──────────────────────────────

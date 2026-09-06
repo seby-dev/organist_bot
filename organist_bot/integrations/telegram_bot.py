@@ -250,6 +250,38 @@ async def handle_neg_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
                 )
 
 
+async def handle_llm_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Apply or discard a pending LLM provider/model switch — see
+    manage_llm_provider's "set" action and unified_agent.llm_confirm_switch/
+    llm_cancel_switch. Same two-step confirm pattern as handle_neg_callback."""
+    assert update.callback_query is not None
+    await update.callback_query.answer()
+
+    if not _is_authorised(update):
+        _reject(update)
+        return
+
+    assert update.effective_chat is not None
+    assert update.callback_query.message is not None
+    chat_id = update.effective_chat.id
+    message_id = update.callback_query.message.message_id
+
+    data = update.callback_query.data or ""
+    parts = data.split(":", 2)
+    if len(parts) != 3 or parts[0] != "llm" or "/" not in parts[2]:
+        return
+    _, action, target = parts
+    provider, model_key = target.split("/", 1)
+
+    if action == "confirm":
+        ok, result = unified_agent.llm_confirm_switch(chat_id, provider, model_key)
+    elif action == "cancel":
+        ok, result = unified_agent.llm_cancel_switch(chat_id, provider, model_key)
+    else:
+        return
+    await _edit_text_quietly(context, chat_id, message_id, f"{'✅' if ok else '❌'} {result}")
+
+
 # ── Bot setup ─────────────────────────────────────────────────────────────────
 
 
@@ -259,6 +291,7 @@ def run(token: str) -> None:
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(tg_filters.TEXT & ~tg_filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(handle_neg_callback, pattern=r"^neg:"))
+    app.add_handler(CallbackQueryHandler(handle_llm_callback, pattern=r"^llm:"))
 
     cal = unified_agent._make_calendar_client()
     if cal:
