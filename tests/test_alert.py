@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import organist_bot.alert as _alert_module
-from organist_bot.alert import send_alert
+from organist_bot.alert import escape_markdown_v2, send_alert
 
 
 def test_autouse_fixture_silences_module_level_send_alert():
@@ -123,3 +123,58 @@ class TestSendAlert:
             send_alert("test message")
 
         assert "reply_markup" not in mock_post.call_args.kwargs["json"]
+
+    def test_parse_mode_included_when_given(self):
+        """parse_mode is included in the POST payload when provided."""
+        mock_post = MagicMock()
+        with (
+            patch("organist_bot.alert.settings") as mock_settings,
+            patch("organist_bot.alert._requests.post", mock_post),
+        ):
+            mock_settings.telegram_bot_token = "TOKEN123"
+            mock_settings.telegram_chat_id = 42
+            send_alert("*bold*", parse_mode="MarkdownV2")
+
+        assert mock_post.call_args.kwargs["json"]["parse_mode"] == "MarkdownV2"
+
+    def test_parse_mode_omitted_when_not_given(self):
+        """parse_mode key is absent from the payload when not provided —
+        existing plain-text callers of send_alert are unaffected."""
+        mock_post = MagicMock()
+        with (
+            patch("organist_bot.alert.settings") as mock_settings,
+            patch("organist_bot.alert._requests.post", mock_post),
+        ):
+            mock_settings.telegram_bot_token = "TOKEN123"
+            mock_settings.telegram_chat_id = 42
+            send_alert("test message")
+
+        assert "parse_mode" not in mock_post.call_args.kwargs["json"]
+
+
+class TestEscapeMarkdownV2:
+    def test_escapes_every_reserved_character(self):
+        raw = r"a_b*c[d](e)~f`g>h#i+j-k=l|m{n}o.p!q\r"
+        escaped = escape_markdown_v2(raw)
+        assert escaped == r"a\_b\*c\[d\]\(e\)\~f\`g\>h\#i\+j\-k\=l\|m\{n\}o\.p\!q\\r"
+
+    def test_leaves_plain_text_unchanged(self):
+        assert escape_markdown_v2("hello world 123") == "hello world 123"
+
+    def test_escaped_output_round_trips_through_a_markdownv2_send(self):
+        """The escaped text, embedded in a MarkdownV2 payload, is exactly what
+        gets posted — proves callers don't need to double-escape."""
+        mock_post = MagicMock()
+        raw_reason = "Your balance is too low. Please upgrade!"
+        with (
+            patch("organist_bot.alert.settings") as mock_settings,
+            patch("organist_bot.alert._requests.post", mock_post),
+        ):
+            mock_settings.telegram_bot_token = "TOKEN123"
+            mock_settings.telegram_chat_id = 42
+            send_alert(f"Reason: {escape_markdown_v2(raw_reason)}", parse_mode="MarkdownV2")
+
+        assert (
+            mock_post.call_args.kwargs["json"]["text"]
+            == r"Reason: Your balance is too low\. Please upgrade\!"
+        )
