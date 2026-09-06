@@ -2695,8 +2695,10 @@ class TestCallLlmWithFailover:
             "acompletion",
             AsyncMock(side_effect=[RuntimeError("anthropic is down"), good_response]),
         )
-        alerts: list[str] = []
-        monkeypatch.setattr(unified_agent.alert, "send_alert", lambda msg, **kw: alerts.append(msg))
+        alerts: list[tuple[str, dict]] = []
+        monkeypatch.setattr(
+            unified_agent.alert, "send_alert", lambda msg, **kw: alerts.append((msg, kw))
+        )
 
         result, provider, model = await unified_agent._call_llm_with_failover(
             "anthropic", "anthropic/claude-sonnet-4-6", messages=[], tools=[]
@@ -2710,7 +2712,11 @@ class TestCallLlmWithFailover:
         assert runtime_config.get("llm_provider", "") == "openai"
         assert runtime_config.get("llm_model", "") == "openai/gpt-6-astra"
         assert len(alerts) == 1
-        assert "anthropic" in alerts[0] and "openai" in alerts[0]
+        message, kwargs = alerts[0]
+        assert message == (
+            "🔀 *AI provider auto\\-switched*\nanthropic → openai\n\nReason: anthropic is down"
+        )
+        assert kwargs == {"parse_mode": "MarkdownV2"}
 
     async def test_skips_providers_without_a_configured_api_key(self, tmp_path, monkeypatch):
         import litellm
@@ -2987,9 +2993,17 @@ async def test_process_message_stashes_instruction_on_needs_pick(tmp_path, monke
     assert responses[0].buttons == picker_buttons
 
 
-def test_settings_has_openai_and_gemini_api_key_fields():
+def test_settings_has_openai_and_gemini_api_key_fields(monkeypatch):
+    """Verifies the fields default to "" when unset. Needs BOTH _env_file=None
+    (skip re-reading this machine's real .env) AND delenv of the two vars:
+    litellm.__init__ calls load_dotenv() on import as a side effect, which
+    (once any test in this session has imported litellm) has already copied
+    this project's real .env into the process's actual os.environ -- and
+    pydantic-settings reads os.environ regardless of _env_file."""
     from organist_bot.config import Settings
 
-    s = Settings(email_sender="a@b.com", email_password="x", cc_email="a@b.com")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    s = Settings(_env_file=None, email_sender="a@b.com", email_password="x", cc_email="a@b.com")
     assert s.openai_api_key == ""
     assert s.gemini_api_key == ""

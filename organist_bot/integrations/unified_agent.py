@@ -153,8 +153,10 @@ async def _call_llm_with_failover(
         if i > 0:
             runtime_config.set("llm_provider", p)
             runtime_config.set("llm_model", m)
+            reason = alert.escape_markdown_v2(str(last_exc))
             alert.send_alert(
-                f"🔀 AI provider auto-switched from {provider} to {p} after a failure: {last_exc}"
+                f"🔀 *AI provider auto\\-switched*\n{provider} → {p}\n\nReason: {reason}",
+                parse_mode="MarkdownV2",
             )
         _record_llm_usage(p, m, response)
         return response, p, m
