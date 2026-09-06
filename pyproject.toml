@@ -37,6 +37,10 @@ dev = [
 [tool.pytest.ini_options]
 testpaths       = ["tests"]
 asyncio_mode    = "auto"
+markers = [
+    "live: makes a real network call to an external provider; opt-in only (deselected by default via -m 'not live')",
+]
+addopts = "-m 'not live'"
 
 # ── ruff ───────────────────────────────────────────────────────────────────────
 [tool.ruff]

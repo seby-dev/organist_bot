@@ -77,6 +77,15 @@ Tests require dummy env vars at import time (Pydantic validates on `Settings()` 
 EMAIL_SENDER=ci@test.com EMAIL_PASSWORD=x CC_EMAIL=ci@test.com pytest
 ```
 
+Tests marked `live` (currently just the real multi-turn Anthropic round trip in
+`tests/test_live_anthropic_multiturn.py`) make a genuine network call to an
+LLM provider and are deselected by default (`addopts = "-m 'not live'"` in
+`pyproject.toml`). Run them explicitly, with a real `ANTHROPIC_API_KEY`
+configured:
+```bash
+pytest -m live
+```
+
 After adding new dependencies, run `playwright install chromium` if Playwright is involved.
 
 ## Architecture
@@ -99,15 +108,17 @@ Polls `organistsonline.org` every `POLL_MINUTES` and runs a 3-phase pipeline per
 
 ### `telegram_bot.py` — Unified Telegram bot
 
-A single python-telegram-bot polling bot, gated by `TELEGRAM_CHAT_ID`. **Every free-text message is forwarded to `unified_agent.process_message`** (`integrations/unified_agent.py`) — a multi-domain agent with ~34 tools spanning:
+A single python-telegram-bot polling bot, gated by `TELEGRAM_CHAT_ID`. **Every free-text message is forwarded to `unified_agent.process_message`** (`integrations/unified_agent.py`) — a multi-domain agent with ~35 tools spanning:
 - **Gig calendar** — `add_gig` (from URL or fields), `list_upcoming_gigs`, `manage_competing_gigs`
 - **Invoicing** — `generate_invoice`, `email_invoice`, `list_clients`, `list_invoices`
 - **Filter management** — `manage_blacklist`, `manage_unavailable`, `manage_available` (writes to `filter_store`), `manage_filter_suspensions` (writes to `filter_suspension_store`)
 - **Runtime config** — `manage_config` (writes to `runtime_config_store`: `min_fee`, `max_travel_minutes`, `poll_minutes`)
-- **LLM provider** — `manage_llm_provider` (switches between Claude/OpenAI/Gemini via `litellm.acompletion`, backed by `runtime_config_store`'s `llm_provider`/`llm_model` keys)
+- **LLM provider** — `manage_llm_provider` (switches between Claude/OpenAI/Gemini via `litellm.acompletion`, backed by `runtime_config_store`'s `llm_provider`/`llm_model` keys), `get_llm_usage_summary` (per-provider call/token totals from `llm_usage_store`)
 - **Applications & income** — `manage_applications`, `get_income_forecast` (reads from `application_store`)
 
 The agent runs on whichever provider/model `runtime_config_store` currently holds (default: Anthropic Claude Sonnet, `anthropic/claude-sonnet-4-6`) — see "LLM providers" below.
+
+**Provider switching, failover, and usage tracking.** `manage_llm_provider`'s `set` action never switches immediately — it stashes the requested `(provider, model_key)` in `unified_agent._pending_llm_switch` and returns a Confirm/Cancel button (`llm:confirm:<provider>/<model_key>` / `llm:cancel:<provider>/<model_key>`), handled by `telegram_bot.handle_llm_callback` exactly like the existing NEG-draft confirm flow; the switch only takes effect via `llm_confirm_switch`, and a stale or double-tapped button is a no-op once a newer request has replaced it. Independently, if the currently active provider's call fails mid-conversation, `_call_llm_with_failover` retries the other configured providers in a fixed order (`anthropic → openai → gemini`, skipping any without an API key); the first provider to succeed after a failure is persisted as the new default and reported via `alert.send_alert`, so an outage self-heals without a manual switch. Every successful call (first-try or failed-over) is recorded to `llm_usage_store` (`data/llm_usage.json`); `get_llm_usage_summary` reports today/all-time call counts and token totals per provider.
 
 Per-chat history, last-invoice context, and last-gig-listing context live in process memory keyed by `chat_id`. The reference-context fields (last invoice / gig-listing / application-listing — but **not** history) are also persisted to `data/agent_state.json` via `integrations/agent_state.py`: `process_message` lazily hydrates a chat's context on its first message (so it survives a bot restart) and saves it after each turn. On startup the bot calls `sync_calendar_blocks` (mirrors `filter_store.unavailable_periods()` into Google Calendar) and fires `alert.send_alert("🤖 Telegram bot started")`. The old 7-step `ConversationHandler` and the separate `invoice_agent.py` no longer exist — all interactions go through the unified agent.
 
@@ -123,6 +134,7 @@ Per-chat history, last-invoice context, and last-gig-listing context live in pro
 - `filter_store.py` — JSON-backed runtime filter values (blacklist, unavail/avail periods); read fresh each tick
 - `filter_suspension_store.py` — JSON-backed store for date-ranged filter suspensions (temporarily exempt gigs, by their own date, from a named filter or all filters except `seen`); read fresh each tick
 - `runtime_config_store.py` — JSON-backed pipeline overrides (`min_fee`, `max_travel_minutes`, `poll_minutes`)
+- `llm_usage_store.py` — JSON-backed per-call LLM usage log (provider, model, token counts); `record_call` / `summary(since=...)`
 - `reply_monitor.py` — Gmail → Claude-classifier → application_store + calendar + Telegram
 - `alert.py` — fire-and-forget Telegram alert (`send_alert(message)`); silently no-ops if unconfigured
 - `logging_config.py` — dual handler (ANSI console + rotating JSON file), `run_id` correlation
@@ -132,7 +144,7 @@ Per-chat history, last-invoice context, and last-gig-listing context live in pro
 - `calendar_client.py` — `GoogleCalendarClient` (service account; `has_event_on_date`, `add_gig`, `block_period`, `unblock_period`)
 - `gmail_client.py` — OAuth2 Gmail read-only; refreshes token + atomic write with `0o600`
 - `telegram_bot.py` — the bot module the entry point delegates to
-- `unified_agent.py` — litellm-backed agentic loop (Claude/OpenAI/Gemini), ~34 tools, per-chat state
+- `unified_agent.py` — litellm-backed agentic loop (Claude/OpenAI/Gemini), ~35 tools, per-chat state
 - `invoice_generator.py` — Playwright headless Chromium → PDF from Jinja2 `invoice.html`
 - `email_sender.py` — SMTP invoice email sender
 
@@ -163,6 +175,7 @@ Optional sections in `.env`:
 | `data/filter_config.json` | Runtime filter values: blacklist, unavail/avail periods |
 | `data/filter_suspensions.json` | Runtime filter suspensions (written by `filter_suspension_store`): which filter (or `all`) is exempted for which date range |
 | `data/runtime_config.json` | Runtime pipeline overrides: min_fee, max_travel_minutes, poll_minutes |
+| `data/llm_usage.json` | Per-call LLM usage log (provider, model, token counts) written by `llm_usage_store`; read by `get_llm_usage_summary` |
 | `data/agent_state.json` | Per-chat agent reference-context (last invoice/gig-listing/application-listing) persisted across restarts by `integrations/agent_state.py` |
 | `data/listings_hash.txt` | Hash of last-seen listings HTML for short-circuit detection |
 | `data/last_deployed_sha.txt` | SHA of the last successfully deployed commit; written by `scripts/auto_deploy.py` after each restart (gitignored) |

@@ -9,6 +9,7 @@ from telegram.error import BadRequest
 
 from organist_bot.integrations.telegram_bot import (
     _is_authorised,
+    handle_llm_callback,
     handle_message,
     handle_neg_callback,
 )
@@ -452,3 +453,86 @@ class TestHandleNegCallback:
             return_value=("text", []),
         ):
             await handle_neg_callback(update, context)  # must not raise
+
+
+# ── LLM provider callback handler ────────────────────────────────────────────
+
+
+class TestHandleLlmCallback:
+    @pytest.fixture(autouse=True)
+    def patch_settings(self):
+        with patch("organist_bot.integrations.telegram_bot.settings") as mock:
+            mock.telegram_chat_id = "7973955362"
+            yield mock
+
+    @pytest.mark.asyncio
+    async def test_rejects_unauthorised_chat(self):
+        update = _make_callback_update(chat_id=9999, data="llm:confirm:openai/gpt-5.6-luna")
+        context = _make_context()
+        with patch("organist_bot.integrations.unified_agent.llm_confirm_switch") as mock_fn:
+            await handle_llm_callback(update, context)
+        mock_fn.assert_not_called()
+        update.callback_query.answer.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_ignores_non_llm_callback_data(self):
+        update = _make_callback_update(data="something:else")
+        context = _make_context()
+        await handle_llm_callback(update, context)
+        context.bot.edit_message_text.assert_not_called()
+        update.callback_query.answer.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_ignores_malformed_target_with_no_slash(self):
+        update = _make_callback_update(data="llm:confirm:openai")
+        context = _make_context()
+        with patch("organist_bot.integrations.unified_agent.llm_confirm_switch") as mock_fn:
+            await handle_llm_callback(update, context)
+        mock_fn.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_confirm_success_shows_switched(self):
+        update = _make_callback_update(data="llm:confirm:openai/gpt-5.6-luna")
+        context = _make_context()
+        with patch(
+            "organist_bot.integrations.unified_agent.llm_confirm_switch",
+            return_value=(True, "Switched to openai/gpt-5.6-luna."),
+        ) as mock_fn:
+            await handle_llm_callback(update, context)
+        mock_fn.assert_called_once_with(7973955362, "openai", "gpt-5.6-luna")
+        text = context.bot.edit_message_text.call_args.kwargs["text"]
+        assert "✅" in text
+        assert "Switched to openai/gpt-5.6-luna." in text
+
+    @pytest.mark.asyncio
+    async def test_confirm_failure_shows_failure(self):
+        update = _make_callback_update(data="llm:confirm:openai/gpt-5.6-luna")
+        context = _make_context()
+        with patch(
+            "organist_bot.integrations.unified_agent.llm_confirm_switch",
+            return_value=(False, "This switch is no longer pending."),
+        ):
+            await handle_llm_callback(update, context)
+        text = context.bot.edit_message_text.call_args.kwargs["text"]
+        assert "❌" in text
+
+    @pytest.mark.asyncio
+    async def test_cancel_calls_llm_cancel_switch(self):
+        update = _make_callback_update(data="llm:cancel:openai/gpt-5.6-luna")
+        context = _make_context()
+        with patch(
+            "organist_bot.integrations.unified_agent.llm_cancel_switch",
+            return_value=(True, "Switch cancelled."),
+        ) as mock_fn:
+            await handle_llm_callback(update, context)
+        mock_fn.assert_called_once_with(7973955362, "openai", "gpt-5.6-luna")
+        text = context.bot.edit_message_text.call_args.kwargs["text"]
+        assert "✅" in text
+        assert "Switch cancelled." in text
+
+    @pytest.mark.asyncio
+    async def test_unknown_action_is_ignored(self):
+        update = _make_callback_update(data="llm:frobnicate:openai/gpt-5.6-luna")
+        context = _make_context()
+        await handle_llm_callback(update, context)
+        context.bot.edit_message_text.assert_not_called()
