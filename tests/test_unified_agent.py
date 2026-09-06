@@ -2725,11 +2725,11 @@ class TestCallLlmWithFailover:
 
         assert result is good_response
         assert provider == "openai"
-        assert model == "openai/gpt-6-astra"
+        assert model == "openai/gpt-5.6-luna"
         from organist_bot.runtime_config_store import runtime_config
 
         assert runtime_config.get("llm_provider", "") == "openai"
-        assert runtime_config.get("llm_model", "") == "openai/gpt-6-astra"
+        assert runtime_config.get("llm_model", "") == "openai/gpt-5.6-luna"
         assert len(alerts) == 1
         message, kwargs = alerts[0]
         assert message == (
