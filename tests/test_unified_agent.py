@@ -3422,6 +3422,159 @@ async def test_process_message_without_on_step_is_unaffected(tmp_path, monkeypat
 
 
 @pytest.mark.asyncio
+async def test_process_message_malformed_tool_arguments_keeps_history_valid(tmp_path, monkeypatch):
+    """A model returning malformed JSON in tool_call.function.arguments must
+    not crash process_message() or leave a dangling assistant tool_calls
+    message with no matching tool result -- json.loads() on the arguments
+    happens outside _execute_tool()'s own try/except, so it needs its own
+    guard (see unified_agent.process_message's per-tc try/except around
+    json.loads)."""
+    import litellm
+
+    from organist_bot.integrations import agent_state, unified_agent
+
+    monkeypatch.setattr(agent_state, "_PATH", tmp_path / "agent_state.json")
+    cid = 555001
+    unified_agent._hydrated.discard(cid)
+
+    broken_tool_call = SimpleNamespace(
+        id="tool_bad", function=SimpleNamespace(name="add_gig", arguments="{not valid json")
+    )
+    tool_use_response = _fake_litellm_response(tool_calls=[broken_tool_call])
+    # The malformed-args recovery continues the SAME turn's while-loop
+    # (it doesn't break, since tool_results is non-empty) -- so this first
+    # process_message() call alone consumes two LLM responses: the bad
+    # tool-call, then this immediate follow-up reply.
+    end_turn_response = _fake_litellm_response(content="Sorted.")
+    # A THIRD, separate response for the second, independent process_message()
+    # call below -- proves the *next turn* (not just the rest of this one)
+    # doesn't crash on the now-resolved history.
+    second_turn_response = _fake_litellm_response(content="Still here.")
+
+    mock_execute_tool = AsyncMock(return_value=json.dumps({"result": "ok"}))
+    monkeypatch.setattr(
+        litellm,
+        "acompletion",
+        AsyncMock(side_effect=[tool_use_response, end_turn_response, second_turn_response]),
+    )
+    monkeypatch.setattr(unified_agent, "_execute_tool", mock_execute_tool)
+
+    try:
+        responses = await unified_agent.process_message(cid, "add this gig")
+
+        # The tool was never actually executed -- the bad arguments never
+        # reached _execute_tool.
+        mock_execute_tool.assert_not_awaited()
+
+        history = unified_agent._histories[cid]
+        assistant_turn = next(
+            m for m in history if m["role"] == "assistant" and m.get("tool_calls")
+        )
+        assert assistant_turn["tool_calls"][0]["id"] == "tool_bad"
+        tool_turn = next(m for m in history if m["role"] == "tool")
+        assert tool_turn["tool_call_id"] == "tool_bad"
+        assert "error" in json.loads(tool_turn["content"])
+        assert responses == [unified_agent.AgentResponse(text="Sorted.")]
+
+        # The next, separate turn must not crash on the malformed-then-resolved
+        # history from the previous turn.
+        next_turn_responses = await unified_agent.process_message(cid, "still there?")
+        assert next_turn_responses == [unified_agent.AgentResponse(text="Still here.")]
+    finally:
+        unified_agent._histories.pop(cid, None)
+        unified_agent._hydrated.discard(cid)
+
+
+@pytest.mark.asyncio
+async def test_process_message_on_step_failure_does_not_corrupt_history(tmp_path, monkeypatch):
+    """A transient on_step failure (e.g. a Telegram network error reporting
+    progress) must not abort the tool-calling loop or leave a dangling
+    assistant tool_calls message -- on_step is a best-effort UI callback,
+    swallowed via _safe_on_step, never load-bearing for history validity."""
+    import litellm
+
+    from organist_bot.integrations import agent_state, unified_agent
+
+    monkeypatch.setattr(agent_state, "_PATH", tmp_path / "agent_state.json")
+    cid = 555002
+    unified_agent._hydrated.discard(cid)
+
+    tool_use_response = _fake_litellm_response(
+        tool_calls=[_fake_tool_call("tool_ok", "add_gig", {"url": "https://example.com/gig/1"})]
+    )
+    end_turn_response = _fake_litellm_response(content="Added the gig.")
+
+    monkeypatch.setattr(
+        litellm, "acompletion", AsyncMock(side_effect=[tool_use_response, end_turn_response])
+    )
+    monkeypatch.setattr(
+        unified_agent, "_execute_tool", AsyncMock(return_value=json.dumps({"result": "ok"}))
+    )
+
+    async def failing_on_step(status_text: str) -> None:
+        raise RuntimeError("Telegram network error")
+
+    try:
+        responses = await unified_agent.process_message(
+            cid, "add this gig", on_step=failing_on_step
+        )
+
+        history = unified_agent._histories[cid]
+        assistant_turn = next(
+            m for m in history if m["role"] == "assistant" and m.get("tool_calls")
+        )
+        assert assistant_turn["tool_calls"][0]["id"] == "tool_ok"
+        tool_turn = next(m for m in history if m["role"] == "tool")
+        assert tool_turn["tool_call_id"] == "tool_ok"
+        # The tool actually ran and its real result made it into history --
+        # on_step's failure didn't get papered over with a fabricated error.
+        assert json.loads(tool_turn["content"]) == {"result": "ok"}
+        assert responses == [unified_agent.AgentResponse(text="Added the gig.")]
+    finally:
+        unified_agent._histories.pop(cid, None)
+        unified_agent._hydrated.discard(cid)
+
+
+@pytest.mark.asyncio
+async def test_process_message_none_tool_arguments_keeps_history_valid(tmp_path, monkeypatch):
+    """A provider sending `arguments=None` instead of an empty "{}" string is
+    a different malformed-input shape than invalid JSON text -- json.loads(None)
+    raises TypeError, not JSONDecodeError, so the guard must catch both."""
+    import litellm
+
+    from organist_bot.integrations import agent_state, unified_agent
+
+    monkeypatch.setattr(agent_state, "_PATH", tmp_path / "agent_state.json")
+    cid = 555003
+    unified_agent._hydrated.discard(cid)
+
+    none_args_tool_call = SimpleNamespace(
+        id="tool_none", function=SimpleNamespace(name="add_gig", arguments=None)
+    )
+    tool_use_response = _fake_litellm_response(tool_calls=[none_args_tool_call])
+    end_turn_response = _fake_litellm_response(content="Sorted.")
+
+    mock_execute_tool = AsyncMock(return_value=json.dumps({"result": "ok"}))
+    monkeypatch.setattr(
+        litellm, "acompletion", AsyncMock(side_effect=[tool_use_response, end_turn_response])
+    )
+    monkeypatch.setattr(unified_agent, "_execute_tool", mock_execute_tool)
+
+    try:
+        responses = await unified_agent.process_message(cid, "add this gig")
+
+        mock_execute_tool.assert_not_awaited()
+        history = unified_agent._histories[cid]
+        tool_turn = next(m for m in history if m["role"] == "tool")
+        assert tool_turn["tool_call_id"] == "tool_none"
+        assert "error" in json.loads(tool_turn["content"])
+        assert responses == [unified_agent.AgentResponse(text="Sorted.")]
+    finally:
+        unified_agent._histories.pop(cid, None)
+        unified_agent._hydrated.discard(cid)
+
+
+@pytest.mark.asyncio
 async def test_process_message_stale_provider_resets_to_default(tmp_path, monkeypatch):
     """A stale/invalid llm_provider in runtime_config must reset to the default
     instead of crashing — the guard at the top of process_message() handles this."""
