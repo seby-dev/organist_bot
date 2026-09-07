@@ -1,5 +1,6 @@
 """Tests for unified_agent._execute_tool and supporting utilities."""
 
+import asyncio
 import datetime
 import json
 from types import SimpleNamespace
@@ -2431,7 +2432,7 @@ class TestManageLlmProvider:
         before = await _execute_tool("manage_llm_provider", {"action": "get"}, CHAT_ID)
         assert "anthropic" in json.loads(before)["result"]
 
-        ok, _ = unified_agent.llm_confirm_switch(CHAT_ID, "openai", "gpt-5.6-luna")
+        ok, _ = await unified_agent.llm_confirm_switch(CHAT_ID, "openai", "gpt-5.6-luna")
         assert ok is True
 
         after = await _execute_tool("manage_llm_provider", {"action": "get"}, CHAT_ID)
@@ -2447,7 +2448,7 @@ class TestManageLlmProvider:
             {"action": "set", "provider": "openai", "model": "gpt-5.6-luna"},
             CHAT_ID,
         )
-        unified_agent.llm_confirm_switch(CHAT_ID, "openai", "gpt-5.6-luna")
+        await unified_agent.llm_confirm_switch(CHAT_ID, "openai", "gpt-5.6-luna")
 
         result = await _execute_tool("manage_llm_provider", {"action": "reset"}, CHAT_ID)
         data = json.loads(result)
@@ -2465,9 +2466,9 @@ class TestLlmConfirmAndCancelSwitch:
         runtime_config.reset("llm_model")
         unified_agent._pending_llm_switch.pop(CHAT_ID, None)
 
-    def test_confirm_applies_the_pending_switch(self):
+    async def test_confirm_applies_the_pending_switch(self):
         unified_agent._pending_llm_switch[CHAT_ID] = ("openai", "gpt-5.6-luna")
-        ok, message = unified_agent.llm_confirm_switch(CHAT_ID, "openai", "gpt-5.6-luna")
+        ok, message = await unified_agent.llm_confirm_switch(CHAT_ID, "openai", "gpt-5.6-luna")
         assert ok is True
         assert "openai/gpt-5.6-luna" in message
         from organist_bot.runtime_config_store import runtime_config
@@ -2476,19 +2477,19 @@ class TestLlmConfirmAndCancelSwitch:
         assert runtime_config.get("llm_model", "") == "openai/gpt-5.6-luna"
         assert CHAT_ID not in unified_agent._pending_llm_switch
 
-    def test_confirm_with_no_pending_switch_is_a_noop(self):
-        ok, message = unified_agent.llm_confirm_switch(CHAT_ID, "openai", "gpt-5.6-luna")
+    async def test_confirm_with_no_pending_switch_is_a_noop(self):
+        ok, message = await unified_agent.llm_confirm_switch(CHAT_ID, "openai", "gpt-5.6-luna")
         assert ok is False
         assert "no longer pending" in message.lower()
         from organist_bot.runtime_config_store import runtime_config
 
         assert runtime_config.get("llm_provider", "anthropic") == "anthropic"
 
-    def test_confirm_with_mismatched_target_does_not_apply_a_different_pending_switch(self):
+    async def test_confirm_with_mismatched_target_does_not_apply_a_different_pending_switch(self):
         """A stale button for an earlier request must not apply a switch the
         user has since overwritten with a newer one."""
         unified_agent._pending_llm_switch[CHAT_ID] = ("gemini", "gemini-pro")
-        ok, message = unified_agent.llm_confirm_switch(CHAT_ID, "openai", "gpt-5.6-luna")
+        ok, message = await unified_agent.llm_confirm_switch(CHAT_ID, "openai", "gpt-5.6-luna")
         assert ok is False
         assert "no longer pending" in message.lower()
         from organist_bot.runtime_config_store import runtime_config
@@ -2496,6 +2497,28 @@ class TestLlmConfirmAndCancelSwitch:
         assert runtime_config.get("llm_provider", "anthropic") == "anthropic"
         # The still-pending gemini switch is untouched by the stale attempt.
         assert unified_agent._pending_llm_switch[CHAT_ID] == ("gemini", "gemini-pro")
+
+    async def test_confirm_switch_is_serialized_against_a_concurrent_failover_persist(self):
+        """llm_confirm_switch must contend for _failover_persist_lock just
+        like _call_llm_with_failover's own persist step, not write straight
+        through it -- otherwise a manual switch landing while a failover
+        call is waiting on the lock could interleave with (and be silently
+        overwritten by) the failover's own persist once it finally acquires
+        the lock."""
+        unified_agent._pending_llm_switch[CHAT_ID] = ("openai", "gpt-5.6-luna")
+
+        async with unified_agent._failover_persist_lock:
+            task = asyncio.create_task(
+                unified_agent.llm_confirm_switch(CHAT_ID, "openai", "gpt-5.6-luna")
+            )
+            await asyncio.sleep(0.01)
+            assert not task.done(), "llm_confirm_switch must block while the lock is held"
+
+        ok, message = await task
+        assert ok is True
+        from organist_bot.runtime_config_store import runtime_config
+
+        assert runtime_config.get("llm_provider", "") == "openai"
 
     def test_cancel_discards_the_pending_switch_without_applying_it(self):
         unified_agent._pending_llm_switch[CHAT_ID] = ("openai", "gpt-5.6-luna")
@@ -3117,6 +3140,56 @@ class TestCallLlmWithFailover:
             "🔀 *AI provider auto\\-switched*\nanthropic → openai\n\nReason: anthropic is down"
         )
         assert kwargs == {"parse_mode": "MarkdownV2"}
+
+    async def test_concurrent_failover_calls_from_a_stale_primary_alert_once(
+        self, tmp_path, monkeypatch
+    ):
+        """Mirrors two callers that both read runtime_config's primary
+        provider before either has persisted a failover -- e.g. two
+        overlapping conversation turns both starting from the same stale
+        "anthropic" primary during an outage. Without the
+        _failover_persist_lock dedup guard in _call_llm_with_failover, each
+        would independently conclude "anthropic -> openai" is a new switch
+        and fire its own duplicate Telegram alert for what is really one
+        transition."""
+        import litellm
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(unified_agent.settings, "openai_api_key", "sk-test")
+        monkeypatch.setattr(unified_agent.settings, "gemini_api_key", "")
+
+        good_response = _fake_litellm_response(content="ok")
+
+        async def fake_acompletion(*, model, **kwargs):
+            if model.startswith("anthropic/"):
+                raise RuntimeError("anthropic is down")
+            # Widens the window between each caller's runtime_config read and
+            # its persist-and-alert decision, forcing the overlap the lock
+            # must serialize -- same technique as delaying commit() in the
+            # equivalent Postgres-row-lock regression test.
+            await asyncio.sleep(0.05)
+            return good_response
+
+        monkeypatch.setattr(litellm, "acompletion", AsyncMock(side_effect=fake_acompletion))
+        alerts: list[tuple[str, dict]] = []
+        monkeypatch.setattr(
+            unified_agent.alert, "send_alert", lambda msg, **kw: alerts.append((msg, kw))
+        )
+
+        results = await asyncio.gather(
+            *[
+                unified_agent._call_llm_with_failover(
+                    "anthropic", "anthropic/claude-sonnet-4-6", messages=[], tools=[]
+                )
+                for _ in range(5)
+            ]
+        )
+
+        assert all(provider == "openai" for _, provider, _ in results)
+        from organist_bot.runtime_config_store import runtime_config
+
+        assert runtime_config.get("llm_provider", "") == "openai"
+        assert len(alerts) == 1, f"expected exactly one alert, got {alerts}"
 
     async def test_skips_providers_without_a_configured_api_key(self, tmp_path, monkeypatch):
         import litellm

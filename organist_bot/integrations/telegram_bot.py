@@ -274,7 +274,7 @@ async def handle_llm_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     provider, model_key = target.split("/", 1)
 
     if action == "confirm":
-        ok, result = unified_agent.llm_confirm_switch(chat_id, provider, model_key)
+        ok, result = await unified_agent.llm_confirm_switch(chat_id, provider, model_key)
     elif action == "cancel":
         ok, result = unified_agent.llm_cancel_switch(chat_id, provider, model_key)
     else:
