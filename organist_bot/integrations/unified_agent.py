@@ -265,6 +265,7 @@ async def _call_openai_responses_api(
     model: str,
     api_key: str,
     messages: list[dict],
+    tools: list[dict],
     responses_session: dict,
 ) -> SimpleNamespace:
     """Call OpenAI's /v1/responses endpoint (via litellm.aresponses) for models
@@ -291,6 +292,7 @@ async def _call_openai_responses_api(
 
     previous_response_id = responses_session.get("previous_response_id")
     if previous_response_id is None:
+        assert messages[0]["role"] == "system", "messages[0] must be the system prompt"
         input_items = _responses_input_from_messages(messages[1:])  # [0] is system
     else:
         input_items = _responses_tool_outputs_from_messages(
@@ -301,7 +303,7 @@ async def _call_openai_responses_api(
         model=model,
         input=input_items,
         instructions=SYSTEM_PROMPT,
-        tools=RESPONSES_TOOLS,
+        tools=_responses_tools_from_chat_tools(tools),
         api_key=api_key,
         previous_response_id=previous_response_id,
         store=True,
@@ -325,7 +327,8 @@ async def _call_llm_with_failover(
     tools: list[dict],
     responses_session: dict | None = None,
 ):
-    """Call litellm.acompletion against `provider`/`model`; on failure, try
+    """Call litellm.acompletion (or, for models in _RESPONSES_API_MODELS, the
+    OpenAI Responses API adapter) against `provider`/`model`; on failure, try
     the other configured providers (fixed order, skipping any without an API
     key and whichever was just attempted) until one succeeds. Records usage
     for whichever call actually succeeded.
@@ -364,6 +367,7 @@ async def _call_llm_with_failover(
                     model=m,
                     api_key=getattr(settings, _PROVIDER_API_KEY_FIELD[p]),
                     messages=messages,
+                    tools=tools,
                     responses_session=responses_session,
                 )
             else:
@@ -1116,16 +1120,39 @@ TOOLS: list[dict] = [_to_function_tool(t) for t in _TOOLS_SCHEMA]
 
 def _to_responses_tool(tool: dict) -> dict:
     """Flat function-tool shape required by the Responses API (no nested
-    "function" key, unlike Chat Completions' TOOLS)."""
+    "function" key, unlike Chat Completions' TOOLS). `strict` is pinned to
+    False explicitly to keep parity with the non-strict-by-default Chat
+    Completions path, rather than relying on whatever OpenAI defaults to."""
     return {
         "type": "function",
         "name": tool["name"],
         "description": tool["description"],
         "parameters": tool["input_schema"],
+        "strict": False,
     }
 
 
 RESPONSES_TOOLS: list[dict] = [_to_responses_tool(t) for t in _TOOLS_SCHEMA]
+
+
+def _responses_tools_from_chat_tools(tools: list[dict]) -> list[dict]:
+    """Convert an already-nested Chat Completions tools list (this module's
+    TOOLS shape: {"type": "function", "function": {name, description,
+    parameters}}) into the Responses API's flat shape. Used by
+    _call_openai_responses_api so the Responses branch genuinely respects
+    whatever `tools` _call_llm_with_failover was actually called with, instead
+    of silently substituting the module-global RESPONSES_TOOLS regardless of
+    what was passed."""
+    return [
+        {
+            "type": "function",
+            "name": t["function"]["name"],
+            "description": t["function"]["description"],
+            "parameters": t["function"]["parameters"],
+            "strict": False,
+        }
+        for t in tools
+    ]
 
 
 @dataclass

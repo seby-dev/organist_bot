@@ -2664,6 +2664,7 @@ class TestResponsesToolsShape:
             assert isinstance(tool["name"], str)
             assert isinstance(tool["description"], str)
             assert isinstance(tool["parameters"], dict)
+            assert tool["strict"] is False
             assert "function" not in tool
 
     def test_same_names_and_order_as_TOOLS(self):
@@ -2871,6 +2872,7 @@ class TestCallOpenaiResponsesApi:
             model="openai/gpt-6-astra",
             api_key="sk-test",
             messages=messages,
+            tools=unified_agent.TOOLS,
             responses_session=session,
         )
 
@@ -2880,6 +2882,8 @@ class TestCallOpenaiResponsesApi:
         assert call_kwargs["store"] is True
         assert call_kwargs["input"] == [{"type": "message", "role": "user", "content": "hello"}]
         assert call_kwargs["instructions"] == unified_agent.SYSTEM_PROMPT
+        # Proves the chat-tools-shape conversion produces output identical to
+        # the existing flat-schema constant, since both derive from _TOOLS_SCHEMA.
         assert call_kwargs["tools"] == unified_agent.RESPONSES_TOOLS
         assert session["previous_response_id"] == "resp_A"
         assert session["synced_len"] == len(messages)
@@ -2906,6 +2910,7 @@ class TestCallOpenaiResponsesApi:
             model="openai/gpt-6-astra",
             api_key="sk-test",
             messages=second_messages,
+            tools=unified_agent.TOOLS,
             responses_session=session,
         )
 
@@ -2931,6 +2936,7 @@ class TestCallOpenaiResponsesApi:
                 model="openai/gpt-6-astra",
                 api_key="sk-test",
                 messages=[{"role": "system", "content": "SYS"}, {"role": "user", "content": "hi"}],
+                tools=unified_agent.TOOLS,
                 responses_session=session,
             )
         assert session == {}
@@ -2949,6 +2955,7 @@ class TestCallOpenaiResponsesApi:
                 model="openai/gpt-6-astra",
                 api_key="sk-test",
                 messages=[{"role": "system", "content": "SYS"}, {"role": "user", "content": "hi"}],
+                tools=unified_agent.TOOLS,
                 responses_session=session,
             )
         assert session == {}
@@ -2988,7 +2995,10 @@ class TestCallLlmWithFailover:
         monkeypatch.setattr(unified_agent.alert, "send_alert", lambda *a, **k: None)
 
         result, provider, model = await unified_agent._call_llm_with_failover(
-            "openai", "openai/gpt-6-astra", messages=[{"role": "system", "content": "S"}], tools=[]
+            "openai",
+            "openai/gpt-6-astra",
+            messages=[{"role": "system", "content": "S"}],
+            tools=unified_agent.TOOLS,
         )
 
         assert provider == "openai"
@@ -3023,7 +3033,7 @@ class TestCallLlmWithFailover:
             "openai",
             "openai/gpt-6-astra",
             messages=[{"role": "system", "content": "S"}],
-            tools=[],
+            tools=unified_agent.TOOLS,
         )
 
         # candidates = [("openai", "openai/gpt-6-astra")] first, then
@@ -3380,7 +3390,11 @@ async def test_process_message_gpt_6_astra_two_round_tool_loop(tmp_path, monkeyp
         output=[_fake_responses_message("Added the gig.")],
         response_id="resp_second",
     )
-    mock_aresponses = AsyncMock(side_effect=[first_response, second_response])
+    third_response = _fake_responses_api_response(
+        output=[_fake_responses_message("Sure, what else?")],
+        response_id="resp_third",
+    )
+    mock_aresponses = AsyncMock(side_effect=[first_response, second_response, third_response])
     monkeypatch.setattr(litellm, "aresponses", mock_aresponses)
     monkeypatch.setattr(
         litellm, "acompletion", AsyncMock(side_effect=AssertionError("must not be called"))
@@ -3417,6 +3431,17 @@ async def test_process_message_gpt_6_astra_two_round_tool_loop(tmp_path, monkeyp
         assert assistant_turn["tool_calls"][0]["id"] == "call_xyz"
         tool_turn = next(m for m in history if m["role"] == "tool")
         assert tool_turn["tool_call_id"] == "call_xyz"
+
+        # A brand-new turn (a fresh process_message call) must not chain from
+        # the previous turn's responses_session -- that dict is created fresh
+        # inside process_message() on every call, never shared or persisted
+        # across turns. This is the single load-bearing invariant of the
+        # whole previous_response_id design.
+        second_turn_responses = await unified_agent.process_message(cid, "another question")
+        assert second_turn_responses == [unified_agent.AgentResponse(text="Sure, what else?")]
+
+        third_call_kwargs = mock_aresponses.call_args_list[2].kwargs
+        assert third_call_kwargs["previous_response_id"] is None
     finally:
         unified_agent._histories.pop(cid, None)
         unified_agent._hydrated.discard(cid)
