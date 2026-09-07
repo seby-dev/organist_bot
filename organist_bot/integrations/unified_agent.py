@@ -354,13 +354,13 @@ async def _call_llm_with_failover(
     runtime_config already reflects this exact provider/model, so two calls
     racing to report the same transition (e.g. concurrent conversation turns
     both failing over off the same stale primary) fire the alert once, not
-    once each. If EVERY
-    configured provider fails, fires a Telegram alert listing every provider
-    tried and its own error, then raises a RuntimeError whose message is that
-    same summary (chained onto the last provider's exception) -- so the
-    generic "Unexpected error" text the caller falls back to (see
-    telegram_bot.handle_message) shows what was actually tried instead of
-    just whichever provider happened to be attempted last.
+    once each. If EVERY configured provider fails, fires a Telegram alert
+    listing every provider tried and its own error, then raises a
+    RuntimeError whose message is that same summary (chained onto the last
+    provider's exception) -- so the generic "Unexpected error" text the
+    caller falls back to (see telegram_bot.handle_message) shows what was
+    actually tried instead of just whichever provider happened to be
+    attempted last.
 
     Returns (response, provider_used, model_used) so the caller's own
     provider/model tracking stays in sync for the rest of that conversation
