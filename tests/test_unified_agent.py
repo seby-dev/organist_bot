@@ -2777,6 +2777,81 @@ class TestChatResponseFromResponsesApi:
         assert chat_response.choices[0].message.content == "hi"
 
 
+class TestResponsesInputFromMessages:
+    def test_user_text_becomes_user_message_item(self):
+        items = unified_agent._responses_input_from_messages([{"role": "user", "content": "hello"}])
+        assert items == [{"type": "message", "role": "user", "content": "hello"}]
+
+    def test_assistant_text_only_becomes_assistant_message_item(self):
+        items = unified_agent._responses_input_from_messages(
+            [{"role": "assistant", "content": "sure thing", "tool_calls": None}]
+        )
+        assert items == [{"type": "message", "role": "assistant", "content": "sure thing"}]
+
+    def test_tool_call_round_trip_is_dropped(self):
+        messages = [
+            {"role": "user", "content": "add this gig"},
+            {"role": "assistant", "content": None, "tool_calls": [{"id": "call_1"}]},
+            {"role": "tool", "tool_call_id": "call_1", "name": "add_gig", "content": "{}"},
+        ]
+        items = unified_agent._responses_input_from_messages(messages)
+        assert items == [{"type": "message", "role": "user", "content": "add this gig"}]
+
+    def test_assistant_message_with_both_content_and_tool_calls_keeps_the_text(self):
+        messages = [
+            {
+                "role": "assistant",
+                "content": "Let me check that.",
+                "tool_calls": [{"id": "call_1"}],
+            },
+        ]
+        items = unified_agent._responses_input_from_messages(messages)
+        assert items == [{"type": "message", "role": "assistant", "content": "Let me check that."}]
+
+    def test_dangling_unresolved_tool_calls_message_is_tolerated(self):
+        """Simulates a crash mid-turn on a previous call leaving an assistant
+        tool_calls message with no matching tool result at all -- the
+        translator must not assume turns are always cleanly resolved."""
+        messages = [
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": None, "tool_calls": [{"id": "call_1"}]},
+            {"role": "user", "content": "second"},
+        ]
+        items = unified_agent._responses_input_from_messages(messages)
+        assert items == [
+            {"type": "message", "role": "user", "content": "first"},
+            {"type": "message", "role": "user", "content": "second"},
+        ]
+
+
+class TestResponsesToolOutputsFromMessages:
+    def test_translates_tool_messages_to_function_call_output_items(self):
+        new_messages = [
+            {"role": "assistant", "content": None, "tool_calls": [{"id": "call_1"}]},
+            {"role": "tool", "tool_call_id": "call_1", "name": "add_gig", "content": '{"ok":true}'},
+        ]
+        items = unified_agent._responses_tool_outputs_from_messages(new_messages)
+        assert items == [
+            {"type": "function_call_output", "call_id": "call_1", "output": '{"ok":true}'}
+        ]
+
+    def test_multiple_tool_results_all_translated(self):
+        new_messages = [
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{"id": "call_1"}, {"id": "call_2"}],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "name": "a", "content": "1"},
+            {"role": "tool", "tool_call_id": "call_2", "name": "b", "content": "2"},
+        ]
+        items = unified_agent._responses_tool_outputs_from_messages(new_messages)
+        assert items == [
+            {"type": "function_call_output", "call_id": "call_1", "output": "1"},
+            {"type": "function_call_output", "call_id": "call_2", "output": "2"},
+        ]
+
+
 # ── LLM provider failover cascade ────────────────────────────────────────────
 
 

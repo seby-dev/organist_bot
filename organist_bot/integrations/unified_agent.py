@@ -211,6 +211,48 @@ def _chat_response_from_responses_api(response) -> SimpleNamespace:
     return SimpleNamespace(choices=[SimpleNamespace(message=message)], usage=chat_usage)
 
 
+def _responses_input_from_messages(messages: list[dict]) -> list[dict]:
+    """Bootstrap translation for the first Responses API call of a turn.
+    Expects `messages` WITHOUT the leading system message -- the caller passes
+    `messages[1:]`; the system prompt goes via `instructions=` instead.
+
+    Keeps any text a user or assistant message carries (an assistant turn can
+    have both `content` and `tool_calls` -- e.g. "Let me check that." before a
+    tool call -- and its text is kept even though the tool_calls themselves are
+    dropped). Drops the tool-call machinery of completed round trips from
+    earlier turns entirely: neither a bare function_call item (an id from a
+    different provider, or one with no reasoning item behind it) nor its
+    function_call_output is replayed -- see
+    docs/superpowers/specs/2026-09-07-gpt6-astra-responses-api-design.md.
+
+    Tolerant by construction of a dangling, never-resolved tool_calls message
+    (e.g. left behind by a crash mid-turn on a previous call) -- it's dropped
+    the same as any other assistant-with-tool_calls message, whether or not a
+    matching tool result ever arrived."""
+    items: list[dict] = []
+    for m in messages:
+        role = m.get("role")
+        if role == "user" and isinstance(m.get("content"), str):
+            items.append({"type": "message", "role": "user", "content": m["content"]})
+        elif role == "assistant" and m.get("content"):
+            items.append({"type": "message", "role": "assistant", "content": m["content"]})
+        # assistant-with-tool_calls-and-no-content, and "tool" messages, are
+        # intentionally dropped here.
+    return items
+
+
+def _responses_tool_outputs_from_messages(new_messages: list[dict]) -> list[dict]:
+    """Translate a turn's new tool-result messages into function_call_output
+    items for a previous_response_id-chained follow-up call. `new_messages` is
+    the slice of `messages` appended since the last Responses API call in this
+    turn -- exactly one assistant tool_calls message plus its tool messages."""
+    return [
+        {"type": "function_call_output", "call_id": m["tool_call_id"], "output": m["content"]}
+        for m in new_messages
+        if m.get("role") == "tool"
+    ]
+
+
 async def _call_llm_with_failover(
     provider: str, model: str, messages: list[dict], tools: list[dict]
 ):
