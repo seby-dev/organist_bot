@@ -21,11 +21,13 @@
       "Bash(sed *)"
     ],
     "deny": [
-      "Read(.env)",
-      "Read(.env.*)",
       "Read(secrets/**)",
       "Bash(rm -rf *)",
       "Bash(sudo *)"
+    ],
+    "ask": [
+      "Read(.env)",
+      "Read(.env.*)"
     ]
   },
   "hooks": {
@@ -73,6 +75,16 @@
             "command": "python3 \"${CLAUDE_PROJECT_DIR}/.claude/hooks/post_edit_lint.py\""
           }
         ]
+      },
+      {
+        "matcher": "Read|Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PROJECT_DIR}/.claude/hooks/scrub_env_transcript.py\"",
+            "async": true
+          }
+        ]
       }
     ],
     "Stop": [
@@ -81,6 +93,10 @@
           {
             "type": "command",
             "command": "python3 \"${CLAUDE_PROJECT_DIR}/.claude/hooks/stop_quality_check.py\""
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PROJECT_DIR}/.claude/hooks/scrub_env_transcript.py\""
           }
         ]
       }
