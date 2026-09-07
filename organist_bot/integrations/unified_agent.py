@@ -2704,6 +2704,19 @@ async def _handle_get_llm_usage_summary(input_data: dict, chat_id: int) -> str:
     return json.dumps({"result": "\n".join(lines)})
 
 
+async def _safe_on_step(on_step: Callable[[str], Awaitable[None]], steps: list[str]) -> None:
+    """Best-effort progress callback. A transient failure here (e.g. a
+    Telegram network error) must never propagate out of the tool-calling
+    loop in process_message() -- doing so would abort mid-turn and leave the
+    just-appended assistant tool_calls message in _histories[chat_id] without
+    a matching tool result for this call id, corrupting history for every
+    following turn."""
+    try:
+        await on_step("\n".join(steps))
+    except Exception:
+        logger.warning("on_step callback failed", exc_info=True)
+
+
 async def process_message(
     chat_id: int,
     text: str,
@@ -2763,12 +2776,32 @@ async def process_message(
         tool_results = []
         for tc in msg.tool_calls:
             name = tc.function.name
-            args = json.loads(tc.function.arguments)
+            try:
+                args = json.loads(tc.function.arguments)
+            except (json.JSONDecodeError, TypeError) as e:
+                # A model returning malformed argument JSON -- or, per a
+                # provider edge case, `arguments=None` instead of an empty
+                # "{}" string (json.loads(None) raises TypeError, not
+                # JSONDecodeError) -- must still resolve this tool_call_id.
+                # The assistant tool_calls message was already appended to
+                # _histories[chat_id] above, and leaving it without a
+                # matching tool result corrupts history for every following
+                # turn (some providers reject a dangling tool_use outright).
+                logger.error("Malformed tool-call arguments for %s: %s", name, e)
+                tool_results.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "name": name,
+                        "content": json.dumps({"error": f"Malformed tool arguments: {e}"}),
+                    }
+                )
+                continue
             logger.info("Unified agent tool call: %s(%s)", name, json.dumps(args))
 
             steps.append(f"🔧 {name}")
             if on_step is not None:
-                await on_step("\n".join(steps))
+                await _safe_on_step(on_step, steps)
 
             try:
                 result = await _execute_tool(name, args, chat_id)
@@ -2778,7 +2811,7 @@ async def process_message(
 
             steps[-1] = f"✅ {name}"
             if on_step is not None:
-                await on_step("\n".join(steps))
+                await _safe_on_step(on_step, steps)
 
             if name in _VERBATIM_RESPONSE_TOOLS:
                 try:
