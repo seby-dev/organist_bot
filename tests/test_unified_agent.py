@@ -2852,6 +2852,106 @@ class TestResponsesToolOutputsFromMessages:
         ]
 
 
+class TestCallOpenaiResponsesApi:
+    async def test_first_call_bootstraps_from_history_without_system_message(self, monkeypatch):
+        import litellm
+
+        messages = [
+            {"role": "system", "content": "SYS"},
+            {"role": "user", "content": "hello"},
+        ]
+        fake_response = _fake_responses_api_response(
+            output=[_fake_responses_message("hi there")], response_id="resp_A"
+        )
+        mock_aresponses = AsyncMock(return_value=fake_response)
+        monkeypatch.setattr(litellm, "aresponses", mock_aresponses)
+
+        session: dict = {}
+        result = await unified_agent._call_openai_responses_api(
+            model="openai/gpt-6-astra",
+            api_key="sk-test",
+            messages=messages,
+            responses_session=session,
+        )
+
+        assert result.choices[0].message.content == "hi there"
+        call_kwargs = mock_aresponses.call_args.kwargs
+        assert call_kwargs["previous_response_id"] is None
+        assert call_kwargs["store"] is True
+        assert call_kwargs["input"] == [{"type": "message", "role": "user", "content": "hello"}]
+        assert call_kwargs["instructions"] == unified_agent.SYSTEM_PROMPT
+        assert call_kwargs["tools"] == unified_agent.RESPONSES_TOOLS
+        assert session["previous_response_id"] == "resp_A"
+        assert session["synced_len"] == len(messages)
+
+    async def test_second_call_chains_via_previous_response_id_with_only_new_tool_outputs(
+        self, monkeypatch
+    ):
+        import litellm
+
+        first_messages = [{"role": "system", "content": "SYS"}, {"role": "user", "content": "hi"}]
+        session: dict = {"previous_response_id": "resp_A", "synced_len": len(first_messages)}
+        second_messages = [
+            *first_messages,
+            {"role": "assistant", "content": None, "tool_calls": [{"id": "call_1"}]},
+            {"role": "tool", "tool_call_id": "call_1", "name": "add_gig", "content": '{"ok":1}'},
+        ]
+        fake_response = _fake_responses_api_response(
+            output=[_fake_responses_message("done")], response_id="resp_B"
+        )
+        mock_aresponses = AsyncMock(return_value=fake_response)
+        monkeypatch.setattr(litellm, "aresponses", mock_aresponses)
+
+        await unified_agent._call_openai_responses_api(
+            model="openai/gpt-6-astra",
+            api_key="sk-test",
+            messages=second_messages,
+            responses_session=session,
+        )
+
+        call_kwargs = mock_aresponses.call_args.kwargs
+        assert call_kwargs["previous_response_id"] == "resp_A"
+        assert call_kwargs["input"] == [
+            {"type": "function_call_output", "call_id": "call_1", "output": '{"ok":1}'}
+        ]
+        assert session["previous_response_id"] == "resp_B"
+        assert session["synced_len"] == len(second_messages)
+
+    async def test_incomplete_status_raises_and_does_not_mutate_session(self, monkeypatch):
+        import litellm
+
+        fake_response = _fake_responses_api_response(
+            output=[], response_id="resp_C", status="incomplete"
+        )
+        monkeypatch.setattr(litellm, "aresponses", AsyncMock(return_value=fake_response))
+
+        session: dict = {}
+        with pytest.raises(unified_agent.ResponsesApiError):
+            await unified_agent._call_openai_responses_api(
+                model="openai/gpt-6-astra",
+                api_key="sk-test",
+                messages=[{"role": "system", "content": "SYS"}, {"role": "user", "content": "hi"}],
+                responses_session=session,
+            )
+        assert session == {}
+
+    async def test_populated_error_field_raises_even_if_status_completed(self, monkeypatch):
+        import litellm
+
+        fake_response = _fake_responses_api_response(
+            output=[], response_id="resp_D", status="completed", error={"message": "boom"}
+        )
+        monkeypatch.setattr(litellm, "aresponses", AsyncMock(return_value=fake_response))
+
+        with pytest.raises(unified_agent.ResponsesApiError):
+            await unified_agent._call_openai_responses_api(
+                model="openai/gpt-6-astra",
+                api_key="sk-test",
+                messages=[{"role": "system", "content": "SYS"}, {"role": "user", "content": "hi"}],
+                responses_session={},
+            )
+
+
 # ── LLM provider failover cascade ────────────────────────────────────────────
 
 

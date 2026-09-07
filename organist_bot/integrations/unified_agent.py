@@ -253,6 +253,74 @@ def _responses_tool_outputs_from_messages(new_messages: list[dict]) -> list[dict
     ]
 
 
+class ResponsesApiError(RuntimeError):
+    """Raised when OpenAI's /v1/responses returns a non-"completed" response
+    (status "failed"/"incomplete", or a populated `error` field) instead of
+    raising an HTTP-level exception. litellm.aresponses() does not itself raise
+    for these -- they're a normal 200 response with a status field describing
+    what went wrong -- so _call_openai_responses_api raises explicitly to fold
+    them into _call_llm_with_failover's existing except/failover path instead
+    of silently returning an empty turn -- see
+    docs/superpowers/specs/2026-09-07-gpt6-astra-responses-api-design.md."""
+
+
+async def _call_openai_responses_api(
+    model: str,
+    api_key: str,
+    messages: list[dict],
+    responses_session: dict,
+) -> SimpleNamespace:
+    """Call OpenAI's /v1/responses endpoint (via litellm.aresponses) for models
+    that reject function tools on /v1/chat/completions (currently just
+    gpt-6-astra -- see _RESPONSES_API_MODELS). Returns a chat-completions-shaped
+    response so process_message()/_record_llm_usage()/history bookkeeping work
+    unchanged regardless of which endpoint actually served the call.
+
+    `responses_session` is a plain dict, one per process_message() turn (created
+    fresh in process_message, NOT persisted across turns or chats), used to
+    chain calls within the same tool-calling loop via previous_response_id --
+    this replaces manually replaying reasoning items (see spec). That chaining
+    requires the referenced response to be stored server-side, hence
+    `store=True` below (litellm's/OpenAI's default already, but pinned
+    explicitly since correctness depends on it).
+
+    No `max_output_tokens` is set deliberately: this is a reasoning model, and
+    reasoning tokens count against that cap -- an aggressive limit (e.g. the
+    4096 the acompletion() branch uses) risks routinely truncating mid-reasoning
+    into an "incomplete" status, which now raises (see ResponsesApiError) and
+    would push every such turn into failover instead of just being slow.
+    """
+    import litellm
+
+    previous_response_id = responses_session.get("previous_response_id")
+    if previous_response_id is None:
+        input_items = _responses_input_from_messages(messages[1:])  # [0] is system
+    else:
+        input_items = _responses_tool_outputs_from_messages(
+            messages[responses_session["synced_len"] :]
+        )
+
+    response = await litellm.aresponses(
+        model=model,
+        input=input_items,
+        instructions=SYSTEM_PROMPT,
+        tools=RESPONSES_TOOLS,
+        api_key=api_key,
+        previous_response_id=previous_response_id,
+        store=True,
+    )
+
+    if response.status != "completed" or response.error is not None:
+        raise ResponsesApiError(
+            f"OpenAI Responses API returned status={response.status!r}, error={response.error!r}"
+        )
+
+    responses_session["previous_response_id"] = response.id
+    responses_session["synced_len"] = len(messages)
+
+    return _chat_response_from_responses_api(response)
+
+
 async def _call_llm_with_failover(
     provider: str, model: str, messages: list[dict], tools: list[dict]
 ):
