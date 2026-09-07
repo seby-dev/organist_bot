@@ -6,6 +6,7 @@ import json
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import cast
 
 from organist_bot import (
@@ -75,19 +76,22 @@ _PROVIDER_API_KEY_FIELD = {
 _FAILOVER_ORDER = ["anthropic", "openai", "gemini"]
 # Which curated model a provider fails over TO, since the currently-active
 # model key may not exist for that provider (e.g. "opus" has no OpenAI
-# equivalent key). Deliberately NOT each provider's flagship: OpenAI's
-# flagship "gpt-6-astra" is a reasoning model that OpenAI's own API refuses
-# to run with function tools at all on the chat-completions endpoint this
-# codebase uses (needs /v1/responses instead, and separately rejects
-# reasoning_effort="none" as a workaround) -- confirmed live against the real
-# API. Every conversation here always sends tools, so gpt-6-astra can never
-# actually serve a failover call; "gpt-5.6-luna" is openai's other curated
-# option and works fine with tools.
+# equivalent key). Deliberately NOT each provider's flagship: gpt-6-astra now
+# works standalone via the Responses API adapter (see _RESPONSES_API_MODELS /
+# _call_openai_responses_api), but the failover default stays "gpt-5.6-luna"
+# on purpose -- an outage-driven failover should land on the plain, fast
+# acompletion() path, not the added Responses API round-trip machinery.
 _DEFAULT_MODEL_KEY_PER_PROVIDER = {
     "anthropic": "sonnet",
     "openai": "gpt-5.6-luna",
     "gemini": "gemini-pro",
 }
+
+# Models that reject function tools on /v1/chat/completions and must go through
+# /v1/responses instead (litellm.aresponses()) -- see
+# docs/superpowers/specs/2026-09-07-gpt6-astra-responses-api-design.md. Currently
+# just gpt-6-astra; every other curated model keeps using acompletion().
+_RESPONSES_API_MODELS = {"openai/gpt-6-astra"}
 
 
 def _default_model_string() -> str:
@@ -139,10 +143,205 @@ def _truncate_reason(exc: Exception) -> str:
     return text if len(text) <= _REASON_TRUNCATE_LEN else text[: _REASON_TRUNCATE_LEN - 1] + "…"
 
 
+def _item_get(item, key, default=None):
+    """Accessor tolerant of both a pydantic response-item object (attribute
+    access) and a plain dict -- litellm's Responses API objects are pydantic
+    models, but this keeps the translators trivially unit-testable with dicts."""
+    return item.get(key, default) if isinstance(item, dict) else getattr(item, key, default)
+
+
+def _chat_message_from_responses_output(output_items) -> SimpleNamespace:
+    """Build an object exposing .content / .tool_calls / .model_dump() shaped
+    exactly like litellm.acompletion()'s response.choices[0].message, from a
+    Responses API response's `.output` list."""
+    text_parts: list[str] = []
+    tool_calls: list[SimpleNamespace] = []
+    for item in output_items:
+        item_type = _item_get(item, "type")
+        if item_type == "message":
+            for content_item in _item_get(item, "content", []) or []:
+                if _item_get(content_item, "type") == "output_text":
+                    text_parts.append(_item_get(content_item, "text", "") or "")
+        elif item_type == "function_call":
+            tool_calls.append(
+                SimpleNamespace(
+                    id=_item_get(item, "call_id"),
+                    function=SimpleNamespace(
+                        name=_item_get(item, "name"),
+                        arguments=_item_get(item, "arguments", "{}"),
+                    ),
+                )
+            )
+        # "reasoning" items (and any other type) are intentionally not surfaced
+        # here -- they're not replayed manually; see previous_response_id
+        # chaining in _call_openai_responses_api.
+
+    tool_calls_out = tool_calls or None
+    content = ("".join(text_parts) or None) if not tool_calls_out else None
+
+    def _model_dump() -> dict:
+        return {
+            "role": "assistant",
+            "content": content,
+            "tool_calls": (
+                [
+                    {
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {
+                            "name": tc.function.name,
+                            "arguments": tc.function.arguments,
+                        },
+                    }
+                    for tc in tool_calls_out
+                ]
+                if tool_calls_out
+                else None
+            ),
+        }
+
+    return SimpleNamespace(content=content, tool_calls=tool_calls_out, model_dump=_model_dump)
+
+
+def _chat_response_from_responses_api(response) -> SimpleNamespace:
+    """Wrap a Responses API result as a chat-completions-shaped response object
+    (`.choices[0].message`, `.usage.prompt_tokens/.completion_tokens`) -- same
+    field names _record_llm_usage() already reads, translated from the
+    Responses API's own usage.input_tokens/output_tokens."""
+    message = _chat_message_from_responses_output(response.output)
+    usage = _item_get(response, "usage")
+    chat_usage = (
+        SimpleNamespace(
+            prompt_tokens=_item_get(usage, "input_tokens", 0) or 0,
+            completion_tokens=_item_get(usage, "output_tokens", 0) or 0,
+        )
+        if usage is not None
+        else None
+    )
+    return SimpleNamespace(choices=[SimpleNamespace(message=message)], usage=chat_usage)
+
+
+def _responses_input_from_messages(messages: list[dict]) -> list[dict]:
+    """Bootstrap translation for the first Responses API call of a turn.
+    Expects `messages` WITHOUT the leading system message -- the caller passes
+    `messages[1:]`; the system prompt goes via `instructions=` instead.
+
+    Keeps any text a user or assistant message carries (an assistant turn can
+    have both `content` and `tool_calls` -- e.g. "Let me check that." before a
+    tool call -- and its text is kept even though the tool_calls themselves are
+    dropped). Drops the tool-call machinery of completed round trips from
+    earlier turns entirely: neither a bare function_call item (an id from a
+    different provider, or one with no reasoning item behind it) nor its
+    function_call_output is replayed -- see
+    docs/superpowers/specs/2026-09-07-gpt6-astra-responses-api-design.md.
+
+    Tolerant by construction of a dangling, never-resolved tool_calls message
+    (e.g. left behind by a crash mid-turn on a previous call) -- it's dropped
+    the same as any other assistant-with-tool_calls message, whether or not a
+    matching tool result ever arrived."""
+    items: list[dict] = []
+    for m in messages:
+        role = m.get("role")
+        if role == "user" and isinstance(m.get("content"), str):
+            items.append({"type": "message", "role": "user", "content": m["content"]})
+        elif role == "assistant" and m.get("content"):
+            items.append({"type": "message", "role": "assistant", "content": m["content"]})
+        # assistant-with-tool_calls-and-no-content, and "tool" messages, are
+        # intentionally dropped here.
+    return items
+
+
+def _responses_tool_outputs_from_messages(new_messages: list[dict]) -> list[dict]:
+    """Translate a turn's new tool-result messages into function_call_output
+    items for a previous_response_id-chained follow-up call. `new_messages` is
+    the slice of `messages` appended since the last Responses API call in this
+    turn -- exactly one assistant tool_calls message plus its tool messages."""
+    return [
+        {"type": "function_call_output", "call_id": m["tool_call_id"], "output": m["content"]}
+        for m in new_messages
+        if m.get("role") == "tool"
+    ]
+
+
+class ResponsesApiError(RuntimeError):
+    """Raised when OpenAI's /v1/responses returns a non-"completed" response
+    (status "failed"/"incomplete", or a populated `error` field) instead of
+    raising an HTTP-level exception. litellm.aresponses() does not itself raise
+    for these -- they're a normal 200 response with a status field describing
+    what went wrong -- so _call_openai_responses_api raises explicitly to fold
+    them into _call_llm_with_failover's existing except/failover path instead
+    of silently returning an empty turn -- see
+    docs/superpowers/specs/2026-09-07-gpt6-astra-responses-api-design.md."""
+
+
+async def _call_openai_responses_api(
+    model: str,
+    api_key: str,
+    messages: list[dict],
+    tools: list[dict],
+    responses_session: dict,
+) -> SimpleNamespace:
+    """Call OpenAI's /v1/responses endpoint (via litellm.aresponses) for models
+    that reject function tools on /v1/chat/completions (currently just
+    gpt-6-astra -- see _RESPONSES_API_MODELS). Returns a chat-completions-shaped
+    response so process_message()/_record_llm_usage()/history bookkeeping work
+    unchanged regardless of which endpoint actually served the call.
+
+    `responses_session` is a plain dict, one per process_message() turn (created
+    fresh in process_message, NOT persisted across turns or chats), used to
+    chain calls within the same tool-calling loop via previous_response_id --
+    this replaces manually replaying reasoning items (see spec). That chaining
+    requires the referenced response to be stored server-side, hence
+    `store=True` below (litellm's/OpenAI's default already, but pinned
+    explicitly since correctness depends on it).
+
+    No `max_output_tokens` is set deliberately: this is a reasoning model, and
+    reasoning tokens count against that cap -- an aggressive limit (e.g. the
+    4096 the acompletion() branch uses) risks routinely truncating mid-reasoning
+    into an "incomplete" status, which now raises (see ResponsesApiError) and
+    would push every such turn into failover instead of just being slow.
+    """
+    import litellm
+
+    previous_response_id = responses_session.get("previous_response_id")
+    if previous_response_id is None:
+        assert messages[0]["role"] == "system", "messages[0] must be the system prompt"
+        input_items = _responses_input_from_messages(messages[1:])  # [0] is system
+    else:
+        input_items = _responses_tool_outputs_from_messages(
+            messages[responses_session["synced_len"] :]
+        )
+
+    response = await litellm.aresponses(
+        model=model,
+        input=input_items,
+        instructions=SYSTEM_PROMPT,
+        tools=_responses_tools_from_chat_tools(tools),
+        api_key=api_key,
+        previous_response_id=previous_response_id,
+        store=True,
+    )
+
+    if response.status != "completed" or response.error is not None:
+        raise ResponsesApiError(
+            f"OpenAI Responses API returned status={response.status!r}, error={response.error!r}"
+        )
+
+    responses_session["previous_response_id"] = response.id
+    responses_session["synced_len"] = len(messages)
+
+    return _chat_response_from_responses_api(response)
+
+
 async def _call_llm_with_failover(
-    provider: str, model: str, messages: list[dict], tools: list[dict]
+    provider: str,
+    model: str,
+    messages: list[dict],
+    tools: list[dict],
+    responses_session: dict | None = None,
 ):
-    """Call litellm.acompletion against `provider`/`model`; on failure, try
+    """Call litellm.acompletion (or, for models in _RESPONSES_API_MODELS, the
+    OpenAI Responses API adapter) against `provider`/`model`; on failure, try
     the other configured providers (fixed order, skipping any without an API
     key and whichever was just attempted) until one succeeds. Records usage
     for whichever call actually succeeded.
@@ -169,6 +368,9 @@ async def _call_llm_with_failover(
     """
     import litellm
 
+    if responses_session is None:
+        responses_session = {}
+
     candidates = [(provider, model)]
     for p in _configured_providers():
         if p == provider:
@@ -178,20 +380,29 @@ async def _call_llm_with_failover(
     attempts: list[tuple[str, Exception]] = []
     for i, (p, m) in enumerate(candidates):
         try:
-            response = await litellm.acompletion(
-                model=m,
-                # Not max_tokens: some providers' newer models (e.g. OpenAI's
-                # reasoning-style models) reject it outright and require
-                # max_completion_tokens instead. litellm's per-provider
-                # transformation layer accepts this generic name for every
-                # provider here and maps it to that provider's native param
-                # (Anthropic/Gemini included), so this one name is safe
-                # everywhere -- unlike max_tokens, which isn't for all of them.
-                max_completion_tokens=4096,
-                api_key=getattr(settings, _PROVIDER_API_KEY_FIELD[p]),
-                messages=messages,
-                tools=tools,
-            )
+            if m in _RESPONSES_API_MODELS:
+                response = await _call_openai_responses_api(
+                    model=m,
+                    api_key=getattr(settings, _PROVIDER_API_KEY_FIELD[p]),
+                    messages=messages,
+                    tools=tools,
+                    responses_session=responses_session,
+                )
+            else:
+                response = await litellm.acompletion(
+                    model=m,
+                    # Not max_tokens: some providers' newer models (e.g. OpenAI's
+                    # reasoning-style models) reject it outright and require
+                    # max_completion_tokens instead. litellm's per-provider
+                    # transformation layer accepts this generic name for every
+                    # provider here and maps it to that provider's native param
+                    # (Anthropic/Gemini included), so this one name is safe
+                    # everywhere -- unlike max_tokens, which isn't for all of them.
+                    max_completion_tokens=4096,
+                    api_key=getattr(settings, _PROVIDER_API_KEY_FIELD[p]),
+                    messages=messages,
+                    tools=tools,
+                )
         except Exception as exc:
             logger.warning("LLM call failed for provider %s: %s", p, exc)
             attempts.append((p, exc))
@@ -929,6 +1140,43 @@ def _to_function_tool(tool: dict) -> dict:
 
 
 TOOLS: list[dict] = [_to_function_tool(t) for t in _TOOLS_SCHEMA]
+
+
+def _to_responses_tool(tool: dict) -> dict:
+    """Flat function-tool shape required by the Responses API (no nested
+    "function" key, unlike Chat Completions' TOOLS). `strict` is pinned to
+    False explicitly to keep parity with the non-strict-by-default Chat
+    Completions path, rather than relying on whatever OpenAI defaults to."""
+    return {
+        "type": "function",
+        "name": tool["name"],
+        "description": tool["description"],
+        "parameters": tool["input_schema"],
+        "strict": False,
+    }
+
+
+RESPONSES_TOOLS: list[dict] = [_to_responses_tool(t) for t in _TOOLS_SCHEMA]
+
+
+def _responses_tools_from_chat_tools(tools: list[dict]) -> list[dict]:
+    """Convert an already-nested Chat Completions tools list (this module's
+    TOOLS shape: {"type": "function", "function": {name, description,
+    parameters}}) into the Responses API's flat shape. Used by
+    _call_openai_responses_api so the Responses branch genuinely respects
+    whatever `tools` _call_llm_with_failover was actually called with, instead
+    of silently substituting the module-global RESPONSES_TOOLS regardless of
+    what was passed."""
+    return [
+        {
+            "type": "function",
+            "name": t["function"]["name"],
+            "description": t["function"]["description"],
+            "parameters": t["function"]["parameters"],
+            "strict": False,
+        }
+        for t in tools
+    ]
 
 
 @dataclass
@@ -2478,6 +2726,10 @@ async def process_message(
 
     responses: list[AgentResponse] = []
     steps: list[str] = []
+    # One responses_session per turn (per process_message() call), never
+    # persisted across turns -- see _call_openai_responses_api's docstring for
+    # why this is the right scope for previous_response_id chaining.
+    responses_session: dict = {}
 
     while True:
         # provider/model are updated from what actually served the call, so a
@@ -2492,6 +2744,7 @@ async def process_message(
                 *_histories[chat_id],
             ],
             tools=TOOLS,
+            responses_session=responses_session,
         )
 
         msg = response.choices[0].message
