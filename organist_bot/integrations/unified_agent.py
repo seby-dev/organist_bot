@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import datetime
 import json
 import logging
@@ -117,6 +118,14 @@ def _record_llm_usage(provider: str, model: str, response) -> None:
 
 _REASON_TRUNCATE_LEN = 300
 
+# Guards the persist-then-alert step in _call_llm_with_failover. Without it,
+# two concurrent calls that both start from the same stale (pre-failover)
+# runtime_config value can each independently decide "this is a new switch"
+# and each fire their own duplicate Telegram alert for what is really one
+# transition -- the asyncio.Lock equivalent of a DB row lock, serializing the
+# read-current-value-then-decide-then-write step across concurrent callers.
+_failover_persist_lock = asyncio.Lock()
+
 
 def _truncate_reason(exc: Exception) -> str:
     """Cap a provider's exception text so a verbose provider error (looking
@@ -137,7 +146,12 @@ async def _call_llm_with_failover(
     On the first success after at least one failure, persists the working
     provider/model as the new default via runtime_config and fires a Telegram
     alert -- so a provider outage self-heals instead of silently breaking
-    every message until a human notices and switches manually. If EVERY
+    every message until a human notices and switches manually. The persist
+    and alert are guarded by _failover_persist_lock and skipped if
+    runtime_config already reflects this exact provider/model, so two calls
+    racing to report the same transition (e.g. concurrent conversation turns
+    both failing over off the same stale primary) fire the alert once, not
+    once each. If EVERY
     configured provider fails, fires a Telegram alert listing every provider
     tried and its own error, then raises a RuntimeError whose message is that
     same summary (chained onto the last provider's exception) -- so the
@@ -180,13 +194,19 @@ async def _call_llm_with_failover(
             continue
 
         if i > 0:
-            runtime_config.set("llm_provider", p)
-            runtime_config.set("llm_model", m)
-            reason = alert.escape_markdown_v2(_truncate_reason(attempts[-1][1]))
-            alert.send_alert(
-                f"🔀 *AI provider auto\\-switched*\n{provider} → {p}\n\nReason: {reason}",
-                parse_mode="MarkdownV2",
-            )
+            async with _failover_persist_lock:
+                already_switched = (
+                    runtime_config.get("llm_provider", _DEFAULT_PROVIDER) == p
+                    and runtime_config.get("llm_model", _default_model_string()) == m
+                )
+                if not already_switched:
+                    runtime_config.set("llm_provider", p)
+                    runtime_config.set("llm_model", m)
+                    reason = alert.escape_markdown_v2(_truncate_reason(attempts[-1][1]))
+                    alert.send_alert(
+                        f"🔀 *AI provider auto\\-switched*\n{provider} → {p}\n\nReason: {reason}",
+                        parse_mode="MarkdownV2",
+                    )
         _record_llm_usage(p, m, response)
         return response, p, m
 
