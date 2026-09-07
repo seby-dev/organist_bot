@@ -118,12 +118,16 @@ def _record_llm_usage(provider: str, model: str, response) -> None:
 
 _REASON_TRUNCATE_LEN = 300
 
-# Guards the persist-then-alert step in _call_llm_with_failover. Without it,
-# two concurrent calls that both start from the same stale (pre-failover)
-# runtime_config value can each independently decide "this is a new switch"
-# and each fire their own duplicate Telegram alert for what is really one
-# transition -- the asyncio.Lock equivalent of a DB row lock, serializing the
-# read-current-value-then-decide-then-write step across concurrent callers.
+# Guards every write to runtime_config's llm_provider/llm_model: the
+# persist-then-alert step in _call_llm_with_failover, and the manual-switch
+# persist in llm_confirm_switch. Without it, two concurrent failover calls
+# that both start from the same stale (pre-failover) runtime_config value
+# can each independently decide "this is a new switch" and each fire their
+# own duplicate Telegram alert for what is really one transition; and a
+# manual switch landing between a failover call's read and its persist can
+# get silently clobbered once that failover call finally writes. One lock
+# serializing every writer's read-current-value-then-decide-then-write step
+# closes both races -- the asyncio.Lock equivalent of a DB row lock.
 _failover_persist_lock = asyncio.Lock()
 
 
@@ -2399,17 +2403,27 @@ def _llm_switch_buttons(provider: str, model_key: str) -> list[list[dict]]:
     ]
 
 
-def llm_confirm_switch(chat_id: int, provider: str, model_key: str) -> tuple[bool, str]:
+async def llm_confirm_switch(chat_id: int, provider: str, model_key: str) -> tuple[bool, str]:
     """Apply a pending provider/model switch. Called by the deterministic
     Telegram button handler, never by the LLM — same two-step pattern as
     neg_confirm_send. Requires the (provider, model_key) target to still
     match what's pending for this chat, so a stale or double-tapped button
-    can't apply a switch that a newer request already replaced."""
+    can't apply a switch that a newer request already replaced.
+
+    Persists through the same _failover_persist_lock that guards
+    _call_llm_with_failover's auto-switch, so this manual switch can't land
+    in the middle of an in-flight failover's read-current-value-then-persist
+    step (which would otherwise see this manual write and immediately
+    overwrite it back once the failover call finally acquires the lock) --
+    both writers of llm_provider/llm_model are serialized through the one
+    lock rather than only the automatic one being guarded.
+    """
     if _pending_llm_switch.get(chat_id) != (provider, model_key):
         return False, "This switch is no longer pending — it may have been replaced or cancelled."
     del _pending_llm_switch[chat_id]
-    runtime_config.set("llm_provider", provider)
-    runtime_config.set("llm_model", _PROVIDER_MODELS[provider][model_key])
+    async with _failover_persist_lock:
+        runtime_config.set("llm_provider", provider)
+        runtime_config.set("llm_model", _PROVIDER_MODELS[provider][model_key])
     return True, f"Switched to {provider}/{model_key}."
 
 
