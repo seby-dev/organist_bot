@@ -34,7 +34,7 @@
 
 - [ ] **Step 1: Write the failing tests**
 
-Open `tests/test_unified_agent.py` and find the line `class TestCallLlmWithFailover:` (search for it — it's the class right after the `_fake_litellm_response` helper, roughly line 2660). Insert this new section **immediately above** that class (i.e. after `_fake_litellm_response`'s closing `return SimpleNamespace(...)` line and the blank lines that follow it, before the `# ── LLM provider failover cascade ─...` comment or the `class TestCallLlmWithFailover:` line itself — put it right before that comment/class so it reads as its own section):
+Open `tests/test_unified_agent.py` and find the comment line `# ── LLM provider failover cascade ────...` (search for it — it sits right after the `_fake_litellm_response` helper and right before `class TestCallLlmWithFailover:`, roughly line 2657). Insert this new section **immediately above** that comment line, so it reads as its own section before the failover-cascade one:
 
 ```python
 # ── Responses API support (gpt-6-astra) ─────────────────────────────────────
@@ -358,7 +358,7 @@ def _chat_message_from_responses_output(output_items) -> SimpleNamespace:
         # chaining in _call_openai_responses_api.
 
     tool_calls_out = tool_calls or None
-    content = "".join(text_parts) or None if not tool_calls_out else None
+    content = ("".join(text_parts) or None) if not tool_calls_out else None
 
     def _model_dump() -> dict:
         return {
@@ -846,7 +846,7 @@ Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>"
 ## Task 5: Wire the adapter into `_call_llm_with_failover`
 
 **Files:**
-- Modify: `organist_bot/integrations/unified_agent.py:76-89` (comment update), `:129-201` (`_call_llm_with_failover`)
+- Modify: `organist_bot/integrations/unified_agent.py` — the `_DEFAULT_MODEL_KEY_PER_PROVIDER` comment (search for it, ~line 76) and `_call_llm_with_failover` (search for `async def _call_llm_with_failover`, ~line 129 at plan-writing time but shifted by ~130 lines after Tasks 2-4's insertions — use the quoted anchor text below, not the line number)
 - Test: `tests/test_unified_agent.py` (extends the existing `TestCallLlmWithFailover` class)
 
 **Interfaces:**
@@ -873,6 +873,13 @@ Add these two tests inside the existing `class TestCallLlmWithFailover:` in `tes
         mock_acompletion = AsyncMock(side_effect=AssertionError("acompletion must not be called"))
         monkeypatch.setattr(litellm, "aresponses", mock_aresponses)
         monkeypatch.setattr(litellm, "acompletion", mock_acompletion)
+        # _call_llm_with_failover's except-and-retry swallows an AssertionError
+        # from the mock above like any other provider failure -- if routing
+        # ever regresses, every candidate gets tried and the real
+        # alert.send_alert would fire (a real Telegram alert from a test run,
+        # if this machine's .env has it configured). Stub it so a regression
+        # fails on the assertions below instead of sending anything real.
+        monkeypatch.setattr(unified_agent.alert, "send_alert", lambda *a, **k: None)
 
         result, provider, model = await unified_agent._call_llm_with_failover(
             "openai", "openai/gpt-6-astra", messages=[{"role": "system", "content": "S"}], tools=[]
@@ -970,7 +977,7 @@ _DEFAULT_MODEL_KEY_PER_PROVIDER = {
 }
 ```
 
-Then find `async def _call_llm_with_failover` (currently lines 129-201):
+Then find `async def _call_llm_with_failover`:
 
 ```python
 async def _call_llm_with_failover(
@@ -990,7 +997,7 @@ async def _call_llm_with_failover(
 ):
 ```
 
-Add one line to the docstring's final paragraph (the one starting "Returns (response, provider, model)...") is unchanged; no docstring edit needed there. Immediately after the docstring's closing `"""`, find:
+Leave the docstring's body text unchanged (its first line, "Call litellm.acompletion against `provider`/`model`...", becomes slightly imprecise now that one candidate can go through the Responses API instead — acceptable, out of scope to rewrite the whole docstring for one branch). Immediately after the docstring's closing `"""`, find:
 
 ```python
     import litellm
@@ -1098,7 +1105,7 @@ Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>"
 ## Task 6: Thread `responses_session` through `process_message()`
 
 **Files:**
-- Modify: `organist_bot/integrations/unified_agent.py:2425-2461` (`process_message`, the top of its `while True:` loop)
+- Modify: `organist_bot/integrations/unified_agent.py` — `process_message`, the top of its `while True:` loop (search for `async def process_message`; line numbers have shifted from the spec's original estimate by the insertions in Tasks 1-5, use the quoted anchor text below)
 - Test: `tests/test_unified_agent.py`
 
 **Interfaces:**
@@ -1144,6 +1151,11 @@ async def test_process_message_gpt_6_astra_two_round_tool_loop(tmp_path, monkeyp
     monkeypatch.setattr(
         litellm, "acompletion", AsyncMock(side_effect=AssertionError("must not be called"))
     )
+    # Guard against a routing regression silently trying every configured
+    # provider (the acompletion AssertionError above is caught and treated as
+    # a normal provider failure by _call_llm_with_failover) and firing a real
+    # Telegram alert on the all-failed path.
+    monkeypatch.setattr(unified_agent.alert, "send_alert", lambda *a, **k: None)
     monkeypatch.setattr(
         unified_agent, "_execute_tool", AsyncMock(return_value=json.dumps({"result": "ok"}))
     )
@@ -1178,7 +1190,7 @@ async def test_process_message_gpt_6_astra_two_round_tool_loop(tmp_path, monkeyp
 cd /Users/sebby/Developer/organist_bot/.worktrees/fix-gpt6-astra-responses-api && EMAIL_SENDER=ci@test.com EMAIL_PASSWORD=x CC_EMAIL=ci@test.com .venv/bin/pytest tests/test_unified_agent.py -k "test_process_message_gpt_6_astra_two_round_tool_loop" -v
 ```
 
-Expected: FAIL — `AssertionError: must not be called` (raised from the `acompletion` mock), since `process_message` doesn't yet pass `responses_session` through, so `_call_llm_with_failover` defaults it to a fresh empty dict on *every* call inside the loop instead of one shared per turn — wait, actually re-read: without this task's change, `process_message` doesn't pass `responses_session` at all, so `_call_llm_with_failover` still works correctly for a *single* Responses API call (Task 5 already routes by model, independent of `responses_session`), but the *second* iteration of `process_message`'s `while True:` loop calls `_call_llm_with_failover` again with no `responses_session` kwarg, so a **new empty dict** is created inside `_call_llm_with_failover` each time — `previous_response_id` is always `None`, so the second `aresponses` call re-bootstraps from full history (including the still-unresolved tool_calls message) instead of chaining. Confirm the actual failure by running the test — it may fail on the `second_call_kwargs["previous_response_id"] == "resp_first"` assertion rather than the `acompletion` guard, depending on how the bootstrap translator handles the dangling tool_calls message. Either way, this step's job is just to see a real failure before implementing.
+Expected: FAIL at `assert second_call_kwargs["previous_response_id"] == "resp_first"`, with the actual value `None`. Reasoning: Task 5's routing is keyed purely on the model string (`m in _RESPONSES_API_MODELS`), so both loop iterations already call the (mocked) `aresponses` regardless of this task — `acompletion` is never reached, so that guard mock never fires. But without this task's change, `process_message` never passes `responses_session` to `_call_llm_with_failover`, so it defaults to a **fresh empty dict on every call** — the second iteration's `_call_openai_responses_api` sees `previous_response_id=None` again instead of `"resp_first"`, and re-bootstraps from history instead of chaining.
 
 - [ ] **Step 3: Implement**
 
