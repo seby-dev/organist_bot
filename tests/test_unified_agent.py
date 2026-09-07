@@ -2964,6 +2964,77 @@ class TestCallLlmWithFailover:
         runtime_config.reset("llm_provider")
         runtime_config.reset("llm_model")
 
+    async def test_responses_api_model_routes_to_the_adapter_not_acompletion(
+        self, tmp_path, monkeypatch
+    ):
+        import litellm
+
+        # No runtime_config write is expected on this path (first-try success,
+        # i == 0 -- see _call_llm_with_failover's promotion logic), but chdir
+        # anyway to match this class's other tests and guard against any
+        # incidental write touching the real repo's data/ directory.
+        monkeypatch.chdir(tmp_path)
+        fake_response = _fake_responses_api_response(output=[_fake_responses_message("ok")])
+        mock_aresponses = AsyncMock(return_value=fake_response)
+        mock_acompletion = AsyncMock(side_effect=AssertionError("acompletion must not be called"))
+        monkeypatch.setattr(litellm, "aresponses", mock_aresponses)
+        monkeypatch.setattr(litellm, "acompletion", mock_acompletion)
+        # _call_llm_with_failover's except-and-retry swallows an AssertionError
+        # from the mock above like any other provider failure -- if routing
+        # ever regresses, every candidate gets tried and the real
+        # alert.send_alert would fire (a real Telegram alert from a test run,
+        # if this machine's .env has it configured). Stub it so a regression
+        # fails on the assertions below instead of sending anything real.
+        monkeypatch.setattr(unified_agent.alert, "send_alert", lambda *a, **k: None)
+
+        result, provider, model = await unified_agent._call_llm_with_failover(
+            "openai", "openai/gpt-6-astra", messages=[{"role": "system", "content": "S"}], tools=[]
+        )
+
+        assert provider == "openai"
+        assert model == "openai/gpt-6-astra"
+        assert result.choices[0].message.content == "ok"
+        mock_aresponses.assert_awaited_once()
+        mock_acompletion.assert_not_awaited()
+
+    async def test_responses_api_failure_falls_over_to_next_provider(self, tmp_path, monkeypatch):
+        import litellm
+
+        monkeypatch.chdir(tmp_path)
+        # Pin all three key fields explicitly so candidate ordering is
+        # deterministic regardless of this machine's real .env (litellm's
+        # own dotenv side effect can otherwise leak a real ANTHROPIC_API_KEY
+        # into settings -- see the test file's existing
+        # test_settings_has_openai_and_gemini_api_key_fields docstring).
+        monkeypatch.setattr(unified_agent.settings, "anthropic_api_key", "sk-anthropic-test")
+        monkeypatch.setattr(unified_agent.settings, "openai_api_key", "sk-test")
+        monkeypatch.setattr(unified_agent.settings, "gemini_api_key", "")
+
+        good_response = _fake_litellm_response(content="ok")
+        monkeypatch.setattr(
+            litellm,
+            "aresponses",
+            AsyncMock(side_effect=unified_agent.ResponsesApiError("incomplete")),
+        )
+        monkeypatch.setattr(litellm, "acompletion", AsyncMock(return_value=good_response))
+        monkeypatch.setattr(unified_agent.alert, "send_alert", lambda *a, **k: None)
+
+        result, provider, model = await unified_agent._call_llm_with_failover(
+            "openai",
+            "openai/gpt-6-astra",
+            messages=[{"role": "system", "content": "S"}],
+            tools=[],
+        )
+
+        # candidates = [("openai", "openai/gpt-6-astra")] first, then
+        # _FAILOVER_ORDER = ["anthropic", "openai", "gemini"] filtered to
+        # configured keys minus the starting provider ("openai" skipped as
+        # itself, "gemini" skipped as unconfigured) -- so "anthropic" is the
+        # only, deterministic fallback candidate.
+        assert result is good_response
+        assert provider == "anthropic"
+        assert model == "anthropic/claude-sonnet-4-6"
+
     async def test_success_on_first_try_does_not_touch_runtime_config(self, tmp_path, monkeypatch):
         import litellm
 

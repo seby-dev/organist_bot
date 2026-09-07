@@ -75,14 +75,11 @@ _PROVIDER_API_KEY_FIELD = {
 _FAILOVER_ORDER = ["anthropic", "openai", "gemini"]
 # Which curated model a provider fails over TO, since the currently-active
 # model key may not exist for that provider (e.g. "opus" has no OpenAI
-# equivalent key). Deliberately NOT each provider's flagship: OpenAI's
-# flagship "gpt-6-astra" is a reasoning model that OpenAI's own API refuses
-# to run with function tools at all on the chat-completions endpoint this
-# codebase uses (needs /v1/responses instead, and separately rejects
-# reasoning_effort="none" as a workaround) -- confirmed live against the real
-# API. Every conversation here always sends tools, so gpt-6-astra can never
-# actually serve a failover call; "gpt-5.6-luna" is openai's other curated
-# option and works fine with tools.
+# equivalent key). Deliberately NOT each provider's flagship: gpt-6-astra now
+# works standalone via the Responses API adapter (see _RESPONSES_API_MODELS /
+# _call_openai_responses_api), but the failover default stays "gpt-5.6-luna"
+# on purpose -- an outage-driven failover should land on the plain, fast
+# acompletion() path, not the added Responses API round-trip machinery.
 _DEFAULT_MODEL_KEY_PER_PROVIDER = {
     "anthropic": "sonnet",
     "openai": "gpt-5.6-luna",
@@ -322,7 +319,11 @@ async def _call_openai_responses_api(
 
 
 async def _call_llm_with_failover(
-    provider: str, model: str, messages: list[dict], tools: list[dict]
+    provider: str,
+    model: str,
+    messages: list[dict],
+    tools: list[dict],
+    responses_session: dict | None = None,
 ):
     """Call litellm.acompletion against `provider`/`model`; on failure, try
     the other configured providers (fixed order, skipping any without an API
@@ -346,6 +347,9 @@ async def _call_llm_with_failover(
     """
     import litellm
 
+    if responses_session is None:
+        responses_session = {}
+
     candidates = [(provider, model)]
     for p in _configured_providers():
         if p == provider:
@@ -355,20 +359,28 @@ async def _call_llm_with_failover(
     attempts: list[tuple[str, Exception]] = []
     for i, (p, m) in enumerate(candidates):
         try:
-            response = await litellm.acompletion(
-                model=m,
-                # Not max_tokens: some providers' newer models (e.g. OpenAI's
-                # reasoning-style models) reject it outright and require
-                # max_completion_tokens instead. litellm's per-provider
-                # transformation layer accepts this generic name for every
-                # provider here and maps it to that provider's native param
-                # (Anthropic/Gemini included), so this one name is safe
-                # everywhere -- unlike max_tokens, which isn't for all of them.
-                max_completion_tokens=4096,
-                api_key=getattr(settings, _PROVIDER_API_KEY_FIELD[p]),
-                messages=messages,
-                tools=tools,
-            )
+            if m in _RESPONSES_API_MODELS:
+                response = await _call_openai_responses_api(
+                    model=m,
+                    api_key=getattr(settings, _PROVIDER_API_KEY_FIELD[p]),
+                    messages=messages,
+                    responses_session=responses_session,
+                )
+            else:
+                response = await litellm.acompletion(
+                    model=m,
+                    # Not max_tokens: some providers' newer models (e.g. OpenAI's
+                    # reasoning-style models) reject it outright and require
+                    # max_completion_tokens instead. litellm's per-provider
+                    # transformation layer accepts this generic name for every
+                    # provider here and maps it to that provider's native param
+                    # (Anthropic/Gemini included), so this one name is safe
+                    # everywhere -- unlike max_tokens, which isn't for all of them.
+                    max_completion_tokens=4096,
+                    api_key=getattr(settings, _PROVIDER_API_KEY_FIELD[p]),
+                    messages=messages,
+                    tools=tools,
+                )
         except Exception as exc:
             logger.warning("LLM call failed for provider %s: %s", p, exc)
             attempts.append((p, exc))
