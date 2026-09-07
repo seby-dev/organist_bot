@@ -2665,6 +2665,10 @@ async def process_message(
 
     responses: list[AgentResponse] = []
     steps: list[str] = []
+    # One responses_session per turn (per process_message() call), never
+    # persisted across turns -- see _call_openai_responses_api's docstring for
+    # why this is the right scope for previous_response_id chaining.
+    responses_session: dict = {}
 
     while True:
         # provider/model are updated from what actually served the call, so a
@@ -2679,6 +2683,7 @@ async def process_message(
                 *_histories[chat_id],
             ],
             tools=TOOLS,
+            responses_session=responses_session,
         )
 
         msg = response.choices[0].message

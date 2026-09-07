@@ -3351,6 +3351,79 @@ async def test_process_message_stale_provider_resets_to_default(tmp_path, monkey
     assert runtime_config.get("llm_provider", "anthropic") == "anthropic"
 
 
+@pytest.mark.asyncio
+async def test_process_message_gpt_6_astra_two_round_tool_loop(tmp_path, monkeypatch):
+    """End-to-end: active model openai/gpt-6-astra, a tool call followed by a
+    final text reply -- confirms previous_response_id chaining across the two
+    aresponses() calls and that _histories[] ends up in the same flat
+    chat-completions shape any other provider would produce."""
+    import litellm
+
+    from organist_bot.integrations import agent_state, unified_agent
+    from organist_bot.runtime_config_store import runtime_config
+
+    # chdir first -- runtime_config.set/reset below write to a relative
+    # data/runtime_config.json, and must not touch the real repo's copy.
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(agent_state, "_PATH", tmp_path / "agent_state.json")
+    monkeypatch.setattr(unified_agent.settings, "openai_api_key", "sk-test")
+    cid = 987654
+    unified_agent._hydrated.discard(cid)
+    runtime_config.set("llm_provider", "openai")
+    runtime_config.set("llm_model", "openai/gpt-6-astra")
+
+    first_response = _fake_responses_api_response(
+        output=[_fake_responses_function_call("call_xyz", "add_gig", {"url": "https://x"})],
+        response_id="resp_first",
+    )
+    second_response = _fake_responses_api_response(
+        output=[_fake_responses_message("Added the gig.")],
+        response_id="resp_second",
+    )
+    mock_aresponses = AsyncMock(side_effect=[first_response, second_response])
+    monkeypatch.setattr(litellm, "aresponses", mock_aresponses)
+    monkeypatch.setattr(
+        litellm, "acompletion", AsyncMock(side_effect=AssertionError("must not be called"))
+    )
+    # Guard against a routing regression silently trying every configured
+    # provider (the acompletion AssertionError above is caught and treated as
+    # a normal provider failure by _call_llm_with_failover) and firing a real
+    # Telegram alert on the all-failed path.
+    monkeypatch.setattr(unified_agent.alert, "send_alert", lambda *a, **k: None)
+    monkeypatch.setattr(
+        unified_agent, "_execute_tool", AsyncMock(return_value=json.dumps({"result": "ok"}))
+    )
+
+    try:
+        responses = await unified_agent.process_message(cid, "add this gig")
+
+        assert responses == [unified_agent.AgentResponse(text="Added the gig.")]
+
+        second_call_kwargs = mock_aresponses.call_args_list[1].kwargs
+        assert second_call_kwargs["previous_response_id"] == "resp_first"
+        assert second_call_kwargs["input"] == [
+            {
+                "type": "function_call_output",
+                "call_id": "call_xyz",
+                "output": json.dumps({"result": "ok"}),
+            }
+        ]
+
+        history = unified_agent._histories[cid]
+        assistant_turn = next(
+            m for m in history if m["role"] == "assistant" and m.get("tool_calls")
+        )
+        assert assistant_turn["content"] is None
+        assert assistant_turn["tool_calls"][0]["id"] == "call_xyz"
+        tool_turn = next(m for m in history if m["role"] == "tool")
+        assert tool_turn["tool_call_id"] == "call_xyz"
+    finally:
+        unified_agent._histories.pop(cid, None)
+        unified_agent._hydrated.discard(cid)
+        runtime_config.reset("llm_provider")
+        runtime_config.reset("llm_model")
+
+
 # ── process_message NEG buttons/picker plumbing ─────────────────────────────
 
 
