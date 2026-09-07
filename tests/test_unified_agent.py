@@ -2943,13 +2943,15 @@ class TestCallOpenaiResponsesApi:
         )
         monkeypatch.setattr(litellm, "aresponses", AsyncMock(return_value=fake_response))
 
+        session: dict = {}
         with pytest.raises(unified_agent.ResponsesApiError):
             await unified_agent._call_openai_responses_api(
                 model="openai/gpt-6-astra",
                 api_key="sk-test",
                 messages=[{"role": "system", "content": "SYS"}, {"role": "user", "content": "hi"}],
-                responses_session={},
+                responses_session=session,
             )
+        assert session == {}
 
 
 # ── LLM provider failover cascade ────────────────────────────────────────────
