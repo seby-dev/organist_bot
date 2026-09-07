@@ -5,7 +5,7 @@ import json
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from types import SimpleNamespace  # noqa: F401
+from types import SimpleNamespace
 from typing import cast
 
 from organist_bot import (
@@ -131,6 +131,84 @@ def _truncate_reason(exc: Exception) -> str:
     4096-char message limit once several are joined into one alert/message."""
     text = str(exc)
     return text if len(text) <= _REASON_TRUNCATE_LEN else text[: _REASON_TRUNCATE_LEN - 1] + "…"
+
+
+def _item_get(item, key, default=None):
+    """Accessor tolerant of both a pydantic response-item object (attribute
+    access) and a plain dict -- litellm's Responses API objects are pydantic
+    models, but this keeps the translators trivially unit-testable with dicts."""
+    return item.get(key, default) if isinstance(item, dict) else getattr(item, key, default)
+
+
+def _chat_message_from_responses_output(output_items) -> SimpleNamespace:
+    """Build an object exposing .content / .tool_calls / .model_dump() shaped
+    exactly like litellm.acompletion()'s response.choices[0].message, from a
+    Responses API response's `.output` list."""
+    text_parts: list[str] = []
+    tool_calls: list[SimpleNamespace] = []
+    for item in output_items:
+        item_type = _item_get(item, "type")
+        if item_type == "message":
+            for content_item in _item_get(item, "content", []) or []:
+                if _item_get(content_item, "type") == "output_text":
+                    text_parts.append(_item_get(content_item, "text", "") or "")
+        elif item_type == "function_call":
+            tool_calls.append(
+                SimpleNamespace(
+                    id=_item_get(item, "call_id"),
+                    function=SimpleNamespace(
+                        name=_item_get(item, "name"),
+                        arguments=_item_get(item, "arguments", "{}"),
+                    ),
+                )
+            )
+        # "reasoning" items (and any other type) are intentionally not surfaced
+        # here -- they're not replayed manually; see previous_response_id
+        # chaining in _call_openai_responses_api.
+
+    tool_calls_out = tool_calls or None
+    content = ("".join(text_parts) or None) if not tool_calls_out else None
+
+    def _model_dump() -> dict:
+        return {
+            "role": "assistant",
+            "content": content,
+            "tool_calls": (
+                [
+                    {
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {
+                            "name": tc.function.name,
+                            "arguments": tc.function.arguments,
+                        },
+                    }
+                    for tc in tool_calls_out
+                ]
+                if tool_calls_out
+                else None
+            ),
+        }
+
+    return SimpleNamespace(content=content, tool_calls=tool_calls_out, model_dump=_model_dump)
+
+
+def _chat_response_from_responses_api(response) -> SimpleNamespace:
+    """Wrap a Responses API result as a chat-completions-shaped response object
+    (`.choices[0].message`, `.usage.prompt_tokens/.completion_tokens`) -- same
+    field names _record_llm_usage() already reads, translated from the
+    Responses API's own usage.input_tokens/output_tokens."""
+    message = _chat_message_from_responses_output(response.output)
+    usage = _item_get(response, "usage")
+    chat_usage = (
+        SimpleNamespace(
+            prompt_tokens=_item_get(usage, "input_tokens", 0) or 0,
+            completion_tokens=_item_get(usage, "output_tokens", 0) or 0,
+        )
+        if usage is not None
+        else None
+    )
+    return SimpleNamespace(choices=[SimpleNamespace(message=message)], usage=chat_usage)
 
 
 async def _call_llm_with_failover(

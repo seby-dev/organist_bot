@@ -2677,6 +2677,106 @@ def test_gpt_6_astra_is_in_responses_api_models():
     assert "openai/gpt-5.6-luna" not in unified_agent._RESPONSES_API_MODELS
 
 
+def _fake_responses_function_call(call_id: str, name: str, arguments: dict) -> SimpleNamespace:
+    """A Responses API output item of type "function_call" -- mirrors the real
+    field names (call_id, name, arguments, type) confirmed against the
+    installed openai/litellm packages during spec research."""
+    return SimpleNamespace(
+        type="function_call", call_id=call_id, name=name, arguments=json.dumps(arguments)
+    )
+
+
+def _fake_responses_message(text: str) -> SimpleNamespace:
+    """A Responses API output item of type "message" with one output_text
+    content part."""
+    return SimpleNamespace(
+        type="message",
+        content=[SimpleNamespace(type="output_text", text=text)],
+    )
+
+
+def _fake_responses_api_response(
+    output: list,
+    *,
+    response_id: str = "resp_1",
+    status: str = "completed",
+    error: object = None,
+    usage: SimpleNamespace | None = None,
+) -> SimpleNamespace:
+    return SimpleNamespace(id=response_id, output=output, status=status, error=error, usage=usage)
+
+
+class TestChatMessageFromResponsesOutput:
+    def test_message_only_sets_content_no_tool_calls(self):
+        msg = unified_agent._chat_message_from_responses_output(
+            [_fake_responses_message("Hello there")]
+        )
+        assert msg.content == "Hello there"
+        assert msg.tool_calls is None
+        assert msg.model_dump() == {
+            "role": "assistant",
+            "content": "Hello there",
+            "tool_calls": None,
+        }
+
+    def test_function_call_sets_tool_calls_content_none(self):
+        msg = unified_agent._chat_message_from_responses_output(
+            [_fake_responses_function_call("call_abc123", "add_gig", {"url": "https://x"})]
+        )
+        assert msg.content is None
+        assert len(msg.tool_calls) == 1
+        tc = msg.tool_calls[0]
+        # Critical: .id must be the item's call_id (call_...), not its id (fc_...)
+        # -- call_id is what a matching function_call_output must reference.
+        assert tc.id == "call_abc123"
+        assert tc.function.name == "add_gig"
+        assert json.loads(tc.function.arguments) == {"url": "https://x"}
+        assert msg.model_dump() == {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call_abc123",
+                    "type": "function",
+                    "function": {
+                        "name": "add_gig",
+                        "arguments": json.dumps({"url": "https://x"}),
+                    },
+                }
+            ],
+        }
+
+    def test_multiple_function_calls_all_captured(self):
+        msg = unified_agent._chat_message_from_responses_output(
+            [
+                _fake_responses_function_call("call_1", "tool_a", {}),
+                _fake_responses_function_call("call_2", "tool_b", {}),
+            ]
+        )
+        assert [tc.id for tc in msg.tool_calls] == ["call_1", "call_2"]
+
+
+class TestChatResponseFromResponsesApi:
+    def test_usage_translated_to_prompt_and_completion_tokens(self):
+        response = _fake_responses_api_response(
+            output=[_fake_responses_message("hi")],
+            usage=SimpleNamespace(input_tokens=10, output_tokens=5),
+        )
+        chat_response = unified_agent._chat_response_from_responses_api(response)
+        assert chat_response.usage.prompt_tokens == 10
+        assert chat_response.usage.completion_tokens == 5
+
+    def test_none_usage_stays_none(self):
+        response = _fake_responses_api_response(output=[_fake_responses_message("hi")], usage=None)
+        chat_response = unified_agent._chat_response_from_responses_api(response)
+        assert chat_response.usage is None
+
+    def test_message_reachable_via_choices_zero(self):
+        response = _fake_responses_api_response(output=[_fake_responses_message("hi")])
+        chat_response = unified_agent._chat_response_from_responses_api(response)
+        assert chat_response.choices[0].message.content == "hi"
+
+
 # ── LLM provider failover cascade ────────────────────────────────────────────
 
 
