@@ -2330,10 +2330,14 @@ class TestNegConfirmButtons:
 
 class TestManageLlmProvider:
     def teardown_method(self):
-        from organist_bot.runtime_config_store import runtime_config
-
-        runtime_config.reset("llm_provider")
-        runtime_config.reset("llm_model")
+        # Deliberately does NOT reset runtime_config here: teardown_method
+        # runs after monkeypatch's own fixture teardown has already reverted
+        # chdir back to the real repo root (verified empirically), so a
+        # runtime_config.reset() here would write straight through to the
+        # real data/runtime_config.json instead of each test's own tmp_path
+        # -- silently clobbering live production provider state. Each test
+        # below chdirs into its own tmp_path, which is unique per test, so
+        # no cross-test cleanup is actually needed here.
         unified_agent._pending_llm_switch.pop(CHAT_ID, None)
 
     async def test_get_returns_default_before_any_switch(self, tmp_path, monkeypatch):
@@ -2460,13 +2464,17 @@ class TestManageLlmProvider:
 
 class TestLlmConfirmAndCancelSwitch:
     def teardown_method(self):
-        from organist_bot.runtime_config_store import runtime_config
-
-        runtime_config.reset("llm_provider")
-        runtime_config.reset("llm_model")
+        # No runtime_config reset here on purpose -- teardown_method runs
+        # after monkeypatch's chdir has already reverted to the real repo
+        # root (verified empirically), so a reset() call here writes
+        # straight through to the live data/runtime_config.json instead of
+        # each test's own tmp_path -- silently clobbering live production
+        # provider state. Each test below chdirs into its own tmp_path,
+        # unique per test, so no cross-test cleanup is actually needed here.
         unified_agent._pending_llm_switch.pop(CHAT_ID, None)
 
-    async def test_confirm_applies_the_pending_switch(self):
+    async def test_confirm_applies_the_pending_switch(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
         unified_agent._pending_llm_switch[CHAT_ID] = ("openai", "gpt-5.6-luna")
         ok, message = await unified_agent.llm_confirm_switch(CHAT_ID, "openai", "gpt-5.6-luna")
         assert ok is True
@@ -2477,7 +2485,8 @@ class TestLlmConfirmAndCancelSwitch:
         assert runtime_config.get("llm_model", "") == "openai/gpt-5.6-luna"
         assert CHAT_ID not in unified_agent._pending_llm_switch
 
-    async def test_confirm_with_no_pending_switch_is_a_noop(self):
+    async def test_confirm_with_no_pending_switch_is_a_noop(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
         ok, message = await unified_agent.llm_confirm_switch(CHAT_ID, "openai", "gpt-5.6-luna")
         assert ok is False
         assert "no longer pending" in message.lower()
@@ -2485,9 +2494,12 @@ class TestLlmConfirmAndCancelSwitch:
 
         assert runtime_config.get("llm_provider", "anthropic") == "anthropic"
 
-    async def test_confirm_with_mismatched_target_does_not_apply_a_different_pending_switch(self):
+    async def test_confirm_with_mismatched_target_does_not_apply_a_different_pending_switch(
+        self, tmp_path, monkeypatch
+    ):
         """A stale button for an earlier request must not apply a switch the
         user has since overwritten with a newer one."""
+        monkeypatch.chdir(tmp_path)
         unified_agent._pending_llm_switch[CHAT_ID] = ("gemini", "gemini-pro")
         ok, message = await unified_agent.llm_confirm_switch(CHAT_ID, "openai", "gpt-5.6-luna")
         assert ok is False
@@ -2498,13 +2510,16 @@ class TestLlmConfirmAndCancelSwitch:
         # The still-pending gemini switch is untouched by the stale attempt.
         assert unified_agent._pending_llm_switch[CHAT_ID] == ("gemini", "gemini-pro")
 
-    async def test_confirm_switch_is_serialized_against_a_concurrent_failover_persist(self):
+    async def test_confirm_switch_is_serialized_against_a_concurrent_failover_persist(
+        self, tmp_path, monkeypatch
+    ):
         """llm_confirm_switch must contend for _failover_persist_lock just
         like _call_llm_with_failover's own persist step, not write straight
         through it -- otherwise a manual switch landing while a failover
         call is waiting on the lock could interleave with (and be silently
         overwritten by) the failover's own persist once it finally acquires
         the lock."""
+        monkeypatch.chdir(tmp_path)
         unified_agent._pending_llm_switch[CHAT_ID] = ("openai", "gpt-5.6-luna")
 
         async with unified_agent._failover_persist_lock:
@@ -2520,7 +2535,8 @@ class TestLlmConfirmAndCancelSwitch:
 
         assert runtime_config.get("llm_provider", "") == "openai"
 
-    def test_cancel_discards_the_pending_switch_without_applying_it(self):
+    def test_cancel_discards_the_pending_switch_without_applying_it(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
         unified_agent._pending_llm_switch[CHAT_ID] = ("openai", "gpt-5.6-luna")
         ok, message = unified_agent.llm_cancel_switch(CHAT_ID, "openai", "gpt-5.6-luna")
         assert ok is True
@@ -2530,7 +2546,8 @@ class TestLlmConfirmAndCancelSwitch:
         assert runtime_config.get("llm_provider", "anthropic") == "anthropic"
         assert CHAT_ID not in unified_agent._pending_llm_switch
 
-    def test_cancel_with_mismatched_target_is_a_noop(self):
+    def test_cancel_with_mismatched_target_is_a_noop(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
         unified_agent._pending_llm_switch[CHAT_ID] = ("gemini", "gemini-pro")
         ok, message = unified_agent.llm_cancel_switch(CHAT_ID, "openai", "gpt-5.6-luna")
         assert ok is False
@@ -2988,11 +3005,13 @@ class TestCallOpenaiResponsesApi:
 
 
 class TestCallLlmWithFailover:
-    def teardown_method(self):
-        from organist_bot.runtime_config_store import runtime_config
-
-        runtime_config.reset("llm_provider")
-        runtime_config.reset("llm_model")
+    # No teardown_method here on purpose: it would run after monkeypatch's
+    # chdir has already reverted to the real repo root (verified
+    # empirically), so a runtime_config.reset() call would write straight
+    # through to the live data/runtime_config.json instead of each test's
+    # own tmp_path -- silently clobbering live production provider state.
+    # Each test below chdirs into its own tmp_path, unique per test, so no
+    # cross-test cleanup is actually needed.
 
     async def test_responses_api_model_routes_to_the_adapter_not_acompletion(
         self, tmp_path, monkeypatch
