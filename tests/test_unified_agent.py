@@ -2654,6 +2654,29 @@ def _fake_litellm_response(
     return SimpleNamespace(choices=[SimpleNamespace(message=message)], usage=usage)
 
 
+# ── Responses API support (gpt-6-astra) ─────────────────────────────────────
+
+
+class TestResponsesToolsShape:
+    def test_every_entry_is_flat_function_tool_shape(self):
+        for tool in unified_agent.RESPONSES_TOOLS:
+            assert tool["type"] == "function"
+            assert isinstance(tool["name"], str)
+            assert isinstance(tool["description"], str)
+            assert isinstance(tool["parameters"], dict)
+            assert "function" not in tool
+
+    def test_same_names_and_order_as_TOOLS(self):
+        chat_names = [t["function"]["name"] for t in unified_agent.TOOLS]
+        responses_names = [t["name"] for t in unified_agent.RESPONSES_TOOLS]
+        assert responses_names == chat_names
+
+
+def test_gpt_6_astra_is_in_responses_api_models():
+    assert "openai/gpt-6-astra" in unified_agent._RESPONSES_API_MODELS
+    assert "openai/gpt-5.6-luna" not in unified_agent._RESPONSES_API_MODELS
+
+
 # ── LLM provider failover cascade ────────────────────────────────────────────
 
 

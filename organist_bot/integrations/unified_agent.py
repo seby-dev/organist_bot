@@ -5,6 +5,7 @@ import json
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from types import SimpleNamespace  # noqa: F401
 from typing import cast
 
 from organist_bot import (
@@ -87,6 +88,12 @@ _DEFAULT_MODEL_KEY_PER_PROVIDER = {
     "openai": "gpt-5.6-luna",
     "gemini": "gemini-pro",
 }
+
+# Models that reject function tools on /v1/chat/completions and must go through
+# /v1/responses instead (litellm.aresponses()) -- see
+# docs/superpowers/specs/2026-09-07-gpt6-astra-responses-api-design.md. Currently
+# just gpt-6-astra; every other curated model keeps using acompletion().
+_RESPONSES_API_MODELS = {"openai/gpt-6-astra"}
 
 
 def _default_model_string() -> str:
@@ -905,6 +912,20 @@ def _to_function_tool(tool: dict) -> dict:
 
 
 TOOLS: list[dict] = [_to_function_tool(t) for t in _TOOLS_SCHEMA]
+
+
+def _to_responses_tool(tool: dict) -> dict:
+    """Flat function-tool shape required by the Responses API (no nested
+    "function" key, unlike Chat Completions' TOOLS)."""
+    return {
+        "type": "function",
+        "name": tool["name"],
+        "description": tool["description"],
+        "parameters": tool["input_schema"],
+    }
+
+
+RESPONSES_TOOLS: list[dict] = [_to_responses_tool(t) for t in _TOOLS_SCHEMA]
 
 
 @dataclass
