@@ -2654,6 +2654,313 @@ def _fake_litellm_response(
     return SimpleNamespace(choices=[SimpleNamespace(message=message)], usage=usage)
 
 
+# ── Responses API support (gpt-6-astra) ─────────────────────────────────────
+
+
+class TestResponsesToolsShape:
+    def test_every_entry_is_flat_function_tool_shape(self):
+        for tool in unified_agent.RESPONSES_TOOLS:
+            assert tool["type"] == "function"
+            assert isinstance(tool["name"], str)
+            assert isinstance(tool["description"], str)
+            assert isinstance(tool["parameters"], dict)
+            assert tool["strict"] is False
+            assert "function" not in tool
+
+    def test_same_names_and_order_as_TOOLS(self):
+        chat_names = [t["function"]["name"] for t in unified_agent.TOOLS]
+        responses_names = [t["name"] for t in unified_agent.RESPONSES_TOOLS]
+        assert responses_names == chat_names
+
+
+def test_gpt_6_astra_is_in_responses_api_models():
+    assert "openai/gpt-6-astra" in unified_agent._RESPONSES_API_MODELS
+    assert "openai/gpt-5.6-luna" not in unified_agent._RESPONSES_API_MODELS
+
+
+def _fake_responses_function_call(call_id: str, name: str, arguments: dict) -> SimpleNamespace:
+    """A Responses API output item of type "function_call" -- mirrors the real
+    field names (call_id, name, arguments, type) confirmed against the
+    installed openai/litellm packages during spec research."""
+    return SimpleNamespace(
+        type="function_call", call_id=call_id, name=name, arguments=json.dumps(arguments)
+    )
+
+
+def _fake_responses_message(text: str) -> SimpleNamespace:
+    """A Responses API output item of type "message" with one output_text
+    content part."""
+    return SimpleNamespace(
+        type="message",
+        content=[SimpleNamespace(type="output_text", text=text)],
+    )
+
+
+def _fake_responses_api_response(
+    output: list,
+    *,
+    response_id: str = "resp_1",
+    status: str = "completed",
+    error: object = None,
+    usage: SimpleNamespace | None = None,
+) -> SimpleNamespace:
+    return SimpleNamespace(id=response_id, output=output, status=status, error=error, usage=usage)
+
+
+class TestChatMessageFromResponsesOutput:
+    def test_message_only_sets_content_no_tool_calls(self):
+        msg = unified_agent._chat_message_from_responses_output(
+            [_fake_responses_message("Hello there")]
+        )
+        assert msg.content == "Hello there"
+        assert msg.tool_calls is None
+        assert msg.model_dump() == {
+            "role": "assistant",
+            "content": "Hello there",
+            "tool_calls": None,
+        }
+
+    def test_function_call_sets_tool_calls_content_none(self):
+        msg = unified_agent._chat_message_from_responses_output(
+            [_fake_responses_function_call("call_abc123", "add_gig", {"url": "https://x"})]
+        )
+        assert msg.content is None
+        assert len(msg.tool_calls) == 1
+        tc = msg.tool_calls[0]
+        # Critical: .id must be the item's call_id (call_...), not its id (fc_...)
+        # -- call_id is what a matching function_call_output must reference.
+        assert tc.id == "call_abc123"
+        assert tc.function.name == "add_gig"
+        assert json.loads(tc.function.arguments) == {"url": "https://x"}
+        assert msg.model_dump() == {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call_abc123",
+                    "type": "function",
+                    "function": {
+                        "name": "add_gig",
+                        "arguments": json.dumps({"url": "https://x"}),
+                    },
+                }
+            ],
+        }
+
+    def test_multiple_function_calls_all_captured(self):
+        msg = unified_agent._chat_message_from_responses_output(
+            [
+                _fake_responses_function_call("call_1", "tool_a", {}),
+                _fake_responses_function_call("call_2", "tool_b", {}),
+            ]
+        )
+        assert [tc.id for tc in msg.tool_calls] == ["call_1", "call_2"]
+
+
+class TestChatResponseFromResponsesApi:
+    def test_usage_translated_to_prompt_and_completion_tokens(self):
+        response = _fake_responses_api_response(
+            output=[_fake_responses_message("hi")],
+            usage=SimpleNamespace(input_tokens=10, output_tokens=5),
+        )
+        chat_response = unified_agent._chat_response_from_responses_api(response)
+        assert chat_response.usage.prompt_tokens == 10
+        assert chat_response.usage.completion_tokens == 5
+
+    def test_none_usage_stays_none(self):
+        response = _fake_responses_api_response(output=[_fake_responses_message("hi")], usage=None)
+        chat_response = unified_agent._chat_response_from_responses_api(response)
+        assert chat_response.usage is None
+
+    def test_message_reachable_via_choices_zero(self):
+        response = _fake_responses_api_response(output=[_fake_responses_message("hi")])
+        chat_response = unified_agent._chat_response_from_responses_api(response)
+        assert chat_response.choices[0].message.content == "hi"
+
+
+class TestResponsesInputFromMessages:
+    def test_user_text_becomes_user_message_item(self):
+        items = unified_agent._responses_input_from_messages([{"role": "user", "content": "hello"}])
+        assert items == [{"type": "message", "role": "user", "content": "hello"}]
+
+    def test_assistant_text_only_becomes_assistant_message_item(self):
+        items = unified_agent._responses_input_from_messages(
+            [{"role": "assistant", "content": "sure thing", "tool_calls": None}]
+        )
+        assert items == [{"type": "message", "role": "assistant", "content": "sure thing"}]
+
+    def test_tool_call_round_trip_is_dropped(self):
+        messages = [
+            {"role": "user", "content": "add this gig"},
+            {"role": "assistant", "content": None, "tool_calls": [{"id": "call_1"}]},
+            {"role": "tool", "tool_call_id": "call_1", "name": "add_gig", "content": "{}"},
+        ]
+        items = unified_agent._responses_input_from_messages(messages)
+        assert items == [{"type": "message", "role": "user", "content": "add this gig"}]
+
+    def test_assistant_message_with_both_content_and_tool_calls_keeps_the_text(self):
+        messages = [
+            {
+                "role": "assistant",
+                "content": "Let me check that.",
+                "tool_calls": [{"id": "call_1"}],
+            },
+        ]
+        items = unified_agent._responses_input_from_messages(messages)
+        assert items == [{"type": "message", "role": "assistant", "content": "Let me check that."}]
+
+    def test_dangling_unresolved_tool_calls_message_is_tolerated(self):
+        """Simulates a crash mid-turn on a previous call leaving an assistant
+        tool_calls message with no matching tool result at all -- the
+        translator must not assume turns are always cleanly resolved."""
+        messages = [
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": None, "tool_calls": [{"id": "call_1"}]},
+            {"role": "user", "content": "second"},
+        ]
+        items = unified_agent._responses_input_from_messages(messages)
+        assert items == [
+            {"type": "message", "role": "user", "content": "first"},
+            {"type": "message", "role": "user", "content": "second"},
+        ]
+
+
+class TestResponsesToolOutputsFromMessages:
+    def test_translates_tool_messages_to_function_call_output_items(self):
+        new_messages = [
+            {"role": "assistant", "content": None, "tool_calls": [{"id": "call_1"}]},
+            {"role": "tool", "tool_call_id": "call_1", "name": "add_gig", "content": '{"ok":true}'},
+        ]
+        items = unified_agent._responses_tool_outputs_from_messages(new_messages)
+        assert items == [
+            {"type": "function_call_output", "call_id": "call_1", "output": '{"ok":true}'}
+        ]
+
+    def test_multiple_tool_results_all_translated(self):
+        new_messages = [
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{"id": "call_1"}, {"id": "call_2"}],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "name": "a", "content": "1"},
+            {"role": "tool", "tool_call_id": "call_2", "name": "b", "content": "2"},
+        ]
+        items = unified_agent._responses_tool_outputs_from_messages(new_messages)
+        assert items == [
+            {"type": "function_call_output", "call_id": "call_1", "output": "1"},
+            {"type": "function_call_output", "call_id": "call_2", "output": "2"},
+        ]
+
+
+class TestCallOpenaiResponsesApi:
+    async def test_first_call_bootstraps_from_history_without_system_message(self, monkeypatch):
+        import litellm
+
+        messages = [
+            {"role": "system", "content": "SYS"},
+            {"role": "user", "content": "hello"},
+        ]
+        fake_response = _fake_responses_api_response(
+            output=[_fake_responses_message("hi there")], response_id="resp_A"
+        )
+        mock_aresponses = AsyncMock(return_value=fake_response)
+        monkeypatch.setattr(litellm, "aresponses", mock_aresponses)
+
+        session: dict = {}
+        result = await unified_agent._call_openai_responses_api(
+            model="openai/gpt-6-astra",
+            api_key="sk-test",
+            messages=messages,
+            tools=unified_agent.TOOLS,
+            responses_session=session,
+        )
+
+        assert result.choices[0].message.content == "hi there"
+        call_kwargs = mock_aresponses.call_args.kwargs
+        assert call_kwargs["previous_response_id"] is None
+        assert call_kwargs["store"] is True
+        assert call_kwargs["input"] == [{"type": "message", "role": "user", "content": "hello"}]
+        assert call_kwargs["instructions"] == unified_agent.SYSTEM_PROMPT
+        # Proves the chat-tools-shape conversion produces output identical to
+        # the existing flat-schema constant, since both derive from _TOOLS_SCHEMA.
+        assert call_kwargs["tools"] == unified_agent.RESPONSES_TOOLS
+        assert session["previous_response_id"] == "resp_A"
+        assert session["synced_len"] == len(messages)
+
+    async def test_second_call_chains_via_previous_response_id_with_only_new_tool_outputs(
+        self, monkeypatch
+    ):
+        import litellm
+
+        first_messages = [{"role": "system", "content": "SYS"}, {"role": "user", "content": "hi"}]
+        session: dict = {"previous_response_id": "resp_A", "synced_len": len(first_messages)}
+        second_messages = [
+            *first_messages,
+            {"role": "assistant", "content": None, "tool_calls": [{"id": "call_1"}]},
+            {"role": "tool", "tool_call_id": "call_1", "name": "add_gig", "content": '{"ok":1}'},
+        ]
+        fake_response = _fake_responses_api_response(
+            output=[_fake_responses_message("done")], response_id="resp_B"
+        )
+        mock_aresponses = AsyncMock(return_value=fake_response)
+        monkeypatch.setattr(litellm, "aresponses", mock_aresponses)
+
+        await unified_agent._call_openai_responses_api(
+            model="openai/gpt-6-astra",
+            api_key="sk-test",
+            messages=second_messages,
+            tools=unified_agent.TOOLS,
+            responses_session=session,
+        )
+
+        call_kwargs = mock_aresponses.call_args.kwargs
+        assert call_kwargs["previous_response_id"] == "resp_A"
+        assert call_kwargs["input"] == [
+            {"type": "function_call_output", "call_id": "call_1", "output": '{"ok":1}'}
+        ]
+        assert session["previous_response_id"] == "resp_B"
+        assert session["synced_len"] == len(second_messages)
+
+    async def test_incomplete_status_raises_and_does_not_mutate_session(self, monkeypatch):
+        import litellm
+
+        fake_response = _fake_responses_api_response(
+            output=[], response_id="resp_C", status="incomplete"
+        )
+        monkeypatch.setattr(litellm, "aresponses", AsyncMock(return_value=fake_response))
+
+        session: dict = {}
+        with pytest.raises(unified_agent.ResponsesApiError):
+            await unified_agent._call_openai_responses_api(
+                model="openai/gpt-6-astra",
+                api_key="sk-test",
+                messages=[{"role": "system", "content": "SYS"}, {"role": "user", "content": "hi"}],
+                tools=unified_agent.TOOLS,
+                responses_session=session,
+            )
+        assert session == {}
+
+    async def test_populated_error_field_raises_even_if_status_completed(self, monkeypatch):
+        import litellm
+
+        fake_response = _fake_responses_api_response(
+            output=[], response_id="resp_D", status="completed", error={"message": "boom"}
+        )
+        monkeypatch.setattr(litellm, "aresponses", AsyncMock(return_value=fake_response))
+
+        session: dict = {}
+        with pytest.raises(unified_agent.ResponsesApiError):
+            await unified_agent._call_openai_responses_api(
+                model="openai/gpt-6-astra",
+                api_key="sk-test",
+                messages=[{"role": "system", "content": "SYS"}, {"role": "user", "content": "hi"}],
+                tools=unified_agent.TOOLS,
+                responses_session=session,
+            )
+        assert session == {}
+
+
 # ── LLM provider failover cascade ────────────────────────────────────────────
 
 
@@ -2663,6 +2970,80 @@ class TestCallLlmWithFailover:
 
         runtime_config.reset("llm_provider")
         runtime_config.reset("llm_model")
+
+    async def test_responses_api_model_routes_to_the_adapter_not_acompletion(
+        self, tmp_path, monkeypatch
+    ):
+        import litellm
+
+        # No runtime_config write is expected on this path (first-try success,
+        # i == 0 -- see _call_llm_with_failover's promotion logic), but chdir
+        # anyway to match this class's other tests and guard against any
+        # incidental write touching the real repo's data/ directory.
+        monkeypatch.chdir(tmp_path)
+        fake_response = _fake_responses_api_response(output=[_fake_responses_message("ok")])
+        mock_aresponses = AsyncMock(return_value=fake_response)
+        mock_acompletion = AsyncMock(side_effect=AssertionError("acompletion must not be called"))
+        monkeypatch.setattr(litellm, "aresponses", mock_aresponses)
+        monkeypatch.setattr(litellm, "acompletion", mock_acompletion)
+        # _call_llm_with_failover's except-and-retry swallows an AssertionError
+        # from the mock above like any other provider failure -- if routing
+        # ever regresses, every candidate gets tried and the real
+        # alert.send_alert would fire (a real Telegram alert from a test run,
+        # if this machine's .env has it configured). Stub it so a regression
+        # fails on the assertions below instead of sending anything real.
+        monkeypatch.setattr(unified_agent.alert, "send_alert", lambda *a, **k: None)
+
+        result, provider, model = await unified_agent._call_llm_with_failover(
+            "openai",
+            "openai/gpt-6-astra",
+            messages=[{"role": "system", "content": "S"}],
+            tools=unified_agent.TOOLS,
+        )
+
+        assert provider == "openai"
+        assert model == "openai/gpt-6-astra"
+        assert result.choices[0].message.content == "ok"
+        mock_aresponses.assert_awaited_once()
+        mock_acompletion.assert_not_awaited()
+
+    async def test_responses_api_failure_falls_over_to_next_provider(self, tmp_path, monkeypatch):
+        import litellm
+
+        monkeypatch.chdir(tmp_path)
+        # Pin all three key fields explicitly so candidate ordering is
+        # deterministic regardless of this machine's real .env (litellm's
+        # own dotenv side effect can otherwise leak a real ANTHROPIC_API_KEY
+        # into settings -- see the test file's existing
+        # test_settings_has_openai_and_gemini_api_key_fields docstring).
+        monkeypatch.setattr(unified_agent.settings, "anthropic_api_key", "sk-anthropic-test")
+        monkeypatch.setattr(unified_agent.settings, "openai_api_key", "sk-test")
+        monkeypatch.setattr(unified_agent.settings, "gemini_api_key", "")
+
+        good_response = _fake_litellm_response(content="ok")
+        monkeypatch.setattr(
+            litellm,
+            "aresponses",
+            AsyncMock(side_effect=unified_agent.ResponsesApiError("incomplete")),
+        )
+        monkeypatch.setattr(litellm, "acompletion", AsyncMock(return_value=good_response))
+        monkeypatch.setattr(unified_agent.alert, "send_alert", lambda *a, **k: None)
+
+        result, provider, model = await unified_agent._call_llm_with_failover(
+            "openai",
+            "openai/gpt-6-astra",
+            messages=[{"role": "system", "content": "S"}],
+            tools=unified_agent.TOOLS,
+        )
+
+        # candidates = [("openai", "openai/gpt-6-astra")] first, then
+        # _FAILOVER_ORDER = ["anthropic", "openai", "gemini"] filtered to
+        # configured keys minus the starting provider ("openai" skipped as
+        # itself, "gemini" skipped as unconfigured) -- so "anthropic" is the
+        # only, deterministic fallback candidate.
+        assert result is good_response
+        assert provider == "anthropic"
+        assert model == "anthropic/claude-sonnet-4-6"
 
     async def test_success_on_first_try_does_not_touch_runtime_config(self, tmp_path, monkeypatch):
         import litellm
@@ -2978,6 +3359,94 @@ async def test_process_message_stale_provider_resets_to_default(tmp_path, monkey
 
     assert responses == [unified_agent.AgentResponse(text="ok")]
     assert runtime_config.get("llm_provider", "anthropic") == "anthropic"
+
+
+@pytest.mark.asyncio
+async def test_process_message_gpt_6_astra_two_round_tool_loop(tmp_path, monkeypatch):
+    """End-to-end: active model openai/gpt-6-astra, a tool call followed by a
+    final text reply -- confirms previous_response_id chaining across the two
+    aresponses() calls and that _histories[] ends up in the same flat
+    chat-completions shape any other provider would produce."""
+    import litellm
+
+    from organist_bot.integrations import agent_state, unified_agent
+    from organist_bot.runtime_config_store import runtime_config
+
+    # chdir first -- runtime_config.set/reset below write to a relative
+    # data/runtime_config.json, and must not touch the real repo's copy.
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(agent_state, "_PATH", tmp_path / "agent_state.json")
+    monkeypatch.setattr(unified_agent.settings, "openai_api_key", "sk-test")
+    cid = 987654
+    unified_agent._hydrated.discard(cid)
+    runtime_config.set("llm_provider", "openai")
+    runtime_config.set("llm_model", "openai/gpt-6-astra")
+
+    first_response = _fake_responses_api_response(
+        output=[_fake_responses_function_call("call_xyz", "add_gig", {"url": "https://x"})],
+        response_id="resp_first",
+    )
+    second_response = _fake_responses_api_response(
+        output=[_fake_responses_message("Added the gig.")],
+        response_id="resp_second",
+    )
+    third_response = _fake_responses_api_response(
+        output=[_fake_responses_message("Sure, what else?")],
+        response_id="resp_third",
+    )
+    mock_aresponses = AsyncMock(side_effect=[first_response, second_response, third_response])
+    monkeypatch.setattr(litellm, "aresponses", mock_aresponses)
+    monkeypatch.setattr(
+        litellm, "acompletion", AsyncMock(side_effect=AssertionError("must not be called"))
+    )
+    # Guard against a routing regression silently trying every configured
+    # provider (the acompletion AssertionError above is caught and treated as
+    # a normal provider failure by _call_llm_with_failover) and firing a real
+    # Telegram alert on the all-failed path.
+    monkeypatch.setattr(unified_agent.alert, "send_alert", lambda *a, **k: None)
+    monkeypatch.setattr(
+        unified_agent, "_execute_tool", AsyncMock(return_value=json.dumps({"result": "ok"}))
+    )
+
+    try:
+        responses = await unified_agent.process_message(cid, "add this gig")
+
+        assert responses == [unified_agent.AgentResponse(text="Added the gig.")]
+
+        second_call_kwargs = mock_aresponses.call_args_list[1].kwargs
+        assert second_call_kwargs["previous_response_id"] == "resp_first"
+        assert second_call_kwargs["input"] == [
+            {
+                "type": "function_call_output",
+                "call_id": "call_xyz",
+                "output": json.dumps({"result": "ok"}),
+            }
+        ]
+
+        history = unified_agent._histories[cid]
+        assistant_turn = next(
+            m for m in history if m["role"] == "assistant" and m.get("tool_calls")
+        )
+        assert assistant_turn["content"] is None
+        assert assistant_turn["tool_calls"][0]["id"] == "call_xyz"
+        tool_turn = next(m for m in history if m["role"] == "tool")
+        assert tool_turn["tool_call_id"] == "call_xyz"
+
+        # A brand-new turn (a fresh process_message call) must not chain from
+        # the previous turn's responses_session -- that dict is created fresh
+        # inside process_message() on every call, never shared or persisted
+        # across turns. This is the single load-bearing invariant of the
+        # whole previous_response_id design.
+        second_turn_responses = await unified_agent.process_message(cid, "another question")
+        assert second_turn_responses == [unified_agent.AgentResponse(text="Sure, what else?")]
+
+        third_call_kwargs = mock_aresponses.call_args_list[2].kwargs
+        assert third_call_kwargs["previous_response_id"] is None
+    finally:
+        unified_agent._histories.pop(cid, None)
+        unified_agent._hydrated.discard(cid)
+        runtime_config.reset("llm_provider")
+        runtime_config.reset("llm_model")
 
 
 # ── process_message NEG buttons/picker plumbing ─────────────────────────────
