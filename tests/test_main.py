@@ -33,6 +33,55 @@ class TestRunLock:
         mock_run.assert_called_once()
 
 
+# ── scheduler crash alert dedup ────────────────────────────────────────────────
+
+
+class TestRunPendingWithCrashAlert:
+    """A run of consecutive tick failures (e.g. a scraped site being
+    unreachable) must alert once, not once per tick — same alert-once-until-
+    recovered shape as auto_deploy.py's alert-once-per-SHA."""
+
+    def test_first_failure_alerts_and_returns_true(self):
+        with (
+            patch("main.schedule") as mock_schedule,
+            patch("main.alert") as mock_alert,
+        ):
+            mock_schedule.run_pending.side_effect = RuntimeError("boom")
+            already_alerted = main_module._run_pending_with_crash_alert(False)
+
+        assert already_alerted is True
+        mock_alert.send_alert.assert_called_once()
+
+    def test_repeated_failure_does_not_alert_again(self):
+        with (
+            patch("main.schedule") as mock_schedule,
+            patch("main.alert") as mock_alert,
+        ):
+            mock_schedule.run_pending.side_effect = RuntimeError("boom")
+            already_alerted = main_module._run_pending_with_crash_alert(True)
+
+        assert already_alerted is True
+        mock_alert.send_alert.assert_not_called()
+
+    def test_success_resets_the_alerted_state(self):
+        with patch("main.schedule") as mock_schedule:
+            mock_schedule.run_pending.return_value = None
+            already_alerted = main_module._run_pending_with_crash_alert(True)
+
+        assert already_alerted is False
+
+    def test_failure_after_recovery_alerts_again(self):
+        with (
+            patch("main.schedule") as mock_schedule,
+            patch("main.alert") as mock_alert,
+        ):
+            mock_schedule.run_pending.side_effect = RuntimeError("boom again")
+            already_alerted = main_module._run_pending_with_crash_alert(False)
+
+        assert already_alerted is True
+        mock_alert.send_alert.assert_called_once()
+
+
 # ── parse error alert ─────────────────────────────────────────────────────────
 
 
