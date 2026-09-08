@@ -561,6 +561,24 @@ def _run(
         save_listings_hash(current_hash)
 
 
+def _run_pending_with_crash_alert(already_alerted: bool) -> bool:
+    """Run pending scheduled jobs, alerting on the first unhandled exception
+    in a run of failures but not on every subsequent tick that fails for the
+    same ongoing reason (e.g. a scraped site being unreachable) — mirrors
+    auto_deploy.py's alert-once-per-SHA and unified_agent's failover-alert
+    dedupe. Returns the already_alerted state for the caller to pass back in
+    on the next tick; a successful tick resets it so a later failure alerts
+    again."""
+    try:
+        schedule.run_pending()
+    except Exception:
+        logger.exception("Unhandled exception in scheduled run")
+        if not already_alerted:
+            alert.send_alert("❌ OrganistBot crashed — check logs.")
+        return True
+    return False
+
+
 if __name__ == "__main__":
     _parser = argparse.ArgumentParser(description="OrganistBot scheduler")
     _parser.add_argument(
@@ -590,12 +608,9 @@ if __name__ == "__main__":
         job = schedule.every(current_poll).minutes.do(main, scraper, _dry_run)
 
         _tick = 0
+        _crash_alert_sent = False
         while True:
-            try:
-                schedule.run_pending()
-            except Exception:
-                logger.exception("Unhandled exception in scheduled run")
-                alert.send_alert("❌ OrganistBot crashed — check logs.")
+            _crash_alert_sent = _run_pending_with_crash_alert(_crash_alert_sent)
 
             _tick += 1
             if _tick % 10 == 0:
