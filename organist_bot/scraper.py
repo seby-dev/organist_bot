@@ -58,7 +58,7 @@ class Scraper:
 
     @retry(
         retry=retry_if_exception_type(RequestException),
-        stop=stop_after_attempt(3),
+        stop=stop_after_attempt(4),
         wait=wait_exponential(multiplier=1, min=1, max=15),
         before_sleep=_log_retry,
     )
