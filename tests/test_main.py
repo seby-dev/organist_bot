@@ -37,48 +37,74 @@ class TestRunLock:
 
 
 class TestRunPendingWithCrashAlert:
-    """A run of consecutive tick failures (e.g. a scraped site being
-    unreachable) must alert once, not once per tick — same alert-once-until-
-    recovered shape as auto_deploy.py's alert-once-per-SHA."""
+    """A run of consecutive tick failures only alerts once the failure streak
+    reaches _CONSECUTIVE_FAILURES_BEFORE_ALERT — a single failed tick is
+    usually a transient blip in the scraped site (confirmed repeatedly:
+    organistsonline.org going unreachable for a few minutes at a time, e.g.
+    2026-09-11 and 2026-09-14) that self-heals before it's worth paging
+    about. Once the threshold is hit, later ticks in the same streak must
+    not re-alert — same alert-once-until-recovered shape as
+    auto_deploy.py's alert-once-per-SHA."""
 
-    def test_first_failure_alerts_and_returns_true(self):
+    def test_failure_below_threshold_does_not_alert(self):
         with (
             patch("main.schedule") as mock_schedule,
             patch("main.alert") as mock_alert,
         ):
             mock_schedule.run_pending.side_effect = RuntimeError("boom")
-            already_alerted = main_module._run_pending_with_crash_alert(False)
+            consecutive_failures = main_module._run_pending_with_crash_alert(0)
 
-        assert already_alerted is True
-        mock_alert.send_alert.assert_called_once()
-
-    def test_repeated_failure_does_not_alert_again(self):
-        with (
-            patch("main.schedule") as mock_schedule,
-            patch("main.alert") as mock_alert,
-        ):
-            mock_schedule.run_pending.side_effect = RuntimeError("boom")
-            already_alerted = main_module._run_pending_with_crash_alert(True)
-
-        assert already_alerted is True
+        assert consecutive_failures == 1
+        assert consecutive_failures < main_module._CONSECUTIVE_FAILURES_BEFORE_ALERT
         mock_alert.send_alert.assert_not_called()
 
-    def test_success_resets_the_alerted_state(self):
+    def test_failure_reaching_threshold_alerts_once(self):
+        threshold = main_module._CONSECUTIVE_FAILURES_BEFORE_ALERT
+        with (
+            patch("main.schedule") as mock_schedule,
+            patch("main.alert") as mock_alert,
+        ):
+            mock_schedule.run_pending.side_effect = RuntimeError("boom")
+            consecutive_failures = main_module._run_pending_with_crash_alert(threshold - 1)
+
+        assert consecutive_failures == threshold
+        mock_alert.send_alert.assert_called_once()
+
+    def test_failure_past_threshold_does_not_alert_again(self):
+        threshold = main_module._CONSECUTIVE_FAILURES_BEFORE_ALERT
+        with (
+            patch("main.schedule") as mock_schedule,
+            patch("main.alert") as mock_alert,
+        ):
+            mock_schedule.run_pending.side_effect = RuntimeError("boom")
+            consecutive_failures = main_module._run_pending_with_crash_alert(threshold)
+
+        assert consecutive_failures == threshold + 1
+        mock_alert.send_alert.assert_not_called()
+
+    def test_success_resets_the_failure_count(self):
         with patch("main.schedule") as mock_schedule:
             mock_schedule.run_pending.return_value = None
-            already_alerted = main_module._run_pending_with_crash_alert(True)
+            consecutive_failures = main_module._run_pending_with_crash_alert(
+                main_module._CONSECUTIVE_FAILURES_BEFORE_ALERT
+            )
 
-        assert already_alerted is False
+        assert consecutive_failures == 0
 
-    def test_failure_after_recovery_alerts_again(self):
+    def test_failure_streak_after_recovery_alerts_again_at_threshold(self):
+        threshold = main_module._CONSECUTIVE_FAILURES_BEFORE_ALERT
         with (
             patch("main.schedule") as mock_schedule,
             patch("main.alert") as mock_alert,
         ):
             mock_schedule.run_pending.side_effect = RuntimeError("boom again")
-            already_alerted = main_module._run_pending_with_crash_alert(False)
+            consecutive_failures = 0
+            for _ in range(threshold):
+                consecutive_failures = main_module._run_pending_with_crash_alert(
+                    consecutive_failures
+                )
 
-        assert already_alerted is True
+        assert consecutive_failures == threshold
         mock_alert.send_alert.assert_called_once()
 
 

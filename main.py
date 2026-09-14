@@ -561,22 +561,32 @@ def _run(
         save_listings_hash(current_hash)
 
 
-def _run_pending_with_crash_alert(already_alerted: bool) -> bool:
-    """Run pending scheduled jobs, alerting on the first unhandled exception
-    in a run of failures but not on every subsequent tick that fails for the
-    same ongoing reason (e.g. a scraped site being unreachable) — mirrors
+_CONSECUTIVE_FAILURES_BEFORE_ALERT = 3
+
+
+def _run_pending_with_crash_alert(consecutive_failures: int) -> int:
+    """Run pending scheduled jobs, alerting only once a run of failures
+    reaches _CONSECUTIVE_FAILURES_BEFORE_ALERT in a row. A single failed
+    tick is usually a transient blip in the scraped site — organistsonline.org
+    has gone unreachable for a few minutes at a time on more than one
+    occasion (e.g. 2026-09-11, 2026-09-14) and self-healed before the next
+    tick — so alerting on tick one is mostly noise. Once the threshold is
+    hit, later ticks in the same streak do not re-alert — mirrors
     auto_deploy.py's alert-once-per-SHA and unified_agent's failover-alert
-    dedupe. Returns the already_alerted state for the caller to pass back in
-    on the next tick; a successful tick resets it so a later failure alerts
-    again."""
+    dedupe. Returns the updated consecutive-failure count for the caller to
+    pass back in on the next tick; a successful tick resets it to 0 so a
+    later failure streak alerts again once it reaches the threshold."""
     try:
         schedule.run_pending()
     except Exception:
         logger.exception("Unhandled exception in scheduled run")
-        if not already_alerted:
-            alert.send_alert("❌ OrganistBot crashed — check logs.")
-        return True
-    return False
+        consecutive_failures += 1
+        if consecutive_failures == _CONSECUTIVE_FAILURES_BEFORE_ALERT:
+            alert.send_alert(
+                f"❌ OrganistBot crashed {consecutive_failures} ticks in a row — check logs."
+            )
+        return consecutive_failures
+    return 0
 
 
 if __name__ == "__main__":
@@ -608,9 +618,9 @@ if __name__ == "__main__":
         job = schedule.every(current_poll).minutes.do(main, scraper, _dry_run)
 
         _tick = 0
-        _crash_alert_sent = False
+        _consecutive_failures = 0
         while True:
-            _crash_alert_sent = _run_pending_with_crash_alert(_crash_alert_sent)
+            _consecutive_failures = _run_pending_with_crash_alert(_consecutive_failures)
 
             _tick += 1
             if _tick % 10 == 0:
