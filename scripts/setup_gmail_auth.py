@@ -19,7 +19,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from organist_bot.config import settings  # noqa: E402
 
-SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
+SCOPES = [
+    "https://www.googleapis.com/auth/gmail.readonly",
+    "https://www.googleapis.com/auth/gmail.compose",
+]
 
 
 def main() -> None:
