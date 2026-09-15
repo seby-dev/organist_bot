@@ -1,14 +1,17 @@
 """
 organist_bot/logging_config.py
 ──────────────────────────────
-Central logging configuration for OrganistBot.
+Central logging configuration for OrganistBot, built on structlog.
 
 Two handlers are attached to the root logger:
 
   Console (stdout)
     Level  : INFO and above
-    Format : human-readable with ANSI colour coding
-    Purpose: quick feedback while the bot is running
+    Format : colorized, human-readable when stdout is a real terminal;
+             structured JSON when it isn't (e.g. under launchd/supervisord,
+             where stdout is redirected to a log file)
+    Purpose: quick feedback when run interactively, and a machine-parseable
+             record when it isn't
 
   Rotating file
     Level  : DEBUG and above
@@ -17,17 +20,28 @@ Two handlers are attached to the root logger:
 
 Call setup_logging() exactly once at the top of main().
 
+Every call site in the codebase logs via plain stdlib
+logging.getLogger(__name__) — nothing calls structlog.get_logger() directly,
+so every record is "foreign" to structlog and flows entirely through the
+foreign_pre_chain + processors built up below.
+
 Silences urllib3 / requests chatter so only application-level
 messages appear on the console.
 """
 
 import contextvars
-import datetime
-import json
 import logging
 import logging.handlers
 import sys
+from collections.abc import Mapping, MutableMapping
 from pathlib import Path
+from typing import Any
+
+from structlog.dev import ConsoleRenderer, RichTracebackFormatter
+from structlog.processors import EventRenamer, ExceptionRenderer, JSONRenderer, TimeStamper
+from structlog.stdlib import ExtraAdder, ProcessorFormatter, add_log_level
+from structlog.tracebacks import ExceptionDictTransformer
+from structlog.typing import Processor
 
 # ── Run ID context variable ────────────────────────────────────────────────────
 # Set once per main() call via set_run_id(); automatically injected into every
@@ -49,159 +63,70 @@ class RunIdFilter(logging.Filter):
         return True
 
 
-# ── ANSI colour palette ────────────────────────────────────────────────────────
-
-_RESET = "\033[0m"
-_BOLD = "\033[1m"
-_DIM = "\033[2m"
-_CYAN = "\033[36m"
-_GREEN = "\033[32m"
-_YELLOW = "\033[33m"
-_RED = "\033[31m"
-_MAGENTA = "\033[35m"
-
-_LEVEL_COLORS: dict[str, str] = {
-    "DEBUG": _CYAN,
-    "INFO": _GREEN,
-    "WARNING": _YELLOW,
-    "ERROR": _RED,
-    "CRITICAL": "\033[1;31m",  # bold red
-}
-
-# ── Fields that belong to LogRecord itself (never treated as "extra") ──────────
-
-_STDLIB_FIELDS = frozenset(
-    {
-        "args",
-        "asctime",
-        "created",
-        "exc_info",
-        "exc_text",
-        "filename",
-        "funcName",
-        "id",
-        "levelname",
-        "levelno",
-        "lineno",
-        "message",
-        "module",
-        "msecs",
-        "msg",
-        "name",
-        "pathname",
-        "process",
-        "processName",
-        "relativeCreated",
-        "stack_info",
-        "taskName",
-        "thread",
-        "threadName",
-        "run_id",
-    }
-)
+# ── structlog processor chain ──────────────────────────────────────────────────
+# Every call site in this codebase logs via plain stdlib logging.getLogger(name),
+# so every record structlog sees here is "foreign" to it. foreign_pre_chain runs
+# once per record before either final renderer below.
 
 
-# ── Formatters ─────────────────────────────────────────────────────────────────
+def _add_callsite(
+    _logger: Any, _name: str, event_dict: MutableMapping[str, Any]
+) -> Mapping[str, Any]:
+    """Add module/function/line/logger from the underlying LogRecord, using the field
+    names this project's JSON logs have always used (structlog's own
+    CallsiteParameterAdder uses different names)."""
+    record = event_dict["_record"]
+    event_dict["module"] = record.module
+    event_dict["function"] = record.funcName
+    event_dict["line"] = record.lineno
+    event_dict["logger"] = record.name
+    return event_dict
 
 
-class ConsoleFormatter(logging.Formatter):
+_FOREIGN_PRE_CHAIN: list[Processor] = [
+    add_log_level,
+    ExtraAdder(),
+    _add_callsite,
+    TimeStamper(fmt="iso", key="timestamp"),  # "iso" is always UTC, trailing "Z"
+]
+
+
+def _build_json_formatter() -> ProcessorFormatter:
+    """JSON pipeline shared by the rotating file handler and the console handler
+    when stdout isn't a tty (e.g. under launchd)."""
+    return ProcessorFormatter(
+        foreign_pre_chain=_FOREIGN_PRE_CHAIN,
+        processors=[
+            ExceptionRenderer(ExceptionDictTransformer(show_locals=False)),
+            ProcessorFormatter.remove_processors_meta,
+            EventRenamer("message"),
+            JSONRenderer(),
+        ],
+    )
+
+
+def _build_console_formatter() -> ProcessorFormatter:
+    """Colorized, human-readable pipeline for an interactive terminal.
+
+    Explicitly disables rich's traceback locals (mirrors the JSON path's
+    ExceptionDictTransformer(show_locals=False)) — otherwise, because rich is
+    installed transitively (via litellm), structlog would default to
+    RichTracebackFormatter(show_locals=True), rendering every local variable
+    (including secrets like passwords or API keys) into an exception logged
+    to an interactive terminal.
     """
-    Colour-coded, human-readable single-line formatter for the terminal.
-
-    Every line includes a fixed-width run_id bracket so columns stay aligned
-    regardless of whether a run is in progress.  Pre-run messages (startup,
-    logging init) use [--------] as a placeholder.
-
-    Example output:
-        2026-02-25 14:32:01.004 [--------] INFO      __main__                    Scheduler starting  poll_minutes=2
-        2026-02-25 14:32:01.021 [--------] INFO      organist_bot.logging_config Logging initialised  log_file='...'
-        2026-02-25 14:32:01.045 [a1b2c3d4] INFO      __main__                    OrganistBot run started
-        2026-02-25 14:32:01.312 [a1b2c3d4] INFO      organist_bot.scraper        Fetch successful  url='https://...'  elapsed_ms=234
-        2026-02-25 14:32:02.089 [a1b2c3d4] WARNING   organist_bot.notifier       No contact email for 'Wedding' — skipped
-        2026-02-25 14:32:02.091 [a1b2c3d4] DEBUG     organist_bot.filters        Gig rejected  filter='FeeFilter(...)' gig='Sunday Service'
-    """
-
-    def format(self, record: logging.LogRecord) -> str:
-        ts = (
-            datetime.datetime.fromtimestamp(record.created).strftime("%Y-%m-%d %H:%M:%S")
-            + f".{int(record.msecs):03d}"
-        )
-        color = _LEVEL_COLORS.get(record.levelname, "")
-        level = f"{color}{record.levelname:<9}{_RESET}"
-        name = f"{_DIM}{record.name:<27}{_RESET}"
-        msg = f"{_BOLD}{record.getMessage()}{_RESET}"
-
-        # Collect caller-supplied extra fields
-        ctx_parts = [
-            f"{_YELLOW}{k}{_RESET}={v!r}"
-            for k, v in record.__dict__.items()
-            if k not in _STDLIB_FIELDS
-        ]
-        ctx = "  ".join(ctx_parts)
-
-        run_id = getattr(record, "run_id", "") or "--------"
-        run_id_str = f" {_DIM}[{run_id}]{_RESET}"
-
-        parts = [f"{_DIM}{ts}{_RESET}{run_id_str}", level, name, msg]
-        if ctx:
-            parts.append(ctx)
-
-        line = " ".join(parts)
-
-        if record.exc_info:
-            line += "\n" + self.formatException(record.exc_info)
-
-        return line
+    return ProcessorFormatter(
+        foreign_pre_chain=_FOREIGN_PRE_CHAIN,
+        processors=[
+            ProcessorFormatter.remove_processors_meta,
+            ConsoleRenderer(exception_formatter=RichTracebackFormatter(show_locals=False)),
+        ],
+    )
 
 
-class JSONFormatter(logging.Formatter):
-    """
-    Structured JSON formatter — one complete JSON object per log line.
-
-    Standard fields are always present; any extras passed by the caller
-    are merged in at the top level.  Exceptions are serialised as a
-    'exception' string field.
-
-    Example:
-        {
-          "timestamp": "2026-02-25T14:32:01.234Z",
-          "level": "INFO",
-          "logger": "organist_bot.scraper",
-          "message": "Fetch successful",
-          "module": "scraper",
-          "function": "fetch",
-          "line": 31,
-          "url": "https://organistsonline.org/required/",
-          "status": 200,
-          "size_bytes": 18432,
-          "elapsed_ms": 312
-        }
-    """
-
-    def format(self, record: logging.LogRecord) -> str:
-        doc: dict = {
-            "timestamp": (
-                datetime.datetime.utcfromtimestamp(record.created).strftime("%Y-%m-%dT%H:%M:%S.")
-                + f"{int(record.msecs):03d}Z"
-            ),
-            "run_id": getattr(record, "run_id", ""),
-            "level": record.levelname,
-            "logger": record.name,
-            "message": record.getMessage(),
-            "module": record.module,
-            "function": record.funcName,
-            "line": record.lineno,
-        }
-
-        # Merge caller-supplied extra context
-        for key, value in record.__dict__.items():
-            if key not in _STDLIB_FIELDS:
-                doc[key] = value
-
-        if record.exc_info:
-            doc["exception"] = self.formatException(record.exc_info)
-
-        return json.dumps(doc, default=str)
+def _select_console_formatter(is_tty: bool) -> ProcessorFormatter:
+    """Chosen once, at setup_logging() call time, based on sys.stdout.isatty()."""
+    return _build_console_formatter() if is_tty else _build_json_formatter()
 
 
 # ── Public API ─────────────────────────────────────────────────────────────────
@@ -209,8 +134,12 @@ class JSONFormatter(logging.Formatter):
 
 def setup_logging(log_file: str, level: int = logging.DEBUG) -> None:
     """
-    Attach a coloured console handler (INFO+) and a rotating JSON file
-    handler (DEBUG+) to the root logger.
+    Attach a console handler (INFO+) and a rotating JSON file handler
+    (DEBUG+) to the root logger.
+
+    The console handler renders colorized, human-readable text when stdout
+    is a real terminal, and structured JSON otherwise (e.g. under
+    launchd/supervisord, where stdout is redirected to a log file).
 
     Args:
         log_file: Path to the rotating log file (e.g. "gigs.log").
@@ -241,7 +170,7 @@ def setup_logging(log_file: str, level: int = logging.DEBUG) -> None:
     # ── Console handler ───────────────────────────────────────────────────────
     console = logging.StreamHandler(sys.stdout)
     console.setLevel(logging.INFO)
-    console.setFormatter(ConsoleFormatter())
+    console.setFormatter(_select_console_formatter(sys.stdout.isatty()))
     console.addFilter(run_id_filter)
     root.addHandler(console)
 
@@ -254,7 +183,7 @@ def setup_logging(log_file: str, level: int = logging.DEBUG) -> None:
         encoding="utf-8",
     )
     file_handler.setLevel(logging.DEBUG)
-    file_handler.setFormatter(JSONFormatter())
+    file_handler.setFormatter(_build_json_formatter())
     file_handler.addFilter(run_id_filter)
     root.addHandler(file_handler)
 

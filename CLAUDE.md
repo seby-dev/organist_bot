@@ -141,7 +141,7 @@ Per-chat history, last-invoice context, and last-gig-listing context live in pro
 - `llm_usage_store.py` — JSON-backed per-call LLM usage log (provider, model, token counts); `record_call` / `summary(since=...)`
 - `reply_monitor.py` — Gmail → Claude-classifier → application_store + calendar + Telegram
 - `alert.py` — fire-and-forget Telegram alert (`send_alert(message)`); silently no-ops if unconfigured
-- `logging_config.py` — dual handler (ANSI console + rotating JSON file), `run_id` correlation
+- `logging_config.py` — structlog-based dual handler (tty-aware colorized console or JSON, plus rotating JSON file), `run_id` correlation
 
 ### `organist_bot/integrations/`
 
