@@ -6,8 +6,12 @@ import hashlib
 import logging
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 import main as main_module
 import organist_bot.application_store as application_store
+from organist_bot import gig_classifier
+from organist_bot.models import Gig
 
 # ── overlapping run protection ────────────────────────────────────────────────
 
@@ -168,6 +172,13 @@ class TestParseErrorAlert:
             patch("main.Notifier"),
             patch("main.SMTPTransport"),
             patch("main.set_run_id"),
+            patch("main.GmailClient"),
+            patch(
+                "main.classify_gig",
+                return_value=gig_classifier.Classification(
+                    decision="auto_send", reason="auto_eligible"
+                ),
+            ),
         ):
             main_module.main(mock_scraper)
 
@@ -214,6 +225,13 @@ class TestParseErrorAlert:
             patch("main.Notifier"),
             patch("main.SMTPTransport"),
             patch("main.set_run_id"),
+            patch("main.GmailClient"),
+            patch(
+                "main.classify_gig",
+                return_value=gig_classifier.Classification(
+                    decision="auto_send", reason="auto_eligible"
+                ),
+            ),
         ):
             main_module.main(mock_scraper)
 
@@ -225,6 +243,24 @@ class TestParseErrorAlert:
 
 class TestMain:
     """Tests for the main() scheduler function."""
+
+    @pytest.fixture(autouse=True)
+    def _classifier_and_gmail_defaults(self):
+        """Every gig built in this class is a non-NEG Sunday gig expected to
+        reach Phase 3 unheld — patch the classifier to always say so, and
+        stub GmailClient so nothing here attempts real Gmail/Anthropic I/O.
+        A test that wants different classifier behavior can still override
+        with its own nested `patch("main.classify_gig", ...)`."""
+        with (
+            patch(
+                "main.classify_gig",
+                return_value=gig_classifier.Classification(
+                    decision="auto_send", reason="auto_eligible"
+                ),
+            ),
+            patch("main.GmailClient"),
+        ):
+            yield
 
     def _make_minimal_settings(self):
         s = MagicMock()
@@ -768,11 +804,20 @@ class TestNegDrafts:
             setattr(s, k, v)
         return s
 
-    def _future_date(self) -> str:
+    def _date_on_weekday(self, weekday: int) -> str:
+        """weekday: Monday=0 ... Sunday=6 (matches filters.parse_weekday).
+        Returns a date >=21 days out on the given weekday, same format
+        _future_date used ("%A, %B %d, %Y") — far enough out to avoid any
+        date-adjacent filter edge case, but deterministic instead of
+        whatever weekday today+21 happens to land on."""
         d = _dt.date.today() + _dt.timedelta(days=21)
+        while d.weekday() != weekday:
+            d += _dt.timedelta(days=1)
         return d.strftime("%A, %B %d, %Y")
 
-    def _mock_scraper_with_one_gig(self, fee: str, link: str = "https://e.com/abc"):
+    def _mock_scraper_with_one_gig(
+        self, fee: str, link: str = "https://e.com/abc", date: str | None = None
+    ):
         scraper = MagicMock()
         scraper.fetch.return_value = "<html/>"
         scraper.parse_gig_listings.return_value = [MagicMock()]
@@ -780,7 +825,7 @@ class TestNegDrafts:
             "header": "St Mary's Sunday Service",
             "organisation": "St Mary's",
             "locality": "London",
-            "date": self._future_date(),
+            "date": date or self._date_on_weekday(6),  # default: Sunday
             "time": "10:00 AM",
             "link": link,
             "fee": fee,
@@ -808,8 +853,16 @@ class TestNegDrafts:
             patch("main.SMTPTransport"),
             patch("main.set_run_id"),
             patch("main.runtime_config") as mock_rc,
+            patch("main.GmailClient") as mock_gmail_cls,
+            patch(
+                "main.classify_gig",
+                return_value=gig_classifier.Classification(
+                    decision="auto_send", reason="auto_eligible"
+                ),
+            ),
         ):
             mock_rc.get.side_effect = lambda k, d: d
+            mock_gmail_cls.return_value.create_draft.return_value = "fake-draft-id"
             main_module.main(scraper)
         return mock_alert
 
@@ -817,41 +870,51 @@ class TestNegDrafts:
         mock_alert = self._run(
             self._settings(), self._mock_scraper_with_one_gig(fee="NEG"), tmp_path, monkeypatch
         )
-        rows = application_store.list_neg_pending()
+        rows = application_store.list_held(status="neg_pending")
         assert len(rows) == 1
         assert rows[0]["status"] == "neg_pending"
-        assert "£120" in rows[0]["draft_body"]
+        assert rows[0]["draft_id"] == "fake-draft-id"
+        assert rows[0]["negotiable_fee"] == 120
         gig_id = rows[0]["gig_id"]
-        # _send_neg_alert sends two Telegram messages per NEG draft: a gig
-        # details card, then the draft itself (containing gig_id and the
-        # approve/edit/reject instructions) — PR #59 split what used to be
-        # one "NEG draft pending" message into these two.
-        assert mock_alert.send_alert.call_count == 2
-        draft_calls = [c for c in mock_alert.send_alert.call_args_list if gig_id in c.args[0]]
-        assert len(draft_calls) == 1
-        assert "approve" in draft_calls[0].args[0]
-
-    def test_neg_draft_alert_carries_accept_edit_reject_buttons(self, tmp_path, monkeypatch):
-        mock_alert = self._run(
-            self._settings(), self._mock_scraper_with_one_gig(fee="NEG"), tmp_path, monkeypatch
-        )
-        rows = application_store.list_neg_pending()
-        gig_id = rows[0]["gig_id"]
-        draft_calls = [c for c in mock_alert.send_alert.call_args_list if gig_id in c.args[0]]
-        assert len(draft_calls) == 1
-        buttons = draft_calls[0].kwargs["reply_markup"]["inline_keyboard"][0]
+        # A single Telegram message per NEG draft now (the draft itself lives
+        # in Gmail, not in a second Telegram message) — see _send_review_alert.
+        assert mock_alert.send_alert.call_count == 1
+        call = mock_alert.send_alert.call_args_list[0]
+        assert "NEG gig" in call.args[0]
+        assert "£120" in call.args[0]  # "Proposed: £120" line
+        buttons = call.kwargs["reply_markup"]["inline_keyboard"][0]
         callback_data = {b["callback_data"] for b in buttons}
-        assert callback_data == {
-            f"neg:accept:{gig_id}",
-            f"neg:edit:{gig_id}",
-            f"neg:reject:{gig_id}",
-        }
+        assert callback_data == {f"review:accept:{gig_id}", f"review:decline:{gig_id}"}
+
+    def test_neg_draft_creates_real_gmail_draft(self, tmp_path, monkeypatch):
+        with patch("main.GmailClient") as mock_gmail_cls:
+            mock_gmail_cls.return_value.create_draft.return_value = "fake-draft-id"
+            with (
+                patch("main.alert"),
+                patch("main.settings", self._settings()),
+                patch("organist_bot.notifier.application_store"),
+                patch("main.load_seen_gigs", return_value=set()),
+                patch("main.load_listings_hash", return_value="old_hash"),
+                patch("main.save_listings_hash"),
+                patch("main.save_seen_gigs"),
+                patch("main.filter_store"),
+                patch("main.SMTPTransport"),
+                patch("main.set_run_id"),
+                patch("main.runtime_config") as mock_rc,
+            ):
+                monkeypatch.setattr(application_store, "_PATH", tmp_path / "applications.json")
+                mock_rc.get.side_effect = lambda k, d: d
+                main_module.main(self._mock_scraper_with_one_gig(fee="NEG"))
+        create_call = mock_gmail_cls.return_value.create_draft
+        create_call.assert_called_once()
+        assert create_call.call_args.kwargs["recipient"] == "jane@stmarys.org"
+        assert "£120" in create_call.call_args.kwargs["body_html"]
 
     def test_below_min_fee_gig_is_not_drafted(self, tmp_path, monkeypatch):
         self._run(
             self._settings(), self._mock_scraper_with_one_gig(fee="£50"), tmp_path, monkeypatch
         )
-        assert application_store.list_neg_pending() == []
+        assert application_store.list_held(status="neg_pending") == []
 
     def test_expenses_only_gig_is_not_drafted(self, tmp_path, monkeypatch):
         mock_alert = self._run(
@@ -860,9 +923,9 @@ class TestNegDrafts:
             tmp_path,
             monkeypatch,
         )
-        assert application_store.list_neg_pending() == []
+        assert application_store.list_held(status="neg_pending") == []
         for c in mock_alert.send_alert.call_args_list:
-            assert "NEG draft pending" not in c.args[0]
+            assert "NEG gig" not in c.args[0]
 
     def test_enable_neg_drafts_false_rejects_neg(self, tmp_path, monkeypatch):
         self._run(
@@ -871,22 +934,20 @@ class TestNegDrafts:
             tmp_path,
             monkeypatch,
         )
-        assert application_store.list_neg_pending() == []
+        assert application_store.list_held(status="neg_pending") == []
 
     def test_normal_gig_above_min_fee_still_notified(self, tmp_path, monkeypatch):
         """Regression: partition must not break the normal Phase-3 path."""
         with patch("main.Notifier") as mock_notifier_cls:
             mock_alert = self._run(
                 self._settings(),
-                self._mock_scraper_with_one_gig(fee="£150"),
+                self._mock_scraper_with_one_gig(fee="£150"),  # date defaults to Sunday
                 tmp_path,
                 monkeypatch,
             )
-        assert application_store.list_neg_pending() == []
-        # No NEG-draft alert should have been sent
+        assert application_store.list_held(status="neg_pending") == []
         for c in mock_alert.send_alert.call_args_list:
-            assert "NEG draft pending" not in c.args[0]
-        # Notifier must have been instantiated (Phase 3 ran)
+            assert "NEG gig" not in c.args[0]
         mock_notifier_cls.assert_called()
 
     def test_suspended_fee_filter_bypasses_neg_partition(self, tmp_path, monkeypatch):
@@ -915,15 +976,323 @@ class TestNegDrafts:
             patch("main.runtime_config") as mock_rc,
             patch("main.filter_suspension_store") as mock_fss,
             patch("main.Notifier") as mock_notifier_cls,
+            patch("main.GmailClient"),
+            patch(
+                "main.classify_gig",
+                return_value=gig_classifier.Classification(
+                    decision="auto_send", reason="auto_eligible"
+                ),
+            ),
         ):
             mock_rc.get.side_effect = lambda k, d: d
             mock_fss.load_active.return_value = [("fee", _dt.date.min, _dt.date.max)]
             mock_fss.purge_past_suspensions.return_value = 0
             main_module.main(scraper)
 
-        assert application_store.list_neg_pending() == []
+        assert application_store.list_held(status="neg_pending") == []
         mock_notifier_cls.return_value.send_summary.assert_called_once()
         assert len(mock_notifier_cls.return_value.send_summary.call_args[0][0]) == 1
+
+
+class TestClassifierPartition:
+    """Tests for the new non-NEG hold-classifier partition — main.py's logic
+    deciding auto_send_gigs vs review_gigs for gigs that already passed the
+    filter chain and aren't NEG."""
+
+    def _settings(self, **overrides):
+        s = MagicMock()
+        s.target_url = "https://organistsonline.org/required/"
+        s.min_fee = 100
+        s.negotiable_fee = 120
+        s.enable_neg_drafts = True
+        s.enable_fee_filter = True
+        s.enable_sunday_time_filter = False
+        s.enable_blacklist_filter = False
+        s.enable_seen_filter = False
+        s.enable_postcode_filter = False
+        s.enable_calendar_filter = False
+        s.enable_availability_filter = False
+        s.dry_run = False
+        s.email_password = "pass"
+        s.email_sender = "bot@test.com"
+        s.cc_email = ""
+        s.applicant_name = "Alex"
+        s.applicant_mobile = ""
+        s.applicant_video_1 = ""
+        s.applicant_video_2 = ""
+        for k, v in overrides.items():
+            setattr(s, k, v)
+        return s
+
+    def _date_on_weekday(self, weekday: int) -> str:
+        d = _dt.date.today() + _dt.timedelta(days=21)
+        while d.weekday() != weekday:
+            d += _dt.timedelta(days=1)
+        return d.strftime("%A, %B %d, %Y")
+
+    def _scraper(self, fee: str, date: str, link="https://e.com/abc"):
+        scraper = MagicMock()
+        scraper.fetch.return_value = "<html/>"
+        scraper.parse_gig_listings.return_value = [MagicMock()]
+        scraper.extract_basic_details.return_value = {
+            "header": "Sunday Service",
+            "organisation": "St Mary's",
+            "locality": "London",
+            "date": date,
+            "time": "10:00 AM",
+            "link": link,
+            "fee": fee,
+        }
+        scraper.extract_full_details.return_value = {
+            "contact": "Jane Smith",
+            "email": "jane@stmarys.org",
+            "postcode": "SW1A 1AA",
+        }
+        return scraper
+
+    def _run(self, mock_settings, scraper, tmp_path, monkeypatch, classify_return=None):
+        monkeypatch.setattr(application_store, "_PATH", tmp_path / "applications.json")
+        with (
+            patch("main.alert"),
+            patch("main.settings", mock_settings),
+            patch("organist_bot.notifier.application_store"),
+            patch("main.load_seen_gigs", return_value=set()),
+            patch("main.load_listings_hash", return_value="old_hash"),
+            patch("main.save_listings_hash"),
+            patch("main.save_seen_gigs"),
+            patch("main.filter_store"),
+            patch("main.SMTPTransport"),
+            patch("main.set_run_id"),
+            patch("main.runtime_config") as mock_rc,
+            patch("main.GmailClient") as mock_gmail_cls,
+            patch("main.classify_gig") as mock_classify,
+            patch("main.Notifier") as mock_notifier_cls,
+        ):
+            mock_rc.get.side_effect = lambda k, d: d
+            mock_gmail_cls.return_value.create_draft.return_value = "fake-draft-id"
+            # main.Notifier is a mocked class here (to assert apply_to_gig /
+            # send_summary calls) — but the held-drafts blocks also call
+            # notifier.draft_application(...)/draft_negotiation(...) and
+            # unpack the result as `subject, body = ...`. Without an explicit
+            # return_value, MagicMock() is not iterable and that unpacking
+            # raises ValueError, which the surrounding `except Exception:`
+            # swallows — silently skipping record_held_draft and making
+            # every "was it held?" assertion below fail for the wrong reason.
+            mock_notifier_cls.return_value.draft_application.return_value = (
+                "Subject",
+                "<p>Body</p>",
+            )
+            mock_notifier_cls.return_value.draft_negotiation.return_value = (
+                "Subject",
+                "<p>Body</p>",
+            )
+            if classify_return is not None:
+                mock_classify.return_value = classify_return
+            main_module.main(scraper)
+        return mock_classify, mock_notifier_cls
+
+    def test_monday_gig_held_without_calling_classifier(self, tmp_path, monkeypatch):
+        mock_classify, mock_notifier_cls = self._run(
+            self._settings(),
+            self._scraper(fee="£150", date=self._date_on_weekday(0)),  # Monday
+            tmp_path,
+            monkeypatch,
+        )
+        mock_classify.assert_not_called()
+        rows = application_store.list_held(status="review_pending")
+        assert len(rows) == 1
+        assert rows[0]["hold_reason"] == "weekday"
+
+    def test_saturday_auto_eligible_auto_sends(self, tmp_path, monkeypatch):
+        mock_classify, mock_notifier_cls = self._run(
+            self._settings(),
+            self._scraper(fee="£150", date=self._date_on_weekday(5)),  # Saturday
+            tmp_path,
+            monkeypatch,
+            classify_return=gig_classifier.Classification(
+                decision="auto_send", reason="auto_eligible"
+            ),
+        )
+        mock_classify.assert_called_once()
+        assert application_store.list_held(status="review_pending") == []
+        mock_notifier_cls.return_value.apply_to_gig.assert_called_once()
+
+    def test_sunday_multi_service_is_held(self, tmp_path, monkeypatch):
+        mock_classify, mock_notifier_cls = self._run(
+            self._settings(),
+            self._scraper(fee="£150", date=self._date_on_weekday(6)),  # Sunday
+            tmp_path,
+            monkeypatch,
+            classify_return=gig_classifier.Classification(
+                decision="hold_for_review", reason="multi_service"
+            ),
+        )
+        rows = application_store.list_held(status="review_pending")
+        assert len(rows) == 1
+        assert rows[0]["hold_reason"] == "multi_service"
+        mock_notifier_cls.return_value.apply_to_gig.assert_not_called()
+
+    def test_neg_gig_never_reaches_classifier(self, tmp_path, monkeypatch):
+        mock_classify, mock_notifier_cls = self._run(
+            self._settings(),
+            self._scraper(
+                fee="NEG", date=self._date_on_weekday(0)
+            ),  # Monday — irrelevant, NEG short-circuits
+            tmp_path,
+            monkeypatch,
+        )
+        mock_classify.assert_not_called()
+
+    def test_enable_fee_filter_false_neg_gig_auto_sends_without_classifier(
+        self, tmp_path, monkeypatch
+    ):
+        """The ENABLE_FEE_FILTER=false edge case (spec §4) — the fee
+        partition never runs, so a NEG gig reaches the classifier partition
+        directly; is_negotiable(gig.fee) must still route it straight to
+        auto-send, bypassing the classifier, unchanged from today's
+        behavior in that config."""
+        mock_classify, mock_notifier_cls = self._run(
+            self._settings(enable_fee_filter=False),
+            self._scraper(fee="NEG", date=self._date_on_weekday(0)),  # Monday
+            tmp_path,
+            monkeypatch,
+        )
+        mock_classify.assert_not_called()
+        assert application_store.list_held(status="review_pending") == []
+        assert application_store.list_held(status="neg_pending") == []
+        mock_notifier_cls.return_value.apply_to_gig.assert_called_once()
+
+
+class TestReviewDrafts:
+    def _settings(self, **overrides):
+        s = MagicMock()
+        s.target_url = "https://organistsonline.org/required/"
+        s.min_fee = 100
+        s.enable_neg_drafts = True
+        s.enable_fee_filter = True
+        s.enable_sunday_time_filter = False
+        s.enable_blacklist_filter = False
+        s.enable_seen_filter = False
+        s.enable_postcode_filter = False
+        s.enable_calendar_filter = False
+        s.enable_availability_filter = False
+        s.dry_run = False
+        s.email_password = "pass"
+        s.email_sender = "bot@test.com"
+        s.cc_email = ""
+        s.applicant_name = "Alex"
+        s.applicant_mobile = ""
+        s.applicant_video_1 = ""
+        s.applicant_video_2 = ""
+        for k, v in overrides.items():
+            setattr(s, k, v)
+        return s
+
+    def _date_on_weekday(self, weekday: int) -> str:
+        d = _dt.date.today() + _dt.timedelta(days=21)
+        while d.weekday() != weekday:
+            d += _dt.timedelta(days=1)
+        return d.strftime("%A, %B %d, %Y")
+
+    def _scraper(self, date: str):
+        scraper = MagicMock()
+        scraper.fetch.return_value = "<html/>"
+        scraper.parse_gig_listings.return_value = [MagicMock()]
+        scraper.extract_basic_details.return_value = {
+            "header": "Evensong",
+            "organisation": "St Mary's",
+            "locality": "London",
+            "date": date,
+            "time": "6:00 PM",
+            "link": "https://e.com/evensong",
+            "fee": "£100",
+        }
+        scraper.extract_full_details.return_value = {
+            "contact": "Jane Smith",
+            "email": "jane@stmarys.org",
+            "postcode": "SW1A 1AA",
+        }
+        return scraper
+
+    def test_review_gig_creates_gmail_draft_and_alerts(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(application_store, "_PATH", tmp_path / "applications.json")
+        with (
+            patch("main.alert") as mock_alert,
+            patch("main.settings", self._settings()),
+            patch("organist_bot.notifier.application_store"),
+            patch("main.load_seen_gigs", return_value=set()),
+            patch("main.load_listings_hash", return_value="old_hash"),
+            patch("main.save_listings_hash"),
+            patch("main.save_seen_gigs"),
+            patch("main.filter_store"),
+            patch("main.SMTPTransport"),
+            patch("main.set_run_id"),
+            patch("main.runtime_config") as mock_rc,
+            patch("main.GmailClient") as mock_gmail_cls,
+            patch(
+                "main.classify_gig",
+                return_value=gig_classifier.Classification(
+                    decision="hold_for_review", reason="other_service_type"
+                ),
+            ),
+        ):
+            mock_rc.get.side_effect = lambda k, d: d
+            mock_gmail_cls.return_value.create_draft.return_value = "fake-draft-id"
+            main_module.main(self._scraper(date=self._date_on_weekday(6)))
+        rows = application_store.list_held(status="review_pending")
+        assert len(rows) == 1
+        assert rows[0]["draft_id"] == "fake-draft-id"
+        assert rows[0]["hold_reason"] == "other_service_type"
+        create_call = mock_gmail_cls.return_value.create_draft
+        assert create_call.call_args.kwargs["recipient"] == "jane@stmarys.org"
+        alert_call = mock_alert.send_alert.call_args_list[-1]
+        assert "Review needed" in alert_call.args[0]
+        assert "other_service_type" in alert_call.args[0]
+
+    def test_expiry_deletes_orphaned_draft(self, tmp_path, monkeypatch):
+        import hashlib
+
+        past = (_dt.date.today() - _dt.timedelta(days=5)).strftime("%A, %B %d, %Y")
+        monkeypatch.setattr(application_store, "_PATH", tmp_path / "applications.json")
+        gig = Gig(
+            header="Evensong",
+            organisation="St Mary's",
+            locality="London",
+            date=past,
+            time="6:00 PM",
+            fee="£100",
+            link="https://e.com/past-evensong",
+            email="jane@stmarys.org",
+        )
+        application_store.record_held_draft(
+            gig,
+            status="review_pending",
+            draft_id="stale-draft-id",
+            draft_subject="S",
+            hold_reason="weekday",
+        )
+        empty_scraper = MagicMock()
+        empty_scraper.fetch.return_value = "<html/>"
+        empty_scraper.parse_gig_listings.return_value = []
+        with (
+            patch("main.alert"),
+            patch("main.settings", self._settings()),
+            patch("organist_bot.notifier.application_store"),
+            patch("main.load_seen_gigs", return_value=set()),
+            patch("main.load_listings_hash", return_value="different_hash"),
+            patch("main.save_listings_hash"),
+            patch("main.save_seen_gigs"),
+            patch("main.filter_store"),
+            patch("main.SMTPTransport"),
+            patch("main.set_run_id"),
+            patch("main.runtime_config") as mock_rc,
+            patch("main.GmailClient") as mock_gmail_cls,
+        ):
+            mock_rc.get.side_effect = lambda k, d: d
+            main_module.main(empty_scraper)
+        mock_gmail_cls.return_value.delete_draft.assert_called_once_with("stale-draft-id")
+        expected_gig_id = hashlib.sha256(gig.link.encode()).hexdigest()[:12]
+        assert application_store.get_by_gig_id(expected_gig_id)["status"] == "expired"
 
 
 # ── Gmail monitoring config warning ──────────────────────────────────────────
@@ -992,4 +1361,112 @@ class TestGmailMonitoringConfigWarning:
         ):
             main_module.warn_if_gmail_monitoring_unconfigured()
 
+        mock_alert.send_alert.assert_not_called()
+
+
+class TestGmailWriteScopeWarning:
+    """Tests for warn_if_gmail_write_scope_missing()."""
+
+    def _settings(self, credentials_file, token_file):
+        s = MagicMock()
+        s.gmail_credentials_file = credentials_file
+        s.gmail_token_file = token_file
+        return s
+
+    def test_silent_when_credentials_unset(self, tmp_path):
+        """No credentials configured — warn_if_gmail_monitoring_unconfigured
+        already covers this case, so this check must no-op rather than
+        double-alert."""
+        with (
+            patch("main.settings", self._settings("", str(tmp_path / "token.json"))),
+            patch("main.alert") as mock_alert,
+            patch("main.GmailClient") as mock_gmail_cls,
+        ):
+            main_module.warn_if_gmail_write_scope_missing()
+        mock_alert.send_alert.assert_not_called()
+        mock_gmail_cls.assert_not_called()
+
+    def test_silent_when_token_file_missing(self, tmp_path):
+        creds = tmp_path / "gmail_credentials.json"
+        creds.write_text("{}")
+        with (
+            patch("main.settings", self._settings(str(creds), str(tmp_path / "missing.json"))),
+            patch("main.alert") as mock_alert,
+            patch("main.GmailClient") as mock_gmail_cls,
+        ):
+            main_module.warn_if_gmail_write_scope_missing()
+        mock_alert.send_alert.assert_not_called()
+        mock_gmail_cls.assert_not_called()
+
+    def test_alerts_when_compose_access_false(self, tmp_path):
+        creds = tmp_path / "gmail_credentials.json"
+        creds.write_text("{}")
+        token = tmp_path / "token.json"
+        token.write_text("{}")
+        with (
+            patch("main.settings", self._settings(str(creds), str(token))),
+            patch("main.alert") as mock_alert,
+            patch("main.GmailClient") as mock_gmail_cls,
+        ):
+            mock_gmail_cls.return_value.has_compose_access.return_value = False
+            main_module.warn_if_gmail_write_scope_missing()
+        mock_alert.send_alert.assert_called_once()
+        msg = mock_alert.send_alert.call_args.args[0]
+        assert "setup_gmail_auth" in msg
+
+    def test_silent_when_compose_access_true(self, tmp_path):
+        creds = tmp_path / "gmail_credentials.json"
+        creds.write_text("{}")
+        token = tmp_path / "token.json"
+        token.write_text("{}")
+        with (
+            patch("main.settings", self._settings(str(creds), str(token))),
+            patch("main.alert") as mock_alert,
+            patch("main.GmailClient") as mock_gmail_cls,
+        ):
+            mock_gmail_cls.return_value.has_compose_access.return_value = True
+            main_module.warn_if_gmail_write_scope_missing()
+        mock_alert.send_alert.assert_not_called()
+
+    def test_does_not_raise_when_check_itself_errors(self, tmp_path):
+        creds = tmp_path / "gmail_credentials.json"
+        creds.write_text("{}")
+        token = tmp_path / "token.json"
+        token.write_text("{}")
+        with (
+            patch("main.settings", self._settings(str(creds), str(token))),
+            patch("main.alert") as mock_alert,
+            patch("main.GmailClient", side_effect=RuntimeError("boom")),
+        ):
+            main_module.warn_if_gmail_write_scope_missing()  # must not raise
+        mock_alert.send_alert.assert_not_called()
+
+
+class TestGigClassifierConfigWarning:
+    """Tests for warn_if_gig_classifier_unconfigured()."""
+
+    def _settings(self, anthropic_api_key):
+        s = MagicMock()
+        s.anthropic_api_key = anthropic_api_key
+        return s
+
+    def test_alerts_when_api_key_unset(self, caplog):
+        with (
+            patch("main.settings", self._settings("")),
+            patch("main.alert") as mock_alert,
+            caplog.at_level(logging.WARNING),
+        ):
+            main_module.warn_if_gig_classifier_unconfigured()
+        mock_alert.send_alert.assert_called_once()
+        msg = mock_alert.send_alert.call_args.args[0]
+        assert "ANTHROPIC_API_KEY" in msg
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1
+
+    def test_silent_when_api_key_set(self):
+        with (
+            patch("main.settings", self._settings("sk-ant-fake-key")),
+            patch("main.alert") as mock_alert,
+        ):
+            main_module.warn_if_gig_classifier_unconfigured()
         mock_alert.send_alert.assert_not_called()
