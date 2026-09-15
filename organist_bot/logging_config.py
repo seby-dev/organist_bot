@@ -27,11 +27,14 @@ import json
 import logging
 import logging.handlers
 import sys
+from collections.abc import Mapping, MutableMapping
 from pathlib import Path
+from typing import Any
 
 from structlog.processors import EventRenamer, ExceptionRenderer, JSONRenderer, TimeStamper
 from structlog.stdlib import ExtraAdder, ProcessorFormatter, add_log_level
 from structlog.tracebacks import ExceptionDictTransformer
+from structlog.typing import Processor
 
 # ── Run ID context variable ────────────────────────────────────────────────────
 # Set once per main() call via set_run_id(); automatically injected into every
@@ -59,7 +62,9 @@ class RunIdFilter(logging.Filter):
 # once per record before either final renderer below.
 
 
-def _add_callsite(_logger: object, _name: str, event_dict: dict) -> dict:
+def _add_callsite(
+    _logger: Any, _name: str, event_dict: MutableMapping[str, Any]
+) -> Mapping[str, Any]:
     """Add module/function/line/logger from the underlying LogRecord, using the field
     names this project's JSON logs have always used (structlog's own
     CallsiteParameterAdder uses different names)."""
@@ -71,7 +76,7 @@ def _add_callsite(_logger: object, _name: str, event_dict: dict) -> dict:
     return event_dict
 
 
-_FOREIGN_PRE_CHAIN = [
+_FOREIGN_PRE_CHAIN: list[Processor] = [
     add_log_level,
     ExtraAdder(),
     _add_callsite,
