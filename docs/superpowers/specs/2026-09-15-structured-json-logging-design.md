@@ -68,7 +68,7 @@ foreign_pre_chain = [
     structlog.stdlib.add_log_level,
     structlog.stdlib.ExtraAdder(),   # pulls extra= kwargs + run_id into event_dict
     _add_callsite,                   # custom: module/function/line from the LogRecord
-    structlog.processors.TimeStamper(fmt="iso", utc=True, key="timestamp"),
+    structlog.processors.TimeStamper(fmt="iso", key="timestamp"),  # "iso" is always UTC, trailing "Z"
 ]
 ```
 
