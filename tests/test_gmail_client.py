@@ -220,6 +220,20 @@ class TestCreateDraft:
         decoded = base64.urlsafe_b64decode(raw).decode()
         assert "Cc:" not in decoded
 
+    def test_propagates_api_errors(self, tmp_path):
+        client = self._make_client(tmp_path)
+        mock_service = MagicMock()
+        mock_service.users().drafts().create().execute.side_effect = RuntimeError("api error")
+        with patch.object(client, "_get_service", return_value=mock_service):
+            with pytest.raises(RuntimeError, match="api error"):
+                client.create_draft(
+                    sender="bot@test.com",
+                    recipient="church@test.com",
+                    cc=None,
+                    subject="Test",
+                    body_html="<p>Body</p>",
+                )
+
 
 class TestSendDraft:
     def _make_client(self, tmp_path):
@@ -268,6 +282,14 @@ class TestDeleteDraft:
         _, kwargs = delete_mock.call_args
         assert kwargs["userId"] == "me"
         assert kwargs["id"] == "draft123"
+
+    def test_propagates_api_errors(self, tmp_path):
+        client = self._make_client(tmp_path)
+        mock_service = MagicMock()
+        mock_service.users().drafts().delete().execute.side_effect = RuntimeError("api error")
+        with patch.object(client, "_get_service", return_value=mock_service):
+            with pytest.raises(RuntimeError, match="api error"):
+                client.delete_draft("draft123")
 
 
 class TestHasComposeAccess:
@@ -361,7 +383,7 @@ class TestFakeGmailClient:
         fake.send_draft(draft_id)
         assert fake.sent == [draft_id]
 
-    def test_simulate_not_found_raises_on_send_and_delete(self):
+    def test_simulate_not_found_raises_on_send(self):
         from organist_bot.integrations.gmail_client import (
             FakeGmailClient,
             is_not_found_error,
@@ -374,6 +396,21 @@ class TestFakeGmailClient:
         fake.simulate_not_found(draft_id)
         with pytest.raises(Exception) as exc_info:
             fake.send_draft(draft_id)
+        assert is_not_found_error(exc_info.value) is True
+
+    def test_simulate_not_found_raises_on_delete(self):
+        from organist_bot.integrations.gmail_client import (
+            FakeGmailClient,
+            is_not_found_error,
+        )
+
+        fake = FakeGmailClient()
+        draft_id = fake.create_draft(
+            sender="a@test.com", recipient="b@test.com", cc=None, subject="S", body_html="B"
+        )
+        fake.simulate_not_found(draft_id)
+        with pytest.raises(Exception) as exc_info:
+            fake.delete_draft(draft_id)
         assert is_not_found_error(exc_info.value) is True
 
     def test_has_compose_access_configurable(self):
