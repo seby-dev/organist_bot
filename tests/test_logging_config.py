@@ -3,9 +3,12 @@
 import json
 import logging
 
+import pytest
+
 from organist_bot.logging_config import (
     RunIdFilter,
     _build_json_formatter,
+    _select_console_formatter,
     set_run_id,
 )
 
@@ -173,3 +176,25 @@ class TestRunIdFilter:
         record = _make_record("transparent")
         f = RunIdFilter()
         assert f.filter(record) is True
+
+
+# ── Console formatter selection ────────────────────────────────────────────────
+
+
+class TestSelectConsoleFormatter:
+    def test_non_tty_returns_json_pipeline(self):
+        """is_tty=False must produce valid, parseable JSON (matches the file pipeline)."""
+        formatter = _select_console_formatter(is_tty=False)
+        record = _make_record("check")
+        line = formatter.format(record)
+        doc = json.loads(line)  # must not raise
+        assert doc["message"] == "check"
+
+    def test_tty_returns_console_pipeline(self):
+        """is_tty=True must produce human-readable text, not JSON."""
+        formatter = _select_console_formatter(is_tty=True)
+        record = _make_record("check")
+        line = formatter.format(record)
+        with pytest.raises(json.JSONDecodeError):
+            json.loads(line)
+        assert "check" in line

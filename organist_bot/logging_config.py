@@ -31,6 +31,7 @@ from collections.abc import Mapping, MutableMapping
 from pathlib import Path
 from typing import Any
 
+from structlog.dev import ConsoleRenderer
 from structlog.processors import EventRenamer, ExceptionRenderer, JSONRenderer, TimeStamper
 from structlog.stdlib import ExtraAdder, ProcessorFormatter, add_log_level
 from structlog.tracebacks import ExceptionDictTransformer
@@ -96,6 +97,22 @@ def _build_json_formatter() -> ProcessorFormatter:
             JSONRenderer(),
         ],
     )
+
+
+def _build_console_formatter() -> ProcessorFormatter:
+    """Colorized, human-readable pipeline for an interactive terminal."""
+    return ProcessorFormatter(
+        foreign_pre_chain=_FOREIGN_PRE_CHAIN,
+        processors=[
+            ProcessorFormatter.remove_processors_meta,
+            ConsoleRenderer(),
+        ],
+    )
+
+
+def _select_console_formatter(is_tty: bool) -> ProcessorFormatter:
+    """Chosen once, at setup_logging() call time, based on sys.stdout.isatty()."""
+    return _build_console_formatter() if is_tty else _build_json_formatter()
 
 
 # ── ANSI colour palette ────────────────────────────────────────────────────────
