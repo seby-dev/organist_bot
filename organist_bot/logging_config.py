@@ -29,6 +29,10 @@ import logging.handlers
 import sys
 from pathlib import Path
 
+from structlog.processors import EventRenamer, ExceptionRenderer, JSONRenderer, TimeStamper
+from structlog.stdlib import ExtraAdder, ProcessorFormatter, add_log_level
+from structlog.tracebacks import ExceptionDictTransformer
+
 # ── Run ID context variable ────────────────────────────────────────────────────
 # Set once per main() call via set_run_id(); automatically injected into every
 # log record within that run by RunIdFilter.
@@ -47,6 +51,46 @@ class RunIdFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
         record.run_id = _run_id.get("")
         return True
+
+
+# ── structlog processor chain ──────────────────────────────────────────────────
+# Every call site in this codebase logs via plain stdlib logging.getLogger(name),
+# so every record structlog sees here is "foreign" to it. foreign_pre_chain runs
+# once per record before either final renderer below.
+
+
+def _add_callsite(_logger: object, _name: str, event_dict: dict) -> dict:
+    """Add module/function/line/logger from the underlying LogRecord, using the field
+    names this project's JSON logs have always used (structlog's own
+    CallsiteParameterAdder uses different names)."""
+    record = event_dict["_record"]
+    event_dict["module"] = record.module
+    event_dict["function"] = record.funcName
+    event_dict["line"] = record.lineno
+    event_dict["logger"] = record.name
+    return event_dict
+
+
+_FOREIGN_PRE_CHAIN = [
+    add_log_level,
+    ExtraAdder(),
+    _add_callsite,
+    TimeStamper(fmt="iso", key="timestamp"),  # "iso" is always UTC, trailing "Z"
+]
+
+
+def _build_json_formatter() -> ProcessorFormatter:
+    """JSON pipeline shared by the rotating file handler and the console handler
+    when stdout isn't a tty (e.g. under launchd)."""
+    return ProcessorFormatter(
+        foreign_pre_chain=_FOREIGN_PRE_CHAIN,
+        processors=[
+            ExceptionRenderer(ExceptionDictTransformer(show_locals=False)),
+            ProcessorFormatter.remove_processors_meta,
+            EventRenamer("message"),
+            JSONRenderer(),
+        ],
+    )
 
 
 # ── ANSI colour palette ────────────────────────────────────────────────────────

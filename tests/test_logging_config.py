@@ -1,11 +1,13 @@
-"""Tests for organist_bot/logging_config.py — JSONFormatter and RunIdFilter."""
+"""Tests for organist_bot/logging_config.py — structlog-based formatters and RunIdFilter."""
 
 import json
 import logging
 
-import pytest
-
-from organist_bot.logging_config import _STDLIB_FIELDS, JSONFormatter, RunIdFilter, set_run_id
+from organist_bot.logging_config import (
+    RunIdFilter,
+    _build_json_formatter,
+    set_run_id,
+)
 
 
 def _make_record(msg: str = "hello", level: int = logging.INFO, **extra) -> logging.LogRecord:
@@ -24,30 +26,30 @@ def _make_record(msg: str = "hello", level: int = logging.INFO, **extra) -> logg
     return record
 
 
-# ── JSONFormatter ─────────────────────────────────────────────────────────────
+# ── JSON formatter pipeline ─────────────────────────────────────────────────
 
 
-class TestJSONFormatter:
+class TestJSONFormatterPipeline:
     def _format(self, record: logging.LogRecord) -> dict:
-        formatter = JSONFormatter()
+        formatter = _build_json_formatter()
         line = formatter.format(record)
         return json.loads(line)
 
     def test_core_fields_present(self):
-        """The formatter always emits the required structural fields."""
+        """The pipeline always emits the required structural fields."""
         record = _make_record("test message")
         doc = self._format(record)
 
         assert doc["message"] == "test message"
-        assert doc["level"] == "INFO"
+        assert doc["level"] == "info"
         assert doc["logger"] == "test.logger"
         assert "timestamp" in doc
-        assert "module" in doc
-        assert "function" in doc
-        assert "line" in doc
+        assert doc["module"] == "path"
+        assert doc["function"] is None or isinstance(doc["function"], str)
+        assert doc["line"] == 42
 
     def test_extra_attribute_included(self):
-        """A caller-supplied extra attribute (not in _STDLIB_FIELDS) appears in the output."""
+        """A caller-supplied extra attribute appears in the output."""
         record = _make_record("gig found", gig_count=7)
         doc = self._format(record)
         assert doc["gig_count"] == 7
@@ -57,15 +59,12 @@ class TestJSONFormatter:
         record = _make_record("run done", run_id="abc123", elapsed_ms=250)
         doc = self._format(record)
         assert doc["elapsed_ms"] == 250
-        # run_id is in _STDLIB_FIELDS (injected by RunIdFilter), so it's handled as
-        # a standard field rather than an extra — it still appears but via the fixed slot
         assert doc["run_id"] == "abc123"
 
     def test_stdlib_noise_fields_excluded(self):
         """Fields that are part of LogRecord internals do not leak into the JSON output."""
         record = _make_record("noise check")
         doc = self._format(record)
-        # Sample several members of the exclusion set that should never appear as top-level keys
         stdlib_noise = {
             "args",
             "msg",
@@ -74,20 +73,21 @@ class TestJSONFormatter:
             "relativeCreated",
             "exc_text",
             "stack_info",
+            "_record",
+            "_from_structlog",
         }
         for field in stdlib_noise:
             assert field not in doc, f"stdlib field {field!r} leaked into JSON output"
 
     def test_output_is_valid_json(self):
-        """The formatter always produces a single parseable JSON object."""
+        """The pipeline always produces a single parseable JSON object."""
         record = _make_record("json check", level=logging.WARNING, extra_key="value")
-        line = JSONFormatter().format(record)
-        # Must not raise
+        line = _build_json_formatter().format(record)
         doc = json.loads(line)
         assert isinstance(doc, dict)
 
-    def test_exception_serialised_as_string(self):
-        """When exc_info is present, the 'exception' key contains the traceback text."""
+    def test_exception_serialised_as_structured_list(self):
+        """When exc_info is present, 'exception' is a list of frame dicts, not a string."""
         try:
             raise ValueError("boom")
         except ValueError:
@@ -98,30 +98,37 @@ class TestJSONFormatter:
         record = _make_record("with exc")
         record.exc_info = exc_info
         doc = self._format(record)
-        assert "exception" in doc
-        assert "ValueError" in doc["exception"]
-        assert "boom" in doc["exception"]
 
-    @pytest.mark.parametrize("field", list(_STDLIB_FIELDS - {"run_id", "message"}))
-    def test_no_stdlib_field_leaks(self, field):
-        """Every member of _STDLIB_FIELDS (except the intentionally-emitted ones) is excluded."""
-        # The formatter intentionally surfaces "message" and "run_id" as fixed keys;
-        # all other _STDLIB_FIELDS members must not appear as extra keys.
-        record = _make_record("stdlib exclusion test")
+        assert isinstance(doc["exception"], list)
+        assert doc["exception"][0]["exc_type"] == "ValueError"
+        assert doc["exception"][0]["exc_value"] == "boom"
+
+    def test_exception_never_includes_locals(self):
+        """show_locals=False: no stack frame carries a 'locals' key, regardless of scope."""
+        secret_token = "super-secret-value"  # noqa: F841 — deliberately in scope for the assertion
+
+        try:
+            raise ValueError("boom")
+        except ValueError:
+            import sys
+
+            exc_info = sys.exc_info()
+
+        record = _make_record("with exc")
+        record.exc_info = exc_info
         doc = self._format(record)
-        # Only check fields that are not part of the fixed schema
-        fixed_schema = {
-            "timestamp",
-            "run_id",
-            "level",
-            "logger",
-            "message",
-            "module",
-            "function",
-            "line",
-        }
-        if field not in fixed_schema:
-            assert field not in doc, f"_STDLIB_FIELDS member {field!r} leaked into JSON output"
+
+        for frame in doc["exception"][0]["frames"]:
+            assert "locals" not in frame
+        assert "super-secret-value" not in json.dumps(doc)
+
+    def test_run_id_appears_via_run_id_filter(self):
+        """Integration: RunIdFilter + JSON pipeline round-trip produces correct run_id."""
+        set_run_id("int_test_99")
+        record = _make_record("integrated")
+        RunIdFilter().filter(record)  # stamp the record first, same as a real handler chain
+        doc = self._format(record)
+        assert doc["run_id"] == "int_test_99"
 
 
 # ── RunIdFilter ───────────────────────────────────────────────────────────────
@@ -166,11 +173,3 @@ class TestRunIdFilter:
         record = _make_record("transparent")
         f = RunIdFilter()
         assert f.filter(record) is True
-
-    def test_json_formatter_picks_up_run_id_after_filter(self):
-        """Integration: RunIdFilter + JSONFormatter round-trip produces correct run_id in output."""
-        set_run_id("int_test_99")
-        record = _make_record("integrated")
-        RunIdFilter().filter(record)  # stamp the record first
-        doc = json.loads(JSONFormatter().format(record))
-        assert doc["run_id"] == "int_test_99"
