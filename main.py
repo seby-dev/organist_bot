@@ -540,31 +540,50 @@ def _run(
                     subject=subject,
                     body_html=body,
                 )
-                gig_id, created = application_store.record_held_draft(
-                    gig,
-                    status="neg_pending",
-                    draft_id=draft_id,
-                    draft_subject=subject,
-                    hold_reason="fee_negotiation",
-                    negotiable_fee=_negotiable_fee,
-                )
-                if not created:
+                try:
+                    gig_id, created = application_store.record_held_draft(
+                        gig,
+                        status="neg_pending",
+                        draft_id=draft_id,
+                        draft_subject=subject,
+                        hold_reason="fee_negotiation",
+                        negotiable_fee=_negotiable_fee,
+                    )
+                    if not created:
+                        try:
+                            gmail_client.delete_draft(draft_id)
+                        except Exception:
+                            logger.warning(
+                                "Could not delete orphaned duplicate draft",
+                                extra={"draft_id": draft_id, "link": gig.link},
+                            )
+                        continue
+                    _queued_ids.append(gig_id)
+                    _send_review_alert(
+                        gig,
+                        gig_id,
+                        status="neg_pending",
+                        hold_reason="fee_negotiation",
+                        negotiable_fee=_negotiable_fee,
+                    )
+                except Exception:
+                    # create_draft already succeeded — if anything after it
+                    # raises (record_held_draft, _send_review_alert), the
+                    # just-created draft would otherwise leak forever: the
+                    # outer except below adds this gig's link to
+                    # draft_failed_links so it's retried every tick, and each
+                    # retry calls create_draft again, producing a new orphan
+                    # on top of the last one. Delete it here before
+                    # re-raising so the outer except still logs/alerts/tracks
+                    # the failure exactly as it already does.
                     try:
                         gmail_client.delete_draft(draft_id)
                     except Exception:
                         logger.warning(
-                            "Could not delete orphaned duplicate draft",
+                            "Could not delete orphaned draft after post-create failure",
                             extra={"draft_id": draft_id, "link": gig.link},
                         )
-                    continue
-                _queued_ids.append(gig_id)
-                _send_review_alert(
-                    gig,
-                    gig_id,
-                    status="neg_pending",
-                    hold_reason="fee_negotiation",
-                    negotiable_fee=_negotiable_fee,
-                )
+                    raise
             except Exception:
                 logger.exception("NEG draft failed for gig — skipping", extra={"link": gig.link})
                 alert.send_alert(f"⚠️ NEG draft failed for {gig.header} — {gig.link}")
@@ -595,24 +614,39 @@ def _run(
                     subject=subject,
                     body_html=body,
                 )
-                gig_id, created = application_store.record_held_draft(
-                    gig,
-                    status="review_pending",
-                    draft_id=draft_id,
-                    draft_subject=subject,
-                    hold_reason=hold_reason,
-                )
-                if not created:
+                try:
+                    gig_id, created = application_store.record_held_draft(
+                        gig,
+                        status="review_pending",
+                        draft_id=draft_id,
+                        draft_subject=subject,
+                        hold_reason=hold_reason,
+                    )
+                    if not created:
+                        try:
+                            gmail_client.delete_draft(draft_id)
+                        except Exception:
+                            logger.warning(
+                                "Could not delete orphaned duplicate draft",
+                                extra={"draft_id": draft_id, "link": gig.link},
+                            )
+                        continue
+                    _queued_review_ids.append(gig_id)
+                    _send_review_alert(
+                        gig, gig_id, status="review_pending", hold_reason=hold_reason
+                    )
+                except Exception:
+                    # See the matching comment in the NEG-drafts block above —
+                    # create_draft already succeeded, so delete the orphan
+                    # before re-raising to the outer except.
                     try:
                         gmail_client.delete_draft(draft_id)
                     except Exception:
                         logger.warning(
-                            "Could not delete orphaned duplicate draft",
+                            "Could not delete orphaned draft after post-create failure",
                             extra={"draft_id": draft_id, "link": gig.link},
                         )
-                    continue
-                _queued_review_ids.append(gig_id)
-                _send_review_alert(gig, gig_id, status="review_pending", hold_reason=hold_reason)
+                    raise
             except Exception:
                 logger.exception("Review draft failed for gig — skipping", extra={"link": gig.link})
                 alert.send_alert(f"⚠️ Review draft failed for {gig.header} — {gig.link}")
@@ -670,29 +704,37 @@ def _run(
         if newly_seen:
             save_seen_gigs(seen=seen_gigs_set | newly_seen)
 
-    try:
-        expired_rows = application_store.expire_past_applied()
-        if expired_rows:
-            logger.info("Expired past applications/drafts", extra={"count": len(expired_rows)})
-            if not dry_run and gmail_client is not None:
-                for row in expired_rows:
-                    expired_draft_id = row.get("draft_id")
-                    if not expired_draft_id:
-                        continue
-                    try:
-                        gmail_client.delete_draft(expired_draft_id)
-                    except Exception as exc:
-                        if not is_not_found_error(exc):
-                            logger.warning(
-                                "Could not delete Gmail draft for expired row",
-                                extra={
-                                    "gig_id": row.get("gig_id"),
-                                    "draft_id": expired_draft_id,
-                                    "error": str(exc),
-                                },
-                            )
-    except Exception:
-        logger.warning("application_store: expire_past_applied failed", exc_info=True)
+    # Guarded on the whole block (not just the Gmail-cleanup sub-block) so a
+    # dry-run never mutates the real applications.json — expire_past_applied
+    # writes directly to the live store regardless of dry_run, and without
+    # this guard a dry-run tick would flip a past-date neg_pending/
+    # review_pending row to "expired" while skipping the draft cleanup below
+    # (already dry_run-gated), permanently orphaning its Gmail draft since no
+    # future real tick would ever revisit an already-expired row.
+    if not dry_run:
+        try:
+            expired_rows = application_store.expire_past_applied()
+            if expired_rows:
+                logger.info("Expired past applications/drafts", extra={"count": len(expired_rows)})
+                if gmail_client is not None:
+                    for row in expired_rows:
+                        expired_draft_id = row.get("draft_id")
+                        if not expired_draft_id:
+                            continue
+                        try:
+                            gmail_client.delete_draft(expired_draft_id)
+                        except Exception as exc:
+                            if not is_not_found_error(exc):
+                                logger.warning(
+                                    "Could not delete Gmail draft for expired row",
+                                    extra={
+                                        "gig_id": row.get("gig_id"),
+                                        "draft_id": expired_draft_id,
+                                        "error": str(exc),
+                                    },
+                                )
+        except Exception:
+            logger.warning("application_store: expire_past_applied failed", exc_info=True)
 
     try:
         removed_suspensions = filter_suspension_store.purge_past_suspensions()

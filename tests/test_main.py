@@ -763,6 +763,38 @@ class TestExpirePastApplied:
 
         mock_store.expire_past_applied.assert_called_once()
 
+    def test_dry_run_never_calls_expire_past_applied(self):
+        """A dry-run tick must never call expire_past_applied — it writes
+        directly to the live applications.json regardless of dry_run, so
+        calling it during a dry-run would flip past-date neg_pending/
+        review_pending rows to "expired" in the REAL store while the
+        Gmail-draft cleanup for those same rows stays skipped (already
+        dry_run-gated), permanently orphaning the Gmail draft since no
+        future real tick will ever revisit an already-expired row. See
+        Finding 1 of the whole-branch review of gmail-draft-review-flow."""
+        mock_settings = self._make_minimal_settings()
+        mock_scraper = MagicMock()
+        mock_scraper.fetch.return_value = "<html></html>"
+        mock_scraper.parse_gig_listings.return_value = []
+
+        with (
+            patch("main.settings", mock_settings),
+            patch("main.Notifier"),
+            patch("main.SMTPTransport"),
+            patch("main.load_seen_gigs", return_value=set()),
+            patch("main.save_seen_gigs"),
+            patch("main.load_listings_hash", return_value=None),
+            patch("main.save_listings_hash"),
+            patch("main.set_run_id"),
+            patch("main.application_store") as mock_store,
+            patch("main.GmailClient") as mock_gmail_cls,
+        ):
+            main_module.main(mock_scraper, dry_run=True)
+
+        mock_store.expire_past_applied.assert_not_called()
+        mock_gmail_cls.assert_not_called()
+        mock_gmail_cls.return_value.delete_draft.assert_not_called()
+
 
 # ── NEG-fee draft & approval pipeline branch ─────────────────────────────────
 
@@ -985,6 +1017,49 @@ class TestNegDrafts:
         mock_gmail_cls.return_value.delete_draft.assert_called_once_with("new-neg-draft-id")
         expected_gig_id = hashlib.sha256(link.encode()).hexdigest()[:12]
         assert application_store.get_by_gig_id(expected_gig_id)["draft_id"] == "old-neg-draft-id"
+
+    def test_record_held_draft_exception_deletes_orphaned_draft(self, tmp_path, monkeypatch):
+        """If create_draft succeeds but record_held_draft itself RAISES (a
+        genuine failure — disk write error, lock timeout, corrupt JSON — not
+        the already-handled created=False duplicate-URL case), the
+        just-created Gmail draft must be deleted before the exception
+        propagates. Without this, the gig's link is excluded from
+        newly_seen (draft_failed_links) so it's retried every tick, and each
+        retry calls create_draft again — leaking a new orphaned draft every
+        time the underlying failure persists. See Finding 3 of the
+        whole-branch review of gmail-draft-review-flow."""
+        monkeypatch.setattr(application_store, "_PATH", tmp_path / "applications.json")
+
+        def _boom(*args, **kwargs):
+            raise RuntimeError("disk write failed")
+
+        monkeypatch.setattr(application_store, "record_held_draft", _boom)
+
+        with (
+            patch("main.alert"),
+            patch("main.settings", self._settings()),
+            patch("organist_bot.notifier.application_store"),
+            patch("main.load_seen_gigs", return_value=set()),
+            patch("main.load_listings_hash", return_value="old_hash"),
+            patch("main.save_listings_hash"),
+            patch("main.save_seen_gigs") as mock_save_seen,
+            patch("main.filter_store"),
+            patch("main.SMTPTransport"),
+            patch("main.set_run_id"),
+            patch("main.runtime_config") as mock_rc,
+            patch("main.GmailClient") as mock_gmail_cls,
+        ):
+            mock_rc.get.side_effect = lambda k, d: d
+            mock_gmail_cls.return_value.create_draft.return_value = "leaked-neg-draft-id"
+            main_module.main(
+                self._mock_scraper_with_one_gig(fee="NEG", link="https://e.com/record-raises")
+            )
+
+        mock_gmail_cls.return_value.delete_draft.assert_called_once_with("leaked-neg-draft-id")
+        # The failure must still be tracked like any other draft failure —
+        # the gig's link is excluded from newly_seen so it's retried next
+        # tick instead of being silently lost.
+        mock_save_seen.assert_not_called()
 
     def test_below_min_fee_gig_is_not_drafted(self, tmp_path, monkeypatch):
         self._run(
@@ -1420,6 +1495,46 @@ class TestReviewDrafts:
         expected_gig_id = hashlib.sha256(b"https://e.com/evensong").hexdigest()[:12]
         row = application_store.get_by_gig_id(expected_gig_id)
         assert row["draft_id"] == "old-review-draft-id"
+
+    def test_record_held_draft_exception_deletes_orphaned_draft(self, tmp_path, monkeypatch):
+        """Same mechanism as the NEG-drafts block's identically-named test:
+        create_draft succeeds but record_held_draft itself RAISES, so the
+        just-created Gmail draft must be deleted before the exception
+        propagates, or a retry every tick leaks a fresh orphaned draft on
+        top of the last one. See Finding 3 of the whole-branch review."""
+        monkeypatch.setattr(application_store, "_PATH", tmp_path / "applications.json")
+
+        def _boom(*args, **kwargs):
+            raise RuntimeError("disk write failed")
+
+        monkeypatch.setattr(application_store, "record_held_draft", _boom)
+
+        with (
+            patch("main.alert"),
+            patch("main.settings", self._settings()),
+            patch("organist_bot.notifier.application_store"),
+            patch("main.load_seen_gigs", return_value=set()),
+            patch("main.load_listings_hash", return_value="old_hash"),
+            patch("main.save_listings_hash"),
+            patch("main.save_seen_gigs") as mock_save_seen,
+            patch("main.filter_store"),
+            patch("main.SMTPTransport"),
+            patch("main.set_run_id"),
+            patch("main.runtime_config") as mock_rc,
+            patch("main.GmailClient") as mock_gmail_cls,
+            patch(
+                "main.classify_gig",
+                return_value=gig_classifier.Classification(
+                    decision="hold_for_review", reason="other_service_type"
+                ),
+            ),
+        ):
+            mock_rc.get.side_effect = lambda k, d: d
+            mock_gmail_cls.return_value.create_draft.return_value = "leaked-review-draft-id"
+            main_module.main(self._scraper(date=self._date_on_weekday(6)))
+
+        mock_gmail_cls.return_value.delete_draft.assert_called_once_with("leaked-review-draft-id")
+        mock_save_seen.assert_not_called()
 
     def test_expiry_delete_404_is_silently_ignored(self, tmp_path, monkeypatch, caplog):
         """A 404 deleting the expired row's Gmail draft (already gone) must

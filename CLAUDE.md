@@ -214,6 +214,8 @@ Past-date `neg_pending`/`review_pending` rows auto-flip to `expired` via `expire
 
 One intentional visibility caveat: `neg_pending`/`review_pending`/`rejected`/`expired` rows have no `applied_at`, so they never appear in `manage_applications` summaries or analytics — only `list_pending_drafts` shows them, and accepted drafts become normal `applied` rows.
 
+**Legacy rows from before this feature.** Any `neg_pending` row written before real Gmail drafts existed has `draft_body`/`draft_subject` but no `draft_id`. Such a row is inert under the current code: its Telegram Accept/Decline buttons carry `neg:*` callback data that no handler matches anymore, so tapping one does nothing, and `review_confirm_send`/`review_decline` return a legacy-row message instead of acting when called against it (checked via `row.get("draft_id")`, never a plain `row["draft_id"]` index). It still auto-expires via `expire_past_applied` once its gig date passes.
+
 ### Filter suspensions
 
 Any filter except `SeenFilter` can be temporarily suspended for a date range via the Telegram agent's `manage_filter_suspensions` tool, backed by `filter_suspension_store.py` (`data/filter_suspensions.json`). Suspension containment is keyed by the **gig's own date** (same model as `unavailable_periods`/`available_only_periods`), not the date the suspension was created. Period tokens support the existing formats (`YYYY-MM-DD`, `YYYY-MM-DD:YYYY-MM-DD`, `YYYY-MM`) plus two open-ended forms: `YYYY-MM-DD:` (from that date onward, never auto-expires) and `:YYYY-MM-DD` (up to and including that date, auto-expires like any closed range).

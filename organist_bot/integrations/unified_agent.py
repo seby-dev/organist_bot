@@ -2239,9 +2239,18 @@ async def review_confirm_send(gig_id: str) -> tuple[bool, str]:
     row = _find_held_row(gig_id)
     if row is None:
         return False, _held_row_lookup_error(gig_id)
+    draft_id = row.get("draft_id")
+    if not draft_id:
+        # Pre-feature rows (written before real Gmail drafts existed) carry
+        # draft_body/draft_subject but no draft_id — there is no Gmail draft
+        # to send. Bail out before touching gmail_client at all.
+        return False, (
+            "This is a legacy draft with no Gmail draft attached — nothing to send. "
+            "Resolve it manually (check applications.json) or wait for it to expire."
+        )
     gmail_client = _make_gmail_client()
     try:
-        gmail_client.send_draft(row["draft_id"])
+        gmail_client.send_draft(draft_id)
     except Exception as exc:
         if is_not_found_error(exc):
             refreshed = application_store.get_by_gig_id(gig_id)
@@ -2279,9 +2288,18 @@ def review_decline(gig_id: str) -> tuple[bool, str]:
     row = _find_held_row(gig_id)
     if row is None:
         return False, _held_row_lookup_error(gig_id)
+    draft_id = row.get("draft_id")
+    if not draft_id:
+        # Pre-feature rows (written before real Gmail drafts existed) carry
+        # draft_body/draft_subject but no draft_id — there is no Gmail draft
+        # to delete. Bail out before touching gmail_client at all.
+        return False, (
+            "This is a legacy draft with no Gmail draft attached — nothing to delete. "
+            "Resolve it manually (check applications.json) or wait for it to expire."
+        )
     gmail_client = _make_gmail_client()
     try:
-        gmail_client.delete_draft(row["draft_id"])
+        gmail_client.delete_draft(draft_id)
     except Exception as exc:
         if not is_not_found_error(exc):
             logger.exception("review_decline: delete failed", extra={"gig_id": gig_id})

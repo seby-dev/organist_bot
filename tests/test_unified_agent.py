@@ -2089,6 +2089,36 @@ def held_store(tmp_path, monkeypatch):
     monkeypatch.setattr(application_store, "_PATH", tmp_path / "applications.json")
 
 
+def _write_legacy_neg_pending_row(gig_id: str, url: str = "https://e.com/legacy") -> None:
+    """Write a row in the OLD pre-feature shape directly to the store file:
+    draft_body/draft_subject but no draft_id key at all (real Gmail drafts
+    didn't exist yet when these were written). Bypasses record_held_draft,
+    which now requires draft_id, to simulate data left over from before this
+    feature shipped."""
+    row = {
+        "gig_id": gig_id,
+        "url": url,
+        "header": "Sunday Service",
+        "organisation": "St Mary's",
+        "contact": "Jane",
+        "date": "Sunday, July 12, 2026",
+        "time": "10:00 AM",
+        "fee": "NEG",
+        "email": "jane@example.com",
+        "postcode": "",
+        "status": "neg_pending",
+        "draft_body": "Dear Jane, ...",
+        "draft_subject": "Application",
+        "negotiable_fee": 120,
+        "hold_reason": "fee_negotiation",
+        "created_at": "2026-01-01T00:00:00Z",
+        "updated_at": "2026-01-01T00:00:00Z",
+        "decided_at": None,
+        "decision": None,
+    }
+    application_store._PATH.write_text(json.dumps([row]))
+
+
 class TestListPendingDrafts:
     async def test_returns_pending_rows_across_both_statuses(self, held_store):
         application_store.record_held_draft(
@@ -2165,6 +2195,22 @@ class TestReviewConfirmSend:
         ok, result = await unified_agent.review_confirm_send("deadbeefcafe")
         assert ok is False
         assert "No draft found" in result
+
+    async def test_legacy_row_without_draft_id_returns_error_without_calling_gmail(
+        self, held_store, monkeypatch
+    ):
+        """A neg_pending row written before this feature shipped (no
+        draft_id field) must return a clean legacy-row message instead of
+        raising KeyError, and must never reach gmail_client.send_draft —
+        there is nothing to send."""
+        fake_gmail = FakeGmailClient()
+        monkeypatch.setattr(unified_agent, "_make_gmail_client", lambda: fake_gmail)
+        gig_id = "legacy0001aa"
+        _write_legacy_neg_pending_row(gig_id)
+        ok, result = await unified_agent.review_confirm_send(gig_id)
+        assert ok is False
+        assert "legacy draft" in result.lower()
+        assert fake_gmail.sent == []
 
     async def test_already_decided_returns_already_message(self, held_store, monkeypatch):
         fake_gmail = FakeGmailClient()
@@ -2328,6 +2374,22 @@ class TestReviewDecline:
         ok, result = unified_agent.review_decline("deadbeefcafe")
         assert ok is False
         assert "No draft found" in result
+
+    def test_legacy_row_without_draft_id_returns_error_without_calling_gmail(
+        self, held_store, monkeypatch
+    ):
+        """A neg_pending row written before this feature shipped (no
+        draft_id field) must return a clean legacy-row message instead of
+        raising KeyError, and must never reach gmail_client.delete_draft —
+        there is nothing to delete."""
+        fake_gmail = FakeGmailClient()
+        monkeypatch.setattr(unified_agent, "_make_gmail_client", lambda: fake_gmail)
+        gig_id = "legacy0002bb"
+        _write_legacy_neg_pending_row(gig_id, url="https://e.com/legacy2")
+        ok, result = unified_agent.review_decline(gig_id)
+        assert ok is False
+        assert "legacy draft" in result.lower()
+        assert fake_gmail.deleted == []
 
 
 # ── NEG active-draft state, buttons, and deterministic actions ──────────────
