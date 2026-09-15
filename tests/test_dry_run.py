@@ -3,7 +3,29 @@
 import logging
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 import main as main_module
+from organist_bot import gig_classifier
+
+
+@pytest.fixture(autouse=True)
+def _classifier_and_gmail_defaults():
+    """Every gig built in this file (_make_scraper_with_gig) is a non-NEG
+    Sunday gig expected to reach Phase 3 unheld — patch the classifier to
+    always say so, and stub GmailClient so nothing here attempts real
+    Gmail/Anthropic I/O. Same rationale as TestMain's fixture in
+    tests/test_main.py."""
+    with (
+        patch(
+            "main.classify_gig",
+            return_value=gig_classifier.Classification(
+                decision="auto_send", reason="auto_eligible"
+            ),
+        ),
+        patch("main.GmailClient"),
+    ):
+        yield
 
 
 def _make_settings(**overrides):

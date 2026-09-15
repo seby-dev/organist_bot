@@ -216,19 +216,6 @@ class TestNegotiationTemplate:
         assert "Video 1" not in rendered
         assert "Video 2" not in rendered
 
-    def test_video_urls_survive_the_telegram_tag_strip(self):
-        """The approval preview strips tags, so the URL must be link *text* too."""
-        from organist_bot.integrations.unified_agent import _neg_body_as_text
-
-        plain = _neg_body_as_text(
-            _render_negotiation(
-                applicant_video_1="https://yt/v1",
-                applicant_video_2="https://yt/v2",
-            )
-        )
-        assert "Video 1 → https://yt/v1" in plain
-        assert "Video 2 → https://yt/v2" in plain
-
 
 class TestDraftNegotiation:
     def test_returns_subject_and_body(self):
@@ -245,6 +232,55 @@ class TestDraftNegotiation:
         _, body = notifier.draft_negotiation(gig, negotiable_fee=150)
         assert "£150" in body
         assert "£120" not in body
+
+
+class TestDraftApplication:
+    def _make_gig(self):
+        return Gig(
+            header="Sunday Service",
+            organisation="St Mary's",
+            locality="London",
+            date="Sunday, July 12, 2026",
+            time="10:00 AM",
+            fee="£120",
+            link="https://e.com/1",
+            email="church@example.com",
+        )
+
+    def _settings(self):
+        s = MagicMock()
+        s.applicant_name = "Alex"
+        s.applicant_mobile = "07700 900000"
+        s.applicant_video_1 = ""
+        s.applicant_video_2 = ""
+        s.cc_email = ""
+        s.email_sender = "bot@example.com"
+        return s
+
+    def test_returns_subject_and_body_without_sending(self):
+        transport = FakeTransport()
+        notifier = Notifier(self._settings(), transport)
+        subject, body = notifier.draft_application(self._make_gig())
+        assert "Sunday, July 12, 2026" in subject
+        assert "Alex" in body
+        assert transport.sent == []  # never dispatched
+
+    def test_body_matches_apply_to_gig_template_content(self):
+        """draft_application must render the same application.html.j2
+        template apply_to_gig uses — a held-for-review draft is meant to be
+        byte-for-byte the same email an auto-sent gig would have gotten."""
+        transport = FakeTransport()
+        notifier = Notifier(self._settings(), transport)
+        gig = self._make_gig()
+        _, drafted_body = notifier.draft_application(gig)
+        # apply_to_gig calls application_store.record_application as a
+        # side effect — patch it out so this test never touches the real
+        # data/applications.json (same reason the neighboring
+        # TestApplyToGigRecordsApplication class patches it).
+        with patch("organist_bot.notifier.application_store"):
+            notifier.apply_to_gig(gig)
+        sent_body = transport.sent[0]["message"]
+        assert drafted_body in sent_body  # sent_body wraps drafted_body in MIME headers
 
 
 class TestSendApplicationEmail:

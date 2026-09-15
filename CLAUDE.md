@@ -109,6 +109,7 @@ Polls `organistsonline.org` every `POLL_MINUTES` and runs a 3-phase pipeline per
 **Post-pipeline steps** (run every tick, even when no new gigs):
 - `application_store.expire_past_applied()` — flips `applied` rows whose gig date is in the past to `no_response`.
 - `reply_monitor.check_replies()` — polls Gmail for replies to active applications and classifies each with Claude Haiku (`accepted` / `rejected` / `cancellation` / `unclear`). On `accepted` it upserts the application as accepted, creates a Google Calendar event, and pings Telegram.
+- Every gig that passes the filter chain and isn't fee-negotiable also runs through `gig_classifier.classify_gig` (Saturday/Sunday only — weekdays are held on a pure date check) before auto-applying — see "Held-for-review drafts" below.
 
 ### `telegram_bot.py` — Unified Telegram bot
 
@@ -175,7 +176,7 @@ Optional sections in `.env`:
 | File | Purpose |
 |---|---|
 | `data/seen_gigs.csv` | Dedup store for the scraper; one gig URL per line |
-| `data/applications.json` | Application lifecycle store (written by `application_store`); `neg_pending` rows hold unsent NEG drafts awaiting Telegram approval |
+| `data/applications.json` | Application lifecycle store (written by `application_store`); `neg_pending`/`review_pending` rows hold a real Gmail draft (`draft_id`) awaiting Telegram Accept/Decline |
 | `data/filter_config.json` | Runtime filter values: blacklist, unavail/avail periods |
 | `data/filter_suspensions.json` | Runtime filter suspensions (written by `filter_suspension_store`): which filter (or `all`) is exempted for which date range |
 | `data/runtime_config.json` | Runtime pipeline overrides: min_fee, max_travel_minutes, poll_minutes |
@@ -200,18 +201,25 @@ Optional sections in `.env`:
 
 `PostcodeFilter` requires `HOME_POSTCODE` and `GOOGLE_MAPS_API_KEY` to activate. `CalendarFilter` requires `GOOGLE_CALENDAR_ID` and `GOOGLE_CALENDAR_CREDENTIALS_FILE`.
 
-### NEG-fee drafts
+### Held-for-review drafts (NEG-fee negotiations + AI-flagged review gigs)
 
-When `ENABLE_NEG_DRAFTS=true` (default), gigs whose fee is `"NEG"` or `"Negotiable"` are NOT rejected by `FeeFilter` — `FeeFilter` is excluded from both chains and an explicit fee partition runs after Phase 2. Gigs passing every *other* filter get a draft email proposing `NEGOTIABLE_FEE` (default 120, runtime-overridable via the agent's `manage_config`) rendered from `templates/negotiation.html.j2`, persisted to `applications.json` as `status: "neg_pending"`, and a Telegram alert with the plain-text draft + a 12-char `gig_id`.
+Two independent mechanisms hold a gig for the user's review instead of auto-applying, and both converge on the same real-Gmail-draft + Telegram-button flow:
 
-The user approves/edits/rejects via Telegram chat (unified-agent tools, two-step `confirmed` pattern):
-- `approve <gig_id>` → `approve_neg_application` sends the stored draft verbatim and transitions the row to `applied`.
-- `edit <gig_id>: <new body>` or `edit <gig_id> fee 150` → `edit_neg_application` (replaces the body or re-renders with `new_fee`) then sends.
-- `reject <gig_id>` → `reject_neg_application` transitions to `rejected`; no email.
+- **NEG-fee**: when `ENABLE_NEG_DRAFTS=true` (default), gigs whose fee is `"NEG"` or `"Negotiable"` are NOT rejected by `FeeFilter` — `FeeFilter` is excluded from both chains and an explicit fee partition runs after Phase 2, proposing `NEGOTIABLE_FEE` (default 120, runtime-overridable via the agent's `manage_config`) via `templates/negotiation.html.j2`. `ENABLE_NEG_DRAFTS=false` reverts to the old behavior (NEG gigs rejected by `FeeFilter`).
+- **Non-NEG hold classifier** (`gig_classifier.classify_gig`, Claude Haiku): runs on every remaining gig that passed the filter chain. Monday–Friday gigs are always held (`hold_reason="weekday"`), no LLM call. Saturday and Sunday gigs go through the classifier: a single Funeral, Wedding, or plain Sunday/Saturday service auto-sends as before; anything bundling two or more services (`hold_reason="multi_service"`) or any other single service type (`hold_reason="other_service_type"`, e.g. Evensong) is held instead. `ANTHROPIC_API_KEY` unset holds every Saturday/Sunday gig (fail-safe) and alerts once at startup (`warn_if_gig_classifier_unconfigured`).
 
-Past-date `neg_pending` rows auto-flip to `expired` via `expire_past_applied`. `ENABLE_NEG_DRAFTS=false` reverts to the old behavior (NEG gigs rejected by `FeeFilter`).
+Either path renders the standard `application.html.j2` (non-NEG) or `negotiation.html.j2` (NEG) email, creates a **real Gmail draft** via `GmailClient.create_draft` (requires the `gmail.compose` OAuth scope — `warn_if_gmail_write_scope_missing` alerts once at startup if the token lacks it), persists a row to `applications.json` as `status: "neg_pending"` or `"review_pending"` (`application_store.record_held_draft`), and sends one Telegram alert (`main._send_review_alert`) with the gig's own scraped details and two buttons: **Accept** / **Decline**.
 
-One intentional visibility caveat: `neg_pending`/`rejected`/`expired` NEG rows have no `applied_at`, so they never appear in `manage_applications` summaries or analytics — only `list_neg_pending` shows drafts, and approved drafts become normal `applied` rows.
+- **Accept** → `Confirm`/`Cancel` re-confirmation → `Confirm` sends the actual Gmail draft (`GmailClient.send_draft` — so a hand-edit made directly in Gmail before confirming goes out as edited) and transitions the row to `applied`.
+- **Decline** → immediately deletes the Gmail draft (`GmailClient.delete_draft`) and transitions the row to `rejected`. No confirmation step.
+
+There is no in-Telegram way to edit a draft or act on one via typed chat commands — editing happens directly in Gmail, and the only surviving chat tool is the read-only `list_pending_drafts` (what's pending, and why it's held).
+
+Past-date `neg_pending`/`review_pending` rows auto-flip to `expired` via `expire_past_applied`, which also deletes each row's now-orphaned Gmail draft.
+
+One intentional visibility caveat: `neg_pending`/`review_pending`/`rejected`/`expired` rows have no `applied_at`, so they never appear in `manage_applications` summaries or analytics — only `list_pending_drafts` shows them, and accepted drafts become normal `applied` rows.
+
+**Legacy rows from before this feature.** Any `neg_pending` row written before real Gmail drafts existed has `draft_body`/`draft_subject` but no `draft_id`. Such a row is inert under the current code: its Telegram Accept/Decline buttons carry `neg:*` callback data that no handler matches anymore, so tapping one does nothing, and `review_confirm_send`/`review_decline` return a legacy-row message instead of acting when called against it (checked via `row.get("draft_id")`, never a plain `row["draft_id"]` index). It still auto-expires via `expire_past_applied` once its gig date passes.
 
 ### Filter suspensions
 

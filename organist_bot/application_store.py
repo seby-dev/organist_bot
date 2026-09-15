@@ -64,25 +64,28 @@ def _gig_id(link: str) -> str:
     return hashlib.sha256(link.encode()).hexdigest()[:12]
 
 
-def record_neg_pending(
+def record_held_draft(
     gig: Gig,
     *,
+    status: Literal["neg_pending", "review_pending"],
+    draft_id: str,
     draft_subject: str,
-    draft_body: str,
-    negotiable_fee: int,
-) -> str:
-    """Write a new 'neg_pending' record. Returns the gig_id.
+    hold_reason: str,
+    negotiable_fee: int | None = None,
+) -> tuple[str, bool]:
+    """Write a new held-draft record ('neg_pending' or 'review_pending').
 
-    Idempotent: if a row for this gig URL already exists in any state
-    (neg_pending or otherwise), returns the existing gig_id without modifying
-    the row — the original draft the user is reviewing is preserved.
+    Returns (gig_id, created). Idempotent by URL: if a row for this gig URL
+    already exists in ANY status, nothing is written and created=False — the
+    caller (main.py) must then delete the just-created Gmail draft (draft_id)
+    since it's now orphaned; the existing row's own draft_id is untouched.
     """
     gig_id = _gig_id(gig.link)
     with atomic_store.file_lock(_PATH):
         records = _read()
         for r in records:
             if r.get("url") == gig.link:
-                return gig_id
+                return gig_id, False
         now = _now_iso()
         records.append(
             {
@@ -90,15 +93,17 @@ def record_neg_pending(
                 "url": gig.link,
                 "header": gig.header or "",
                 "organisation": gig.organisation or "",
+                "contact": gig.contact or "",
                 "date": gig.date or "",
                 "time": gig.time or "",
                 "fee": gig.fee or "",
                 "email": gig.email or "",
                 "postcode": gig.postcode or "",
-                "status": "neg_pending",
+                "status": status,
+                "draft_id": draft_id,
                 "draft_subject": draft_subject,
-                "draft_body": draft_body,
                 "negotiable_fee": negotiable_fee,
+                "hold_reason": hold_reason,
                 "created_at": now,
                 "updated_at": now,
                 "decided_at": None,
@@ -106,12 +111,14 @@ def record_neg_pending(
             }
         )
         _write(records)
-    return gig_id
+    return gig_id, True
 
 
-def list_neg_pending() -> list[dict]:
-    """Return all records with status == 'neg_pending'."""
-    return [r for r in _read() if r.get("status") == "neg_pending"]
+def list_held(status: str | None = None) -> list[dict]:
+    """Return held-draft rows (status in {'neg_pending', 'review_pending'}),
+    optionally filtered to just one of those statuses."""
+    statuses = {status} if status else {"neg_pending", "review_pending"}
+    return [r for r in _read() if r.get("status") in statuses]
 
 
 def get_by_gig_id(gig_id: str) -> dict | None:
@@ -122,29 +129,24 @@ def get_by_gig_id(gig_id: str) -> dict | None:
     return None
 
 
-def transition_neg_pending(
-    gig_id: str,
-    *,
-    to: Literal["applied", "rejected", "expired"],
-    sent_body: str | None = None,
-) -> bool:
-    """Transition a neg_pending row to applied/rejected/expired.
+def transition_held(gig_id: str, *, to: Literal["applied", "rejected", "expired"]) -> bool:
+    """Transition a held-draft row (neg_pending or review_pending) to
+    applied/rejected/expired.
 
-    Returns False if no neg_pending row with this gig_id exists (already
+    Returns False if no held row with this gig_id exists (already
     transitioned, never existed, or in a different state) — caller should
-    treat False as "already decided" and not double-send.
+    treat False as "already decided" and not double-send/double-delete.
 
     On to='applied' the standard 'applied_at' field is set so downstream
-    tools (get_income_forecast, manage_applications) see this like any
-    other application. If sent_body is provided, draft_body is overwritten
-    (for the edit case).
+    tools (get_income_forecast, manage_applications) see this like any other
+    application.
     """
     with atomic_store.file_lock(_PATH):
         records = _read()
         for r in records:
             if r.get("gig_id") != gig_id:
                 continue
-            if r.get("status") != "neg_pending":
+            if r.get("status") not in ("neg_pending", "review_pending"):
                 return False
             now = _now_iso()
             r["status"] = to
@@ -153,39 +155,6 @@ def transition_neg_pending(
             r["updated_at"] = now
             if to == "applied":
                 r["applied_at"] = now
-                if sent_body is not None:
-                    r["draft_body"] = sent_body
-            _write(records)
-            return True
-    return False
-
-
-def update_neg_draft(
-    gig_id: str,
-    *,
-    draft_subject: str | None = None,
-    draft_body: str | None = None,
-    negotiable_fee: int | None = None,
-) -> bool:
-    """Persist a revised draft onto a neg_pending row without changing its
-    status. Returns False if no neg_pending row with this gig_id exists
-    (unknown id, or already decided) — caller should treat False as "can't
-    edit this anymore" and not proceed.
-    """
-    with atomic_store.file_lock(_PATH):
-        records = _read()
-        for r in records:
-            if r.get("gig_id") != gig_id:
-                continue
-            if r.get("status") != "neg_pending":
-                return False
-            if draft_subject is not None:
-                r["draft_subject"] = draft_subject
-            if draft_body is not None:
-                r["draft_body"] = draft_body
-            if negotiable_fee is not None:
-                r["negotiable_fee"] = negotiable_fee
-            r["updated_at"] = _now_iso()
             _write(records)
             return True
     return False
@@ -313,20 +282,27 @@ def update_travel_buffer_ids(url: str, before_id: str, after_id: str) -> bool:
     return False
 
 
-def expire_past_applied() -> int:
-    """Mark past-date 'applied' rows as 'no_response' and past-date 'neg_pending'
-    rows as 'expired'. Returns total count changed.
+def expire_past_applied() -> list[dict]:
+    """Mark past-date 'applied' rows as 'no_response' and past-date held-draft
+    rows ('neg_pending'/'review_pending') as 'expired'.
+
+    Returns every row whose status changed, each a shallow copy — not just a
+    count — so the caller (main.py) can act on rows that carry a draft_id
+    (only the expired held-draft rows have one; 'applied'->'no_response' rows
+    don't) to delete the now-orphaned Gmail draft. Check row.get("draft_id")
+    rather than the row's prior status to tell the two kinds apart.
     """
     from organist_bot.filters import normalize_to_yyyymmdd
 
     today = datetime.date.today()
+    expired_rows: list[dict] = []
     with atomic_store.file_lock(_PATH):
         records = _read()
-        changed = 0
+        changed = False
         now = _now_iso()
         for r in records:
             status = r.get("status")
-            if status not in ("applied", "neg_pending"):
+            if status not in ("applied", "neg_pending", "review_pending"):
                 continue
             normalized = normalize_to_yyyymmdd(r.get("date", ""))
             if normalized is None:
@@ -338,15 +314,16 @@ def expire_past_applied() -> int:
             if gig_date < today:
                 if status == "applied":
                     r["status"] = "no_response"
-                else:  # neg_pending
+                else:  # neg_pending or review_pending
                     r["status"] = "expired"
                     r["decision"] = "expired"
                     r["decided_at"] = now
                 r["updated_at"] = now
-                changed += 1
+                changed = True
+                expired_rows.append(dict(r))
         if changed:
             _write(records)
-    return changed
+    return expired_rows
 
 
 def _parse_fee(fee_str: str) -> float | None:

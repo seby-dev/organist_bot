@@ -215,8 +215,9 @@ class Notifier:
     def draft_negotiation(self, gig: Gig, negotiable_fee: int) -> tuple[str, str]:
         """Render the NEG-fee application as (subject, body). Does NOT send.
 
-        Returned strings are stored on the neg_pending application_store row
-        and re-used verbatim when the user approves the draft in Telegram.
+        The returned body is what gets emailed into a real Gmail draft
+        (main.py's NEG-drafts block, via GmailClient.create_draft) — Gmail
+        itself is what the user reviews/edits from here, not this string.
         """
         body = self._render(
             "negotiation.html.j2",
@@ -226,6 +227,24 @@ class Notifier:
             applicant_video_1=self._settings.applicant_video_1,
             applicant_video_2=self._settings.applicant_video_2,
             negotiable_fee=negotiable_fee,
+        )
+        subject = f"Application for Organist Position – {gig.date}"
+        return subject, body
+
+    def draft_application(self, gig: Gig) -> tuple[str, str]:
+        """Render the standard application email as (subject, body) without
+        sending it — used for held-for-review gigs (main.py's review-drafts
+        block). Renders the SAME application.html.j2 template apply_to_gig
+        uses, so a held draft is byte-for-byte what an auto-sent gig would
+        have gotten, just not sent yet.
+        """
+        body = self._render(
+            "application.html.j2",
+            gig=gig,
+            applicant_name=self._settings.applicant_name,
+            applicant_mobile=self._settings.applicant_mobile,
+            applicant_video_1=self._settings.applicant_video_1,
+            applicant_video_2=self._settings.applicant_video_2,
         )
         subject = f"Application for Organist Position – {gig.date}"
         return subject, body

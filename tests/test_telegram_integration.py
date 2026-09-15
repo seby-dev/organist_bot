@@ -11,7 +11,7 @@ from organist_bot.integrations.telegram_bot import (
     _is_authorised,
     handle_llm_callback,
     handle_message,
-    handle_neg_callback,
+    handle_review_callback,
 )
 from organist_bot.integrations.unified_agent import AgentResponse
 
@@ -256,7 +256,7 @@ class TestHandleMessage:
         assert markup.inline_keyboard[0][0].callback_data == "neg:confirm_send:abc123"
 
 
-# ── NEG callback handler ─────────────────────────────────────────────────────
+# ── Review callback handler ──────────────────────────────────────────────────
 
 
 def _make_callback_update(chat_id: int = 7973955362, data: str = "", message_id: int = 55):
@@ -269,7 +269,7 @@ def _make_callback_update(chat_id: int = 7973955362, data: str = "", message_id:
     return update
 
 
-class TestHandleNegCallback:
+class TestHandleReviewCallback:
     @pytest.fixture(autouse=True)
     def patch_settings(self):
         with patch("organist_bot.integrations.telegram_bot.settings") as mock:
@@ -278,181 +278,131 @@ class TestHandleNegCallback:
 
     @pytest.mark.asyncio
     async def test_rejects_unauthorised_chat(self):
-        update = _make_callback_update(chat_id=9999, data="neg:accept:abc123")
+        update = _make_callback_update(chat_id=9999, data="review:accept:abc123")
         context = _make_context()
-        with patch("organist_bot.integrations.unified_agent.neg_confirm_buttons") as mock_fn:
-            await handle_neg_callback(update, context)
+        with patch(
+            "organist_bot.integrations.unified_agent.review_confirm_send_buttons"
+        ) as mock_fn:
+            await handle_review_callback(update, context)
         mock_fn.assert_not_called()
         update.callback_query.answer.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_ignores_non_neg_callback_data(self):
+    async def test_ignores_non_review_callback_data(self):
         update = _make_callback_update(data="something:else")
         context = _make_context()
-        await handle_neg_callback(update, context)
+        await handle_review_callback(update, context)
         context.bot.edit_message_reply_markup.assert_not_called()
         context.bot.edit_message_text.assert_not_called()
         update.callback_query.answer.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_accept_swaps_to_confirm_send_buttons(self):
-        update = _make_callback_update(data="neg:accept:abc123")
+    async def test_accept_swaps_buttons_only_not_text(self):
+        update = _make_callback_update(data="review:accept:abc123")
         context = _make_context()
         with patch(
-            "organist_bot.integrations.unified_agent.neg_confirm_buttons",
-            return_value=[[{"text": "Confirm", "callback_data": "neg:confirm_send:abc123"}]],
+            "organist_bot.integrations.unified_agent.review_confirm_send_buttons",
+            return_value=[
+                [
+                    {"text": "Confirm", "callback_data": "review:confirm_send:abc123"},
+                    {"text": "Cancel", "callback_data": "review:cancel:abc123"},
+                ]
+            ],
         ):
-            await handle_neg_callback(update, context)
+            await handle_review_callback(update, context)
         context.bot.edit_message_reply_markup.assert_called_once()
+        context.bot.edit_message_text.assert_not_called()
         kwargs = context.bot.edit_message_reply_markup.call_args.kwargs
         assert kwargs["chat_id"] == 7973955362
         assert kwargs["message_id"] == 55
-        markup = kwargs["reply_markup"]
-        assert markup.inline_keyboard[0][0].text == "Confirm"
-        assert markup.inline_keyboard[0][0].callback_data == "neg:confirm_send:abc123"
+        buttons = kwargs["reply_markup"].inline_keyboard
+        callback_data = {b.callback_data for row in buttons for b in row}
+        assert callback_data == {"review:confirm_send:abc123", "review:cancel:abc123"}
 
     @pytest.mark.asyncio
-    async def test_reject_swaps_to_confirm_reject_buttons(self):
-        update = _make_callback_update(data="neg:reject:abc123")
+    async def test_cancel_swaps_buttons_back_to_accept_decline(self):
+        update = _make_callback_update(data="review:cancel:abc123")
         context = _make_context()
-        with patch("organist_bot.integrations.unified_agent.neg_confirm_buttons") as mock_buttons:
-            mock_buttons.return_value = [
-                [{"text": "Confirm", "callback_data": "neg:confirm_reject:abc123"}]
-            ]
-            await handle_neg_callback(update, context)
-        mock_buttons.assert_called_once_with("abc123", send=False)
-        kwargs = context.bot.edit_message_reply_markup.call_args.kwargs
-        markup = kwargs["reply_markup"]
-        assert markup.inline_keyboard[0][0].callback_data == "neg:confirm_reject:abc123"
-
-    @pytest.mark.asyncio
-    async def test_edit_sets_active_draft_and_prompts(self):
-        update = _make_callback_update(data="neg:edit:abc123")
-        context = _make_context()
-        with (
-            patch("organist_bot.integrations.unified_agent.set_active_neg_draft") as mock_set,
-            patch("organist_bot.integrations.unified_agent._persist_chat") as mock_persist,
+        with patch(
+            "organist_bot.integrations.unified_agent.review_accept_buttons",
+            return_value=[
+                [
+                    {"text": "✅ Accept", "callback_data": "review:accept:abc123"},
+                    {"text": "❌ Decline", "callback_data": "review:decline:abc123"},
+                ]
+            ],
         ):
-            await handle_neg_callback(update, context)
-        mock_set.assert_called_once_with(7973955362, "abc123")
-        # Persisted immediately (not deferred to the next process_message call)
-        # so a restart between this tap and the user's reply doesn't lose it.
-        mock_persist.assert_called_once_with(7973955362)
-        context.bot.edit_message_text.assert_called_once()
-        assert (
-            "what would you like to change"
-            in context.bot.edit_message_text.call_args.kwargs["text"].lower()
-        )
+            await handle_review_callback(update, context)
+        context.bot.edit_message_reply_markup.assert_called_once()
+        context.bot.edit_message_text.assert_not_called()
+        kwargs = context.bot.edit_message_reply_markup.call_args.kwargs
+        buttons = kwargs["reply_markup"].inline_keyboard
+        callback_data = {b.callback_data for row in buttons for b in row}
+        assert callback_data == {"review:accept:abc123", "review:decline:abc123"}
 
     @pytest.mark.asyncio
     async def test_confirm_send_success_shows_sent(self):
-        update = _make_callback_update(data="neg:confirm_send:abc123")
+        update = _make_callback_update(data="review:confirm_send:abc123")
         context = _make_context()
         with patch(
-            "organist_bot.integrations.unified_agent.neg_confirm_send",
+            "organist_bot.integrations.unified_agent.review_confirm_send",
             new=AsyncMock(return_value=(True, "Sent to jane@example.com.")),
         ):
-            await handle_neg_callback(update, context)
+            await handle_review_callback(update, context)
         text = context.bot.edit_message_text.call_args.kwargs["text"]
-        assert "✅" in text
-        assert "Sent to jane@example.com." in text
+        assert text.startswith("✅")
+        assert "jane@example.com" in text
 
     @pytest.mark.asyncio
     async def test_confirm_send_failure_shows_failure(self):
-        update = _make_callback_update(data="neg:confirm_send:abc123")
+        update = _make_callback_update(data="review:confirm_send:abc123")
         context = _make_context()
         with patch(
-            "organist_bot.integrations.unified_agent.neg_confirm_send",
-            new=AsyncMock(return_value=(False, "Send failed: smtp down")),
+            "organist_bot.integrations.unified_agent.review_confirm_send",
+            new=AsyncMock(return_value=(False, "Send failed: boom")),
         ):
-            await handle_neg_callback(update, context)
+            await handle_review_callback(update, context)
         text = context.bot.edit_message_text.call_args.kwargs["text"]
-        assert "❌" in text
+        assert text.startswith("❌")
 
     @pytest.mark.asyncio
-    async def test_confirm_reject_success_shows_rejected(self):
-        update = _make_callback_update(data="neg:confirm_reject:abc123")
+    async def test_decline_success_shows_declined(self):
+        update = _make_callback_update(data="review:decline:abc123")
         context = _make_context()
         with patch(
-            "organist_bot.integrations.unified_agent.neg_confirm_reject",
-            return_value=(True, "Draft rejected — no email sent."),
-        ):
-            await handle_neg_callback(update, context)
+            "organist_bot.integrations.unified_agent.review_decline",
+            return_value=(True, "Declined — draft deleted."),
+        ) as mock_decline:
+            await handle_review_callback(update, context)
+        mock_decline.assert_called_once_with("abc123")
         text = context.bot.edit_message_text.call_args.kwargs["text"]
-        assert "✅" in text
+        assert text.startswith("✅")
+        assert "deleted" in text
 
     @pytest.mark.asyncio
-    async def test_cancel_restores_draft_view(self):
-        update = _make_callback_update(data="neg:cancel:abc123")
+    async def test_decline_on_already_gone_draft_still_shows_success(self):
+        """404-on-delete is surfaced by unified_agent.review_decline as ok=True
+        (see Task 5) — the callback just relays whatever it returns."""
+        update = _make_callback_update(data="review:decline:abc123")
         context = _make_context()
-        view_text = "Draft email — id: abc123"
-        view_buttons = [[{"text": "Accept", "callback_data": "neg:accept:abc123"}]]
         with patch(
-            "organist_bot.integrations.unified_agent.neg_draft_view",
-            return_value=(view_text, view_buttons),
+            "organist_bot.integrations.unified_agent.review_decline",
+            return_value=(True, "Declined — draft deleted."),
         ):
-            await handle_neg_callback(update, context)
-        kwargs = context.bot.edit_message_text.call_args.kwargs
-        assert kwargs["text"] == view_text
-        markup = kwargs["reply_markup"]
-        assert markup.inline_keyboard[0][0].text == "Accept"
-        assert markup.inline_keyboard[0][0].callback_data == "neg:accept:abc123"
-
-    @pytest.mark.asyncio
-    async def test_cancel_when_draft_gone(self):
-        update = _make_callback_update(data="neg:cancel:abc123")
-        context = _make_context()
-        with patch("organist_bot.integrations.unified_agent.neg_draft_view", return_value=None):
-            await handle_neg_callback(update, context)
+            await handle_review_callback(update, context)
         text = context.bot.edit_message_text.call_args.kwargs["text"]
-        assert "no longer available" in text.lower()
-
-    @pytest.mark.asyncio
-    async def test_pick_replays_instruction_through_agent(self):
-        update = _make_callback_update(data="neg:pick:abc123")
-        context = _make_context()
-        with (
-            patch("organist_bot.integrations.unified_agent.set_active_neg_draft") as mock_set,
-            patch(
-                "organist_bot.integrations.unified_agent.pop_pending_neg_instruction",
-                return_value="raise the fee to 180",
-            ),
-            patch(
-                "organist_bot.integrations.unified_agent.process_message",
-                new=AsyncMock(return_value=[AgentResponse(text="Revised draft.", buttons=None)]),
-            ) as mock_pm,
-        ):
-            await handle_neg_callback(update, context)
-        mock_set.assert_called_once_with(7973955362, "abc123")
-        mock_pm.assert_called_once_with(7973955362, "For gig abc123: raise the fee to 180")
-        context.bot.send_message.assert_called_once()
-        assert context.bot.send_message.call_args.kwargs["text"] == "Revised draft."
-
-    @pytest.mark.asyncio
-    async def test_pick_with_no_pending_instruction_asks_to_repeat(self):
-        update = _make_callback_update(data="neg:pick:abc123")
-        context = _make_context()
-        with (
-            patch("organist_bot.integrations.unified_agent.set_active_neg_draft"),
-            patch(
-                "organist_bot.integrations.unified_agent.pop_pending_neg_instruction",
-                return_value=None,
-            ),
-        ):
-            await handle_neg_callback(update, context)
-        text = context.bot.send_message.call_args.kwargs["text"]
-        assert "lost track" in text.lower()
+        assert text.startswith("✅")
 
     @pytest.mark.asyncio
     async def test_edit_message_badrequest_is_swallowed(self):
-        update = _make_callback_update(data="neg:cancel:abc123")
+        update = _make_callback_update(data="review:confirm_send:abc123")
         context = _make_context()
-        context.bot.edit_message_text = AsyncMock(side_effect=BadRequest("message is not found"))
+        context.bot.edit_message_text.side_effect = BadRequest("message not found")
         with patch(
-            "organist_bot.integrations.unified_agent.neg_draft_view",
-            return_value=("text", []),
+            "organist_bot.integrations.unified_agent.review_confirm_send",
+            new=AsyncMock(return_value=(True, "Sent.")),
         ):
-            await handle_neg_callback(update, context)  # must not raise
+            await handle_review_callback(update, context)  # must not raise
 
 
 # ── LLM provider callback handler ────────────────────────────────────────────

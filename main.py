@@ -1,10 +1,8 @@
 import argparse
 import fcntl
 import hashlib
-import html as _html
 import logging
 import pathlib
-import re
 import time
 import uuid
 from collections.abc import Callable
@@ -28,8 +26,11 @@ from organist_bot.filters import (
     SundayTimeFilter,
     SuspendableFilter,
     is_negotiable,
+    parse_weekday,
 )
+from organist_bot.gig_classifier import classify_gig
 from organist_bot.integrations.calendar_client import GoogleCalendarClient
+from organist_bot.integrations.gmail_client import GmailClient, is_not_found_error
 from organist_bot.logging_config import set_run_id, setup_logging
 from organist_bot.models import Gig
 from organist_bot.notifier import Notifier, SMTPTransport
@@ -48,45 +49,53 @@ logger = logging.getLogger(__name__)
 _LOCK_FILE = "/tmp/organistbot_scheduler.lock"
 
 
-def _send_neg_alert(gig: Gig, gig_id: str, subject: str, body: str) -> None:
-    """Two Telegram messages per NEG draft: gig details first, then the draft."""
+def _send_review_alert(
+    gig: Gig,
+    gig_id: str,
+    *,
+    status: str,
+    hold_reason: str,
+    negotiable_fee: int | None = None,
+) -> None:
+    """Single Telegram message for a held gig (NEG or review) — gig details
+    as scraped, with Accept/Decline buttons. Replaces the old two-message
+    alert (gig details, then draft text + Accept/Edit/Reject) now that the
+    draft itself lives in Gmail, not in this message.
+
+    negotiable_fee is only meaningful for status="neg_pending" — pass the
+    same value the caller just used to render the draft (not re-read from
+    runtime_config here) so the alert can never show a different proposed
+    fee than what was actually drafted, even if the runtime config value
+    changes concurrently.
+    """
+    label = "🟡 NEG gig" if status == "neg_pending" else "🔵 Review needed"
     org = f" — {gig.organisation}" if gig.organisation else ""
     contact_line = (
         f"Contact: {gig.contact or '(none)'} <{gig.email}>" if gig.email else "Contact: (none)"
     )
     location_line = f"Location: {gig.postcode}\n" if gig.postcode else ""
+    reason_line = f"Reason:   {hold_reason}\n" if status == "review_pending" else ""
+    fee_line = f"Fee:      {gig.fee or 'NEG'}\n"
+    if status == "neg_pending" and negotiable_fee is not None:
+        fee_line += f"Proposed: £{negotiable_fee}\n"
     details_msg = (
-        f"🟡 NEG gig — {gig.header}{org}\n\n"
+        f"{label} — {gig.header}{org}\n\n"
         f"Date:     {gig.date} · {gig.time}\n"
-        f"Fee:      {gig.fee or 'NEG'}\n"
+        f"{fee_line}"
+        f"{reason_line}"
         f"{location_line}"
         f"{contact_line}\n"
         f"Link:     {gig.link}"
     )
-    alert.send_alert(details_msg)
-
-    # Strip HTML tags from the draft body for Telegram display.
-    plain = _html.unescape(re.sub(r"<[^>]+>", "", body)).strip()
-    plain = re.sub(r"\n{3,}", "\n\n", plain)
-    draft_msg = (
-        f"Draft email — id: {gig_id}\n\n"
-        f"Subject: {subject}\n\n"
-        f"{plain}\n\n"
-        f"Reply:\n"
-        f'  • "approve {gig_id}" to send as-is\n'
-        f'  • "edit {gig_id}: <new body>" to send a revised version\n'
-        f'  • "reject {gig_id}" to skip'
-    )
     buttons = {
         "inline_keyboard": [
             [
-                {"text": "✅ Accept", "callback_data": f"neg:accept:{gig_id}"},
-                {"text": "✏️ Edit", "callback_data": f"neg:edit:{gig_id}"},
-                {"text": "❌ Reject", "callback_data": f"neg:reject:{gig_id}"},
+                {"text": "✅ Accept", "callback_data": f"review:accept:{gig_id}"},
+                {"text": "❌ Decline", "callback_data": f"review:decline:{gig_id}"},
             ]
         ]
     }
-    alert.send_alert(draft_msg, reply_markup=buttons)
+    alert.send_alert(details_msg, reply_markup=buttons)
 
 
 def warn_if_gmail_monitoring_unconfigured() -> None:
@@ -115,6 +124,44 @@ def warn_if_gmail_monitoring_unconfigured() -> None:
             f"⚠️ Gmail monitoring disabled — token file {settings.gmail_token_file} "
             "is missing. Run scripts/setup_gmail_auth.py once to mint it. "
             "Gig replies and invoice payments will NOT be detected automatically."
+        )
+
+
+def warn_if_gmail_write_scope_missing() -> None:
+    """Alert once at scheduler startup if the Gmail token can't create/send/
+    delete drafts. A stale token minted under the old gmail.readonly-only
+    scope refreshes without hard-failing (google-auth just logs an internal
+    warning), so without this check the first sign would be drafts.create
+    returning 403 on some gig, mid-tick, with no obvious cause.
+    """
+    if not settings.gmail_credentials_file or not pathlib.Path(settings.gmail_token_file).exists():
+        return  # warn_if_gmail_monitoring_unconfigured already covers this case
+    try:
+        client = GmailClient(settings.gmail_credentials_file, settings.gmail_token_file)
+        if not client.has_compose_access():
+            alert.send_alert(
+                "⚠️ Gmail token lacks draft-compose access — held-for-review gigs and "
+                "NEG-fee drafts will fail to create. Re-run scripts/setup_gmail_auth.py "
+                "to re-authorise with the gmail.compose scope."
+            )
+    except Exception:
+        logger.warning("warn_if_gmail_write_scope_missing: check failed", exc_info=True)
+
+
+def warn_if_gig_classifier_unconfigured() -> None:
+    """Alert once at scheduler startup when the non-NEG hold classifier can't
+    run. Without an Anthropic key, classify_gig fails safe to hold_for_review
+    for every Saturday/Sunday gig, silently, forever — this makes that loud.
+    """
+    if not settings.anthropic_api_key:
+        logger.warning(
+            "Gig hold classifier disabled — ANTHROPIC_API_KEY not set",
+            extra={"reason": "api_key_unset"},
+        )
+        alert.send_alert(
+            "⚠️ Gig hold classifier disabled — ANTHROPIC_API_KEY is not set in .env. "
+            "Every Saturday/Sunday gig will be held for review instead of auto-sending "
+            "until this is configured."
         )
 
 
@@ -407,6 +454,35 @@ def _run(
     # When enable_neg_drafts is False, FeeFilter was already in the chain so
     # valid_gigs is correct as-is and neg_gigs stays empty.
 
+    # ── Non-NEG hold-classifier partition ─────────────────────────────────────
+    auto_send_gigs: list[Gig] = []
+    review_gigs: list[tuple[Gig, str]] = []
+
+    for gig in valid_gigs:
+        if is_negotiable(gig.fee):
+            # Belt-and-braces: only reachable when ENABLE_FEE_FILTER=false (then
+            # _fee_filter is None and the fee partition above never ran, so a NEG
+            # gig can still be here). Falls through to auto-send exactly like it
+            # does today in that config, unchanged by this feature.
+            auto_send_gigs.append(gig)
+            continue
+        weekday = parse_weekday(gig.date)
+        if weekday is None or weekday not in (5, 6):  # not Saturday or Sunday
+            review_gigs.append((gig, "weekday"))
+            continue
+        result = classify_gig(gig)
+        if result.decision == "hold_for_review":
+            review_gigs.append((gig, result.reason))
+        else:
+            auto_send_gigs.append(gig)
+
+    valid_gigs = auto_send_gigs  # Phase 3 auto-send + seen-gigs handle these only
+
+    logger.info(
+        "Hold-classifier partition applied",
+        extra={"auto_send": len(auto_send_gigs), "held_for_review": len(review_gigs)},
+    )
+
     logger.info(
         "Filtering complete",
         extra={
@@ -430,9 +506,20 @@ def _run(
             },
         )
 
+    # ── Held drafts: one shared Gmail client for NEG + review + expiry cleanup ─
+    gmail_client: GmailClient | None = None
+    if not dry_run:
+        gmail_client = GmailClient(settings.gmail_credentials_file, settings.gmail_token_file)
+
+    # Gigs whose create_draft call failed this tick — excluded from
+    # newly_seen below (see that block) so they're retried next tick instead
+    # of being silently lost forever (SeenFilter would otherwise drop them).
+    draft_failed_links: set[str] = set()
+
     # ── NEG drafts: render, persist, alert Telegram ───────────────────────────
     if neg_gigs and not dry_run:
-        _neg_notifier = Notifier(settings, SMTPTransport(password=settings.email_password))
+        assert gmail_client is not None
+        _draft_notifier = Notifier(settings, SMTPTransport(password=settings.email_password))
         _negotiable_fee = runtime_config.get("negotiable_fee", settings.negotiable_fee)
         _queued_ids: list[str] = []
         for gig in neg_gigs:
@@ -443,29 +530,134 @@ def _run(
                 )
                 continue
             try:
-                subject, body = _neg_notifier.draft_negotiation(gig, negotiable_fee=_negotiable_fee)
-                gig_id = application_store.record_neg_pending(
-                    gig,
-                    draft_subject=subject,
-                    draft_body=body,
-                    negotiable_fee=_negotiable_fee,
+                subject, body = _draft_notifier.draft_negotiation(
+                    gig, negotiable_fee=_negotiable_fee
                 )
-                _queued_ids.append(gig_id)
-                _send_neg_alert(gig, gig_id, subject, body)
+                draft_id = gmail_client.create_draft(
+                    sender=settings.email_sender,
+                    recipient=gig.email,
+                    cc=[settings.cc_email] if settings.cc_email else None,
+                    subject=subject,
+                    body_html=body,
+                )
+                try:
+                    gig_id, created = application_store.record_held_draft(
+                        gig,
+                        status="neg_pending",
+                        draft_id=draft_id,
+                        draft_subject=subject,
+                        hold_reason="fee_negotiation",
+                        negotiable_fee=_negotiable_fee,
+                    )
+                    if not created:
+                        try:
+                            gmail_client.delete_draft(draft_id)
+                        except Exception:
+                            logger.warning(
+                                "Could not delete orphaned duplicate draft",
+                                extra={"draft_id": draft_id, "link": gig.link},
+                            )
+                        continue
+                    _queued_ids.append(gig_id)
+                    _send_review_alert(
+                        gig,
+                        gig_id,
+                        status="neg_pending",
+                        hold_reason="fee_negotiation",
+                        negotiable_fee=_negotiable_fee,
+                    )
+                except Exception:
+                    # create_draft already succeeded — if anything after it
+                    # raises (record_held_draft, _send_review_alert), the
+                    # just-created draft would otherwise leak forever: the
+                    # outer except below adds this gig's link to
+                    # draft_failed_links so it's retried every tick, and each
+                    # retry calls create_draft again, producing a new orphan
+                    # on top of the last one. Delete it here before
+                    # re-raising so the outer except still logs/alerts/tracks
+                    # the failure exactly as it already does.
+                    try:
+                        gmail_client.delete_draft(draft_id)
+                    except Exception:
+                        logger.warning(
+                            "Could not delete orphaned draft after post-create failure",
+                            extra={"draft_id": draft_id, "link": gig.link},
+                        )
+                    raise
             except Exception:
-                logger.exception(
-                    "NEG draft failed for gig — skipping",
-                    extra={"link": gig.link},
-                )
-        logger.info(
-            "NEG drafts queued",
-            extra={"count": len(_queued_ids), "gig_ids": _queued_ids},
-        )
+                logger.exception("NEG draft failed for gig — skipping", extra={"link": gig.link})
+                alert.send_alert(f"⚠️ NEG draft failed for {gig.header} — {gig.link}")
+                if gig.link:
+                    draft_failed_links.add(gig.link)
+        logger.info("NEG drafts queued", extra={"count": len(_queued_ids), "gig_ids": _queued_ids})
     elif neg_gigs and dry_run:
+        logger.info("Phase 3 — DRY-RUN: would draft NEG gigs", extra={"count": len(neg_gigs)})
+
+    # ── Review drafts: render, persist, alert Telegram ─────────────────────────
+    if review_gigs and not dry_run:
+        assert gmail_client is not None
+        _review_notifier = Notifier(settings, SMTPTransport(password=settings.email_password))
+        _queued_review_ids: list[str] = []
+        for gig, hold_reason in review_gigs:
+            if not gig.email:
+                logger.warning(
+                    "Review draft skipped — no contact email",
+                    extra={"header": gig.header, "link": gig.link},
+                )
+                continue
+            try:
+                subject, body = _review_notifier.draft_application(gig)
+                draft_id = gmail_client.create_draft(
+                    sender=settings.email_sender,
+                    recipient=gig.email,
+                    cc=[settings.cc_email] if settings.cc_email else None,
+                    subject=subject,
+                    body_html=body,
+                )
+                try:
+                    gig_id, created = application_store.record_held_draft(
+                        gig,
+                        status="review_pending",
+                        draft_id=draft_id,
+                        draft_subject=subject,
+                        hold_reason=hold_reason,
+                    )
+                    if not created:
+                        try:
+                            gmail_client.delete_draft(draft_id)
+                        except Exception:
+                            logger.warning(
+                                "Could not delete orphaned duplicate draft",
+                                extra={"draft_id": draft_id, "link": gig.link},
+                            )
+                        continue
+                    _queued_review_ids.append(gig_id)
+                    _send_review_alert(
+                        gig, gig_id, status="review_pending", hold_reason=hold_reason
+                    )
+                except Exception:
+                    # See the matching comment in the NEG-drafts block above —
+                    # create_draft already succeeded, so delete the orphan
+                    # before re-raising to the outer except.
+                    try:
+                        gmail_client.delete_draft(draft_id)
+                    except Exception:
+                        logger.warning(
+                            "Could not delete orphaned draft after post-create failure",
+                            extra={"draft_id": draft_id, "link": gig.link},
+                        )
+                    raise
+            except Exception:
+                logger.exception("Review draft failed for gig — skipping", extra={"link": gig.link})
+                alert.send_alert(f"⚠️ Review draft failed for {gig.header} — {gig.link}")
+                if gig.link:
+                    draft_failed_links.add(gig.link)
         logger.info(
-            "Phase 3 — DRY-RUN: would draft NEG gigs",
-            extra={"count": len(neg_gigs)},
+            "Review drafts queued",
+            extra={"count": len(_queued_review_ids), "gig_ids": _queued_review_ids},
         )
+    elif review_gigs and dry_run:
+        logger.info("Phase 3 — DRY-RUN: would draft review gigs", extra={"count": len(review_gigs)})
 
     # ── Phase 3: Notify ───────────────────────────────────────────────────────
     if valid_gigs:
@@ -508,16 +700,41 @@ def _run(
     # (gig_list is empty when the listings-hash short-circuit returns early, so
     # this block is only reached on a changed-page run.)
     if not dry_run:
-        newly_seen = {g.link for g in gig_list if g.link}
+        newly_seen = {g.link for g in gig_list if g.link} - draft_failed_links
         if newly_seen:
             save_seen_gigs(seen=seen_gigs_set | newly_seen)
 
-    try:
-        expired = application_store.expire_past_applied()
-        if expired > 0:
-            logger.info("Expired past applications as no_response", extra={"count": expired})
-    except Exception:
-        logger.warning("application_store: expire_past_applied failed", exc_info=True)
+    # Guarded on the whole block (not just the Gmail-cleanup sub-block) so a
+    # dry-run never mutates the real applications.json — expire_past_applied
+    # writes directly to the live store regardless of dry_run, and without
+    # this guard a dry-run tick would flip a past-date neg_pending/
+    # review_pending row to "expired" while skipping the draft cleanup below
+    # (already dry_run-gated), permanently orphaning its Gmail draft since no
+    # future real tick would ever revisit an already-expired row.
+    if not dry_run:
+        try:
+            expired_rows = application_store.expire_past_applied()
+            if expired_rows:
+                logger.info("Expired past applications/drafts", extra={"count": len(expired_rows)})
+                if gmail_client is not None:
+                    for row in expired_rows:
+                        expired_draft_id = row.get("draft_id")
+                        if not expired_draft_id:
+                            continue
+                        try:
+                            gmail_client.delete_draft(expired_draft_id)
+                        except Exception as exc:
+                            if not is_not_found_error(exc):
+                                logger.warning(
+                                    "Could not delete Gmail draft for expired row",
+                                    extra={
+                                        "gig_id": row.get("gig_id"),
+                                        "draft_id": expired_draft_id,
+                                        "error": str(exc),
+                                    },
+                                )
+        except Exception:
+            logger.warning("application_store: expire_past_applied failed", exc_info=True)
 
     try:
         removed_suspensions = filter_suspension_store.purge_past_suspensions()
@@ -610,6 +827,8 @@ if __name__ == "__main__":
     else:
         alert.send_alert(f"🔄 Scheduler started (polling every {settings.poll_minutes} min)")
         warn_if_gmail_monitoring_unconfigured()
+        warn_if_gmail_write_scope_missing()
+        warn_if_gig_classifier_unconfigured()
 
     scraper = Scraper()
     try:

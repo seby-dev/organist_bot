@@ -6,6 +6,7 @@ import base64
 import logging
 import os
 import tempfile
+from email.mime.text import MIMEText
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -50,7 +51,10 @@ class GmailClient:
         from google.oauth2.credentials import Credentials
         from googleapiclient.discovery import build
 
-        scopes = ["https://www.googleapis.com/auth/gmail.readonly"]
+        scopes = [
+            "https://www.googleapis.com/auth/gmail.readonly",
+            "https://www.googleapis.com/auth/gmail.compose",
+        ]
         creds = None
         token_path = Path(self._token_file)
 
@@ -187,6 +191,74 @@ class GmailClient:
 
         return results
 
+    def create_draft(
+        self,
+        *,
+        sender: str,
+        recipient: str,
+        cc: list[str] | None,
+        subject: str,
+        body_html: str,
+    ) -> str:
+        """Create a Gmail draft addressed to recipient. Returns the new draft id.
+
+        Raises on any API failure — callers decide whether to catch (see
+        main.py's NEG/review-drafts blocks, which log+alert and skip the gig
+        rather than let one gig's failure drop the rest of the tick).
+        """
+        msg = MIMEText(body_html, "html")
+        msg["Subject"] = subject
+        msg["From"] = sender
+        msg["To"] = recipient
+        if cc:
+            msg["Cc"] = ", ".join(cc)
+        raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
+        service = self._get_service()
+        draft = (
+            service.users().drafts().create(userId="me", body={"message": {"raw": raw}}).execute()
+        )
+        return draft["id"]
+
+    def send_draft(self, draft_id: str) -> None:
+        """Send exactly what's currently in the draft — drafts().send. Raises
+        on failure, including a 404 if the draft no longer exists (callers
+        use is_not_found_error to distinguish that case — see §7 of the spec)."""
+        service = self._get_service()
+        service.users().drafts().send(userId="me", body={"id": draft_id}).execute()
+
+    def delete_draft(self, draft_id: str) -> None:
+        """Delete a draft. Raises on failure, including a 404 if it's already
+        gone (callers use is_not_found_error to treat that as success)."""
+        service = self._get_service()
+        service.users().drafts().delete(userId="me", id=draft_id).execute()
+
+    def has_compose_access(self) -> bool:
+        """True if this token can create AND delete a draft.
+
+        A mere drafts().list() call would succeed even under the OLD
+        gmail.readonly-only scope (listing drafts is a read operation), so
+        it can't distinguish "has compose" from "read-only" — only a real
+        create (+ immediate cleanup delete) genuinely exercises write access.
+        Never raises — used only by the startup smoke-check in main.py,
+        which alerts on False rather than crashing the scheduler.
+        """
+        try:
+            service = self._get_service()
+            msg = MIMEText("")
+            msg["Subject"] = "OrganistBot scope check (safe to ignore/delete)"
+            raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
+            draft = (
+                service.users()
+                .drafts()
+                .create(userId="me", body={"message": {"raw": raw}})
+                .execute()
+            )
+            service.users().drafts().delete(userId="me", id=draft["id"]).execute()
+            return True
+        except Exception as exc:
+            logger.warning("Gmail: compose-access smoke check failed: %s", exc)
+            return False
+
 
 def _extract_body(payload: dict) -> str:
     """Recursively extract plain-text body from a Gmail message payload."""
@@ -201,3 +273,81 @@ def _extract_body(payload: dict) -> str:
         if body:
             return body
     return ""
+
+
+class GmailNotFoundError(Exception):
+    """Test-double stand-in for a 404 googleapiclient.errors.HttpError —
+    carries status_code so is_not_found_error() recognizes it without
+    needing the real HttpError's httplib2.Response machinery."""
+
+    status_code = 404
+
+
+def is_not_found_error(exc: Exception) -> bool:
+    """True if exc represents an HTTP 404 (the draft no longer exists).
+
+    Checks both the real googleapiclient HttpError shape and a generic
+    status_code attribute so test doubles (FakeGmailClient, GmailNotFoundError)
+    can signal the same condition without needing the real Gmail SDK's
+    exception type.
+    """
+    from googleapiclient.errors import HttpError
+
+    if isinstance(exc, HttpError):
+        return exc.resp.status == 404
+    return getattr(exc, "status_code", None) == 404
+
+
+class FakeGmailClient:
+    """Records create_draft/send_draft/delete_draft/has_compose_access calls
+    without touching the network. Use in tests — mirrors notifier.FakeTransport.
+    """
+
+    def __init__(self, *, compose_access: bool = True) -> None:
+        self.created: list[dict] = []
+        self.sent: list[str] = []
+        self.deleted: list[str] = []
+        self._compose_access = compose_access
+        self._next_id = 0
+        self._not_found_ids: set[str] = set()
+
+    def create_draft(
+        self,
+        *,
+        sender: str,
+        recipient: str,
+        cc: list[str] | None,
+        subject: str,
+        body_html: str,
+    ) -> str:
+        self._next_id += 1
+        draft_id = f"fake-draft-{self._next_id}"
+        self.created.append(
+            {
+                "draft_id": draft_id,
+                "sender": sender,
+                "recipient": recipient,
+                "cc": cc,
+                "subject": subject,
+                "body_html": body_html,
+            }
+        )
+        return draft_id
+
+    def send_draft(self, draft_id: str) -> None:
+        if draft_id in self._not_found_ids:
+            raise GmailNotFoundError(f"draft {draft_id} not found")
+        self.sent.append(draft_id)
+
+    def delete_draft(self, draft_id: str) -> None:
+        if draft_id in self._not_found_ids:
+            raise GmailNotFoundError(f"draft {draft_id} not found")
+        self.deleted.append(draft_id)
+
+    def has_compose_access(self) -> bool:
+        return self._compose_access
+
+    def simulate_not_found(self, draft_id: str) -> None:
+        """Test helper: make a later send_draft/delete_draft(draft_id) raise
+        a 404-shaped error instead of succeeding."""
+        self._not_found_ids.add(draft_id)

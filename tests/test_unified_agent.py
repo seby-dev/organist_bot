@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from organist_bot.integrations.gmail_client import FakeGmailClient, GmailNotFoundError
 from organist_bot.integrations.unified_agent import (
     TOOLS,
     UnifiedAgent,
@@ -2067,12 +2068,12 @@ async def test_manage_config_rejects_negotiable_fee_out_of_range(tmp_path, monke
 # ── NEG-application agent tools ───────────────────────────────────────────────
 
 
-def _seed_neg_pending(link="https://e.com/a"):
-    from organist_bot.models import Gig
+def _held_gig(link="https://e.com/1"):
+    from organist_bot.models import Gig  # local import to keep this helper self-contained
 
-    gig = Gig(
-        header="Test",
-        organisation="Org",
+    return Gig(
+        header="Sunday Service",
+        organisation="St Mary's",
         locality="London",
         date="Sunday, July 12, 2026",
         time="10:00 AM",
@@ -2081,165 +2082,319 @@ def _seed_neg_pending(link="https://e.com/a"):
         contact="Jane",
         email="jane@example.com",
     )
-    return application_store.record_neg_pending(
-        gig,
-        draft_subject="Subject",
-        draft_body="<p>Body</p>",
-        negotiable_fee=120,
-    )
 
 
 @pytest.fixture
-def neg_store(tmp_path, monkeypatch):
-    unified_agent._active_neg_draft.pop(1, None)
+def held_store(tmp_path, monkeypatch):
     monkeypatch.setattr(application_store, "_PATH", tmp_path / "applications.json")
 
 
-class TestNegTools:
-    async def test_list_neg_pending_returns_pending_rows(self, neg_store):
-        gig_id = _seed_neg_pending()
-        out = json.loads(await _TOOL_HANDLERS["list_neg_pending"]({}, 1))
-        assert gig_id in out["result"]
-        assert "Test" in out["result"]
+def _write_legacy_neg_pending_row(gig_id: str, url: str = "https://e.com/legacy") -> None:
+    """Write a row in the OLD pre-feature shape directly to the store file:
+    draft_body/draft_subject but no draft_id key at all (real Gmail drafts
+    didn't exist yet when these were written). Bypasses record_held_draft,
+    which now requires draft_id, to simulate data left over from before this
+    feature shipped."""
+    row = {
+        "gig_id": gig_id,
+        "url": url,
+        "header": "Sunday Service",
+        "organisation": "St Mary's",
+        "contact": "Jane",
+        "date": "Sunday, July 12, 2026",
+        "time": "10:00 AM",
+        "fee": "NEG",
+        "email": "jane@example.com",
+        "postcode": "",
+        "status": "neg_pending",
+        "draft_body": "Dear Jane, ...",
+        "draft_subject": "Application",
+        "negotiable_fee": 120,
+        "hold_reason": "fee_negotiation",
+        "created_at": "2026-01-01T00:00:00Z",
+        "updated_at": "2026-01-01T00:00:00Z",
+        "decided_at": None,
+        "decision": None,
+    }
+    application_store._PATH.write_text(json.dumps([row]))
 
-    async def test_list_neg_pending_empty(self, neg_store):
-        out = json.loads(await _TOOL_HANDLERS["list_neg_pending"]({}, 1))
-        assert "No NEG drafts pending" in out["result"]
 
-    async def test_approve_returns_confirm_buttons(self, neg_store):
-        gig_id = _seed_neg_pending()
-        out = json.loads(await _TOOL_HANDLERS["approve_neg_application"]({"gig_id": gig_id}, 1))
-        assert "confirm" in out["result"].lower() or "will send" in out["result"].lower()
-        assert out["buttons"] == [
+class TestListPendingDrafts:
+    async def test_returns_pending_rows_across_both_statuses(self, held_store):
+        application_store.record_held_draft(
+            _held_gig("https://e.com/1"),
+            status="neg_pending",
+            draft_id="d1",
+            draft_subject="S",
+            hold_reason="fee_negotiation",
+            negotiable_fee=120,
+        )
+        application_store.record_held_draft(
+            _held_gig("https://e.com/2"),
+            status="review_pending",
+            draft_id="d2",
+            draft_subject="S",
+            hold_reason="weekday",
+        )
+        result = await unified_agent._execute_tool("list_pending_drafts", {}, chat_id=1)
+        data = json.loads(result)
+        assert "2 draft(s)" in data["result"]
+        assert "fee_negotiation" in data["result"]
+        assert "weekday" in data["result"]
+
+    async def test_empty_when_nothing_pending(self, held_store):
+        result = await unified_agent._execute_tool("list_pending_drafts", {}, chat_id=1)
+        assert json.loads(result)["result"] == "No drafts pending review."
+
+
+class TestReviewButtons:
+    def test_review_accept_buttons_shape(self):
+        buttons = unified_agent.review_accept_buttons("abc123")
+        assert buttons == [
             [
-                {"text": "Confirm", "callback_data": f"neg:confirm_send:{gig_id}"},
-                {"text": "Cancel", "callback_data": f"neg:cancel:{gig_id}"},
+                {"text": "✅ Accept", "callback_data": "review:accept:abc123"},
+                {"text": "❌ Decline", "callback_data": "review:decline:abc123"},
             ]
         ]
-        assert application_store._read()[0]["status"] == "neg_pending"
 
-    async def test_approve_unknown_gig_id_returns_error(self, neg_store):
-        out = json.loads(
-            await _TOOL_HANDLERS["approve_neg_application"]({"gig_id": "deadbeefcafe"}, 1)
-        )
-        assert "no draft found" in out["result"].lower()
-        assert "buttons" not in out
-
-    async def test_approve_unknown_gig_id_does_not_poison_active_draft(self, neg_store):
-        await _TOOL_HANDLERS["approve_neg_application"]({"gig_id": "deadbeefcafe"}, 1)
-        assert unified_agent.get_active_neg_draft(1) is None
-
-    async def test_approve_already_applied_returns_already(self, neg_store):
-        gig_id = _seed_neg_pending()
-        application_store.transition_neg_pending(gig_id, to="applied")
-        out = json.loads(await _TOOL_HANDLERS["approve_neg_application"]({"gig_id": gig_id}, 1))
-        assert "already" in out["result"].lower()
-
-    async def test_approve_omitted_gig_id_resolves_single_pending(self, neg_store):
-        gig_id = _seed_neg_pending()
-        out = json.loads(await _TOOL_HANDLERS["approve_neg_application"]({}, 1))
-        assert out["buttons"][0][0]["callback_data"] == f"neg:confirm_send:{gig_id}"
-
-    async def test_approve_omitted_gig_id_multiple_pending_needs_pick(self, neg_store):
-        id_a = _seed_neg_pending(link="https://e.com/a")
-        id_b = _seed_neg_pending(link="https://e.com/b")
-        out = json.loads(await _TOOL_HANDLERS["approve_neg_application"]({}, 1))
-        assert out.get("needs_pick") is True
-        picked_ids = {row[0]["callback_data"] for row in out["buttons"]}
-        assert picked_ids == {f"neg:pick:{id_a}", f"neg:pick:{id_b}"}
-
-    async def test_approve_omitted_gig_id_uses_active_draft(self, neg_store):
-        id_a = _seed_neg_pending(link="https://e.com/a")
-        _seed_neg_pending(link="https://e.com/b")
-        unified_agent.set_active_neg_draft(1, id_a)
-        try:
-            out = json.loads(await _TOOL_HANDLERS["approve_neg_application"]({}, 1))
-        finally:
-            unified_agent._active_neg_draft.pop(1, None)
-        assert out["buttons"][0][0]["callback_data"] == f"neg:confirm_send:{id_a}"
-
-    async def test_edit_with_new_body_persists_and_returns_draft_buttons(self, neg_store):
-        gig_id = _seed_neg_pending()
-        out = json.loads(
-            await _TOOL_HANDLERS["edit_neg_application"](
-                {"gig_id": gig_id, "new_body": "<p>EDITED</p>"}, 1
-            )
-        )
-        assert "EDITED" in out["result"]
-        assert out["buttons"] == [
+    def test_review_confirm_send_buttons_shape(self):
+        buttons = unified_agent.review_confirm_send_buttons("abc123")
+        assert buttons == [
             [
-                {"text": "✅ Accept", "callback_data": f"neg:accept:{gig_id}"},
-                {"text": "✏️ Edit", "callback_data": f"neg:edit:{gig_id}"},
-                {"text": "❌ Reject", "callback_data": f"neg:reject:{gig_id}"},
+                {"text": "Confirm", "callback_data": "review:confirm_send:abc123"},
+                {"text": "Cancel", "callback_data": "review:cancel:abc123"},
             ]
         ]
-        r = application_store._read()[0]
-        assert r["status"] == "neg_pending"
-        assert "EDITED" in r["draft_body"]
 
-    async def test_edit_requires_new_body_or_new_fee(self, neg_store):
-        gig_id = _seed_neg_pending()
-        out = json.loads(await _TOOL_HANDLERS["edit_neg_application"]({"gig_id": gig_id}, 1))
-        assert "new_body or new_fee" in out["result"]
-        assert "buttons" not in out
 
-    async def test_edit_with_new_fee_rerenders_and_persists(self, neg_store):
-        gig_id = _seed_neg_pending()
-        out = json.loads(
-            await _TOOL_HANDLERS["edit_neg_application"]({"gig_id": gig_id, "new_fee": 150}, 1)
+class TestReviewConfirmSend:
+    async def test_success_sends_draft_and_transitions_to_applied(self, held_store, monkeypatch):
+        fake_gmail = FakeGmailClient()
+        draft_id = fake_gmail.create_draft(
+            sender="bot@test.com",
+            recipient="jane@example.com",
+            cc=None,
+            subject="S",
+            body_html="B",
         )
-        assert "£150" in out["result"]
-        r = application_store._read()[0]
-        assert "£150" in r["draft_body"]
-        assert r["negotiable_fee"] == 150
-        assert r["status"] == "neg_pending"
+        monkeypatch.setattr(unified_agent, "_make_gmail_client", lambda: fake_gmail)
+        gig_id, _ = application_store.record_held_draft(
+            _held_gig(),
+            status="review_pending",
+            draft_id=draft_id,
+            draft_subject="S",
+            hold_reason="weekday",
+        )
+        ok, result = await unified_agent.review_confirm_send(gig_id)
+        assert ok is True
+        assert "jane@example.com" in result
+        assert fake_gmail.sent == [draft_id]
+        assert application_store.get_by_gig_id(gig_id)["status"] == "applied"
 
-    async def test_edit_sets_active_draft(self, neg_store):
-        gig_id = _seed_neg_pending()
-        await _TOOL_HANDLERS["edit_neg_application"]({"gig_id": gig_id, "new_fee": 150}, 42)
-        try:
-            assert unified_agent.get_active_neg_draft(42) == gig_id
-        finally:
-            unified_agent._active_neg_draft.pop(42, None)
+    async def test_unknown_gig_id_returns_error(self, held_store):
+        ok, result = await unified_agent.review_confirm_send("deadbeefcafe")
+        assert ok is False
+        assert "No draft found" in result
 
-    async def test_reject_returns_confirm_buttons(self, neg_store):
-        gig_id = _seed_neg_pending()
-        out = json.loads(await _TOOL_HANDLERS["reject_neg_application"]({"gig_id": gig_id}, 1))
-        assert out["buttons"] == [
-            [
-                {"text": "Confirm", "callback_data": f"neg:confirm_reject:{gig_id}"},
-                {"text": "Cancel", "callback_data": f"neg:cancel:{gig_id}"},
-            ]
-        ]
-        assert application_store._read()[0]["status"] == "neg_pending"
+    async def test_legacy_row_without_draft_id_returns_error_without_calling_gmail(
+        self, held_store, monkeypatch
+    ):
+        """A neg_pending row written before this feature shipped (no
+        draft_id field) must return a clean legacy-row message instead of
+        raising KeyError, and must never reach gmail_client.send_draft —
+        there is nothing to send."""
+        fake_gmail = FakeGmailClient()
+        monkeypatch.setattr(unified_agent, "_make_gmail_client", lambda: fake_gmail)
+        gig_id = "legacy0001aa"
+        _write_legacy_neg_pending_row(gig_id)
+        ok, result = await unified_agent.review_confirm_send(gig_id)
+        assert ok is False
+        assert "legacy draft" in result.lower()
+        assert fake_gmail.sent == []
 
-    async def test_reject_omitted_gig_id_no_pending_returns_error(self, neg_store):
-        out = json.loads(await _TOOL_HANDLERS["reject_neg_application"]({}, 1))
-        assert "no draft found" in out["result"].lower() or "no neg drafts" in out["result"].lower()
+    async def test_already_decided_returns_already_message(self, held_store, monkeypatch):
+        fake_gmail = FakeGmailClient()
+        draft_id = fake_gmail.create_draft(
+            sender="bot@test.com",
+            recipient="jane@example.com",
+            cc=None,
+            subject="S",
+            body_html="B",
+        )
+        monkeypatch.setattr(unified_agent, "_make_gmail_client", lambda: fake_gmail)
+        gig_id, _ = application_store.record_held_draft(
+            _held_gig(),
+            status="review_pending",
+            draft_id=draft_id,
+            draft_subject="S",
+            hold_reason="weekday",
+        )
+        application_store.transition_held(gig_id, to="rejected")
+        ok, result = await unified_agent.review_confirm_send(gig_id)
+        assert ok is False
+        assert "Already rejected" in result
+
+    async def test_send_failure_keeps_row_pending(self, held_store, monkeypatch):
+        fake_gmail = MagicMock()
+        fake_gmail.send_draft.side_effect = RuntimeError("SMTP down")
+        monkeypatch.setattr(unified_agent, "_make_gmail_client", lambda: fake_gmail)
+        gig_id, _ = application_store.record_held_draft(
+            _held_gig(),
+            status="review_pending",
+            draft_id="d1",
+            draft_subject="S",
+            hold_reason="weekday",
+        )
+        ok, result = await unified_agent.review_confirm_send(gig_id)
+        assert ok is False
+        assert "Send failed" in result
+        assert application_store.get_by_gig_id(gig_id)["status"] == "review_pending"
+
+    async def test_404_on_send_when_row_already_applied_shows_already_sent(
+        self, held_store, monkeypatch
+    ):
+        """Simulates the actual race the 404-on-send branch exists for: this
+        call finds the row still pending (so it proceeds to send_draft), but
+        by the time send_draft actually runs, a concurrent tap/path has
+        already sent it and transitioned the row to applied -- send_draft
+        then 404s because the draft it's targeting is already gone. Setting
+        the row to applied BEFORE calling review_confirm_send would instead
+        make _find_held_row return None immediately (row no longer pending)
+        and never reach send_draft at all -- that's a different, already
+        -covered code path (the plain "already decided" lookup error)."""
+        gig_id, _ = application_store.record_held_draft(
+            _held_gig(),
+            status="review_pending",
+            draft_id="draft-1",
+            draft_subject="S",
+            hold_reason="weekday",
+        )
+
+        def _send_draft_raced(draft_id):
+            application_store.transition_held(gig_id, to="applied")
+            raise GmailNotFoundError(f"draft {draft_id} not found")
+
+        fake_gmail = MagicMock()
+        fake_gmail.send_draft.side_effect = _send_draft_raced
+        monkeypatch.setattr(unified_agent, "_make_gmail_client", lambda: fake_gmail)
+
+        ok, result = await unified_agent.review_confirm_send(gig_id)
+        assert ok is True
+        assert "Already sent" in result
+
+    async def test_404_on_send_when_row_still_pending_shows_no_action_message(
+        self, held_store, monkeypatch
+    ):
+        fake_gmail = FakeGmailClient()
+        draft_id = fake_gmail.create_draft(
+            sender="bot@test.com",
+            recipient="jane@example.com",
+            cc=None,
+            subject="S",
+            body_html="B",
+        )
+        fake_gmail.simulate_not_found(draft_id)
+        monkeypatch.setattr(unified_agent, "_make_gmail_client", lambda: fake_gmail)
+        gig_id, _ = application_store.record_held_draft(
+            _held_gig(),
+            status="review_pending",
+            draft_id=draft_id,
+            draft_subject="S",
+            hold_reason="weekday",
+        )
+        ok, result = await unified_agent.review_confirm_send(gig_id)
+        assert ok is False
+        assert "no longer exists in Gmail" in result
+        assert application_store.get_by_gig_id(gig_id)["status"] == "review_pending"
+
+
+class TestReviewDecline:
+    def test_success_deletes_draft_and_transitions_to_rejected(self, held_store, monkeypatch):
+        fake_gmail = FakeGmailClient()
+        draft_id = fake_gmail.create_draft(
+            sender="bot@test.com",
+            recipient="jane@example.com",
+            cc=None,
+            subject="S",
+            body_html="B",
+        )
+        monkeypatch.setattr(unified_agent, "_make_gmail_client", lambda: fake_gmail)
+        gig_id, _ = application_store.record_held_draft(
+            _held_gig(),
+            status="neg_pending",
+            draft_id=draft_id,
+            draft_subject="S",
+            hold_reason="fee_negotiation",
+            negotiable_fee=120,
+        )
+        ok, result = unified_agent.review_decline(gig_id)
+        assert ok is True
+        assert fake_gmail.deleted == [draft_id]
+        assert application_store.get_by_gig_id(gig_id)["status"] == "rejected"
+
+    def test_404_on_delete_still_treated_as_success(self, held_store, monkeypatch):
+        fake_gmail = FakeGmailClient()
+        draft_id = fake_gmail.create_draft(
+            sender="bot@test.com",
+            recipient="jane@example.com",
+            cc=None,
+            subject="S",
+            body_html="B",
+        )
+        fake_gmail.simulate_not_found(draft_id)
+        monkeypatch.setattr(unified_agent, "_make_gmail_client", lambda: fake_gmail)
+        gig_id, _ = application_store.record_held_draft(
+            _held_gig(),
+            status="review_pending",
+            draft_id=draft_id,
+            draft_subject="S",
+            hold_reason="weekday",
+        )
+        ok, result = unified_agent.review_decline(gig_id)
+        assert ok is True
+        assert application_store.get_by_gig_id(gig_id)["status"] == "rejected"
+
+    def test_delete_failure_keeps_row_pending(self, held_store, monkeypatch):
+        fake_gmail = MagicMock()
+        fake_gmail.delete_draft.side_effect = RuntimeError("network down")
+        monkeypatch.setattr(unified_agent, "_make_gmail_client", lambda: fake_gmail)
+        gig_id, _ = application_store.record_held_draft(
+            _held_gig(),
+            status="review_pending",
+            draft_id="d1",
+            draft_subject="S",
+            hold_reason="weekday",
+        )
+        ok, result = unified_agent.review_decline(gig_id)
+        assert ok is False
+        assert "Delete failed" in result
+        assert application_store.get_by_gig_id(gig_id)["status"] == "review_pending"
+
+    def test_unknown_gig_id_returns_error(self, held_store):
+        ok, result = unified_agent.review_decline("deadbeefcafe")
+        assert ok is False
+        assert "No draft found" in result
+
+    def test_legacy_row_without_draft_id_returns_error_without_calling_gmail(
+        self, held_store, monkeypatch
+    ):
+        """A neg_pending row written before this feature shipped (no
+        draft_id field) must return a clean legacy-row message instead of
+        raising KeyError, and must never reach gmail_client.delete_draft —
+        there is nothing to delete."""
+        fake_gmail = FakeGmailClient()
+        monkeypatch.setattr(unified_agent, "_make_gmail_client", lambda: fake_gmail)
+        gig_id = "legacy0002bb"
+        _write_legacy_neg_pending_row(gig_id, url="https://e.com/legacy2")
+        ok, result = unified_agent.review_decline(gig_id)
+        assert ok is False
+        assert "legacy draft" in result.lower()
+        assert fake_gmail.deleted == []
 
 
 # ── NEG active-draft state, buttons, and deterministic actions ──────────────
 
 from organist_bot.integrations import unified_agent  # noqa: E402
-
-
-class TestNegActiveDraftState:
-    def test_set_and_get_active_neg_draft(self):
-        unified_agent.set_active_neg_draft(999, "abc123")
-        try:
-            assert unified_agent.get_active_neg_draft(999) == "abc123"
-        finally:
-            unified_agent._active_neg_draft.pop(999, None)
-
-    def test_get_active_neg_draft_defaults_to_none(self):
-        assert unified_agent.get_active_neg_draft(88888) is None
-
-    def test_stash_and_pop_pending_neg_instruction(self):
-        unified_agent.stash_pending_neg_instruction(999, "raise the fee to 180")
-        assert unified_agent.pop_pending_neg_instruction(999) == "raise the fee to 180"
-        # pop is destructive — a second pop finds nothing.
-        assert unified_agent.pop_pending_neg_instruction(999) is None
-
 
 # ── _trim_history ─────────────────────────────────────────────────────────────
 
@@ -2306,26 +2461,6 @@ class TestTrimHistory:
     def test_missing_chat_id_is_a_noop(self):
         unified_agent._trim_history(self.CHAT_ID)  # no entry for this chat_id at all
         assert self.CHAT_ID not in unified_agent._histories
-
-
-class TestNegConfirmButtons:
-    def test_send_buttons_use_confirm_send_callback(self):
-        buttons = unified_agent.neg_confirm_buttons("abc123", send=True)
-        assert buttons == [
-            [
-                {"text": "Confirm", "callback_data": "neg:confirm_send:abc123"},
-                {"text": "Cancel", "callback_data": "neg:cancel:abc123"},
-            ]
-        ]
-
-    def test_reject_buttons_use_confirm_reject_callback(self):
-        buttons = unified_agent.neg_confirm_buttons("abc123", send=False)
-        assert buttons == [
-            [
-                {"text": "Confirm", "callback_data": "neg:confirm_reject:abc123"},
-                {"text": "Cancel", "callback_data": "neg:cancel:abc123"},
-            ]
-        ]
 
 
 class TestManageLlmProvider:
@@ -2552,87 +2687,6 @@ class TestLlmConfirmAndCancelSwitch:
         ok, message = unified_agent.llm_cancel_switch(CHAT_ID, "openai", "gpt-5.6-luna")
         assert ok is False
         assert unified_agent._pending_llm_switch[CHAT_ID] == ("gemini", "gemini-pro")
-
-
-class TestNegDeterministicActions:
-    async def test_neg_confirm_send_success(self, neg_store):
-        gig_id = _seed_neg_pending()
-        with patch("organist_bot.integrations.unified_agent.send_application_email") as mock_send:
-            ok, msg = await unified_agent.neg_confirm_send(gig_id)
-        assert ok is True
-        assert "sent" in msg.lower()
-        mock_send.assert_called_once()
-        assert application_store._read()[0]["status"] == "applied"
-
-    async def test_neg_confirm_send_unknown_id(self, neg_store):
-        ok, msg = await unified_agent.neg_confirm_send("deadbeefcafe")
-        assert ok is False
-        assert "no draft found" in msg.lower()
-
-    async def test_neg_confirm_send_already_decided(self, neg_store):
-        gig_id = _seed_neg_pending()
-        application_store.transition_neg_pending(gig_id, to="rejected")
-        ok, msg = await unified_agent.neg_confirm_send(gig_id)
-        assert ok is False
-        assert "already" in msg.lower()
-
-    async def test_neg_confirm_send_failure_keeps_row_pending(self, neg_store):
-        gig_id = _seed_neg_pending()
-        with patch(
-            "organist_bot.integrations.unified_agent.send_application_email",
-            side_effect=RuntimeError("smtp down"),
-        ):
-            ok, msg = await unified_agent.neg_confirm_send(gig_id)
-        assert ok is False
-        assert "failed" in msg.lower()
-        assert application_store._read()[0]["status"] == "neg_pending"
-
-    async def test_neg_confirm_send_reports_sent_when_transition_fails(self, neg_store):
-        """If the email send succeeds but recording the transition fails (a
-        losing race, or a disk write error), the message must say the email
-        was sent — not leave the user thinking it wasn't."""
-        gig_id = _seed_neg_pending()
-        with (
-            patch("organist_bot.integrations.unified_agent.send_application_email"),
-            patch(
-                "organist_bot.integrations.unified_agent.application_store.transition_neg_pending",
-                return_value=False,
-            ),
-        ):
-            ok, msg = await unified_agent.neg_confirm_send(gig_id)
-        assert ok is False
-        assert "sent to" in msg.lower()
-        assert "failed to record" in msg.lower()
-
-    def test_neg_confirm_reject_success(self, neg_store):
-        gig_id = _seed_neg_pending()
-        ok, msg = unified_agent.neg_confirm_reject(gig_id)
-        assert ok is True
-        assert "rejected" in msg.lower()
-        assert application_store._read()[0]["status"] == "rejected"
-
-    def test_neg_confirm_reject_already_decided(self, neg_store):
-        gig_id = _seed_neg_pending()
-        application_store.transition_neg_pending(gig_id, to="applied")
-        ok, msg = unified_agent.neg_confirm_reject(gig_id)
-        assert ok is False
-
-    def test_neg_draft_view_returns_text_and_buttons(self, neg_store):
-        gig_id = _seed_neg_pending()
-        view = unified_agent.neg_draft_view(gig_id)
-        assert view is not None
-        text, buttons = view
-        assert gig_id in text
-        assert buttons == [
-            [
-                {"text": "✅ Accept", "callback_data": f"neg:accept:{gig_id}"},
-                {"text": "✏️ Edit", "callback_data": f"neg:edit:{gig_id}"},
-                {"text": "❌ Reject", "callback_data": f"neg:reject:{gig_id}"},
-            ]
-        ]
-
-    def test_neg_draft_view_none_when_not_pending(self, neg_store):
-        assert unified_agent.neg_draft_view("deadbeefcafe") is None
 
 
 def test_agent_response_buttons_defaults_to_none():
@@ -3708,7 +3762,7 @@ async def test_process_message_passes_through_tool_buttons(tmp_path, monkeypatch
     unified_agent._hydrated.discard(cid)
 
     tool_use_response = _fake_litellm_response(
-        tool_calls=[_fake_tool_call("t1", "approve_neg_application", {"gig_id": "abc123"})]
+        tool_calls=[_fake_tool_call("t1", "list_pending_drafts", {})]
     )
     end_turn_response = _fake_litellm_response(content="ok")
 
@@ -3716,7 +3770,7 @@ async def test_process_message_passes_through_tool_buttons(tmp_path, monkeypatch
         litellm, "acompletion", AsyncMock(side_effect=[tool_use_response, end_turn_response])
     )
 
-    buttons = [[{"text": "Confirm", "callback_data": "neg:confirm_send:abc123"}]]
+    buttons = [[{"text": "Confirm", "callback_data": "review:confirm_send:abc123"}]]
     monkeypatch.setattr(
         unified_agent,
         "_execute_tool",
@@ -3724,54 +3778,12 @@ async def test_process_message_passes_through_tool_buttons(tmp_path, monkeypatch
     )
 
     try:
-        responses = await unified_agent.process_message(cid, "approve abc123")
+        responses = await unified_agent.process_message(cid, "what's pending?")
     finally:
         unified_agent._histories.pop(cid, None)
         unified_agent._hydrated.discard(cid)
 
     assert responses[0].buttons == buttons
-
-
-@pytest.mark.asyncio
-async def test_process_message_stashes_instruction_on_needs_pick(tmp_path, monkeypatch):
-    import litellm
-
-    from organist_bot.integrations import agent_state, unified_agent
-
-    monkeypatch.setattr(agent_state, "_PATH", tmp_path / "agent_state.json")
-    cid = 535353
-    unified_agent._hydrated.discard(cid)
-    unified_agent._pending_neg_instruction.pop(cid, None)
-
-    tool_use_response = _fake_litellm_response(
-        tool_calls=[_fake_tool_call("t1", "approve_neg_application", {})]
-    )
-    end_turn_response = _fake_litellm_response(content="ok")
-
-    monkeypatch.setattr(
-        litellm, "acompletion", AsyncMock(side_effect=[tool_use_response, end_turn_response])
-    )
-
-    picker_buttons = [[{"text": "A", "callback_data": "neg:pick:aaa"}]]
-    monkeypatch.setattr(
-        unified_agent,
-        "_execute_tool",
-        AsyncMock(
-            return_value=json.dumps(
-                {"result": "Which draft?", "buttons": picker_buttons, "needs_pick": True}
-            )
-        ),
-    )
-
-    try:
-        responses = await unified_agent.process_message(cid, "approve it")
-        assert unified_agent.pop_pending_neg_instruction(cid) == "approve it"
-    finally:
-        unified_agent._histories.pop(cid, None)
-        unified_agent._hydrated.discard(cid)
-        unified_agent._pending_neg_instruction.pop(cid, None)
-
-    assert responses[0].buttons == picker_buttons
 
 
 def test_settings_has_openai_and_gemini_api_key_fields(monkeypatch):
