@@ -37,7 +37,7 @@ from collections.abc import Mapping, MutableMapping
 from pathlib import Path
 from typing import Any
 
-from structlog.dev import ConsoleRenderer
+from structlog.dev import ConsoleRenderer, RichTracebackFormatter
 from structlog.processors import EventRenamer, ExceptionRenderer, JSONRenderer, TimeStamper
 from structlog.stdlib import ExtraAdder, ProcessorFormatter, add_log_level
 from structlog.tracebacks import ExceptionDictTransformer
@@ -106,12 +106,20 @@ def _build_json_formatter() -> ProcessorFormatter:
 
 
 def _build_console_formatter() -> ProcessorFormatter:
-    """Colorized, human-readable pipeline for an interactive terminal."""
+    """Colorized, human-readable pipeline for an interactive terminal.
+
+    Explicitly disables rich's traceback locals (mirrors the JSON path's
+    ExceptionDictTransformer(show_locals=False)) — otherwise, because rich is
+    installed transitively (via litellm), structlog would default to
+    RichTracebackFormatter(show_locals=True), rendering every local variable
+    (including secrets like passwords or API keys) into an exception logged
+    to an interactive terminal.
+    """
     return ProcessorFormatter(
         foreign_pre_chain=_FOREIGN_PRE_CHAIN,
         processors=[
             ProcessorFormatter.remove_processors_meta,
-            ConsoleRenderer(),
+            ConsoleRenderer(exception_formatter=RichTracebackFormatter(show_locals=False)),
         ],
     )
 

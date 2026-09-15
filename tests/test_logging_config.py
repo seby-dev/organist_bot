@@ -9,6 +9,7 @@ from structlog.stdlib import ProcessorFormatter
 
 from organist_bot.logging_config import (
     RunIdFilter,
+    _build_console_formatter,
     _build_json_formatter,
     _select_console_formatter,
     set_run_id,
@@ -126,6 +127,34 @@ class TestJSONFormatterPipeline:
         for frame in doc["exception"][0]["frames"]:
             assert "locals" not in frame
         assert "super-secret-value" not in json.dumps(doc)
+
+    def test_console_exception_never_includes_locals(self):
+        """Console/tty pipeline: rich's exception formatter must not render locals
+        either — mirrors test_exception_never_includes_locals but for the
+        ConsoleRenderer path, which defaults to show_locals=True unless overridden.
+
+        The secret is assembled at runtime (not written as a literal in this
+        source file) so the assertion can only pass because locals are
+        suppressed — not merely because rich's normal "show the source line"
+        code context happens not to echo a literal string.
+        """
+        secret_parts = ["super", "-secret", "-value"]
+        secret_token = "".join(secret_parts)  # noqa: F841 — deliberately in scope for the assertion
+
+        try:
+            raise ValueError("boom")
+        except ValueError:
+            import sys
+
+            exc_info = sys.exc_info()
+
+        record = _make_record("with exc")
+        record.exc_info = exc_info
+
+        formatter = _build_console_formatter()
+        line = formatter.format(record)
+
+        assert secret_token not in line
 
     def test_run_id_appears_via_run_id_filter(self):
         """Integration: RunIdFilter + JSON pipeline round-trip produces correct run_id."""

@@ -212,7 +212,7 @@ Every run produces structured logs in two places:
 
 | Output | Format | Level | Location |
 |---|---|---|---|
-| Console | Human-readable, colour-coded | INFO+ | stdout |
+| Console | Colour-coded and human-readable when stdout is a real terminal; structured JSON otherwise (e.g. under launchd/supervisord) | INFO+ | stdout |
 | File | JSON (one object per line) | DEBUG+ | `logs/gigs.log` |
 
 Every line includes a fixed-width run_id bracket so columns stay aligned throughout.
