@@ -910,6 +910,82 @@ class TestNegDrafts:
         assert create_call.call_args.kwargs["recipient"] == "jane@stmarys.org"
         assert "£120" in create_call.call_args.kwargs["body_html"]
 
+    def test_neg_draft_create_failure_excludes_link_from_seen(self, tmp_path, monkeypatch):
+        """When gmail_client.create_draft raises, the gig's link must be
+        excluded from newly_seen (main.py's draft_failed_links set) so it's
+        retried next tick instead of being permanently marked seen and lost.
+        With only this one gig scraped this tick, newly_seen ends up empty
+        and save_seen_gigs must not be called at all (the "if newly_seen:"
+        guard)."""
+        monkeypatch.setattr(application_store, "_PATH", tmp_path / "applications.json")
+        with (
+            patch("main.alert"),
+            patch("main.settings", self._settings()),
+            patch("organist_bot.notifier.application_store"),
+            patch("main.load_seen_gigs", return_value=set()),
+            patch("main.load_listings_hash", return_value="old_hash"),
+            patch("main.save_listings_hash"),
+            patch("main.save_seen_gigs") as mock_save_seen,
+            patch("main.filter_store"),
+            patch("main.SMTPTransport"),
+            patch("main.set_run_id"),
+            patch("main.runtime_config") as mock_rc,
+            patch("main.GmailClient") as mock_gmail_cls,
+        ):
+            mock_rc.get.side_effect = lambda k, d: d
+            mock_gmail_cls.return_value.create_draft.side_effect = RuntimeError("Gmail API down")
+            main_module.main(
+                self._mock_scraper_with_one_gig(fee="NEG", link="https://e.com/create-fails")
+            )
+        mock_save_seen.assert_not_called()
+        assert application_store.list_held(status="neg_pending") == []
+
+    def test_neg_draft_duplicate_url_deletes_new_orphaned_draft(self, tmp_path, monkeypatch):
+        """record_held_draft returning created=False (a row for this gig's
+        URL already exists in any state) must delete the just-created Gmail
+        draft — the NEW draft id returned by this tick's create_draft call,
+        not the pre-existing row's original draft id."""
+        monkeypatch.setattr(application_store, "_PATH", tmp_path / "applications.json")
+        link = "https://e.com/dup-neg"
+        existing = Gig(
+            header="St Mary's Sunday Service",
+            organisation="St Mary's",
+            locality="London",
+            date="Monday, January 01, 2030",
+            time="10:00 AM",
+            fee="NEG",
+            link=link,
+            email="jane@stmarys.org",
+        )
+        application_store.record_held_draft(
+            existing,
+            status="neg_pending",
+            draft_id="old-neg-draft-id",
+            draft_subject="Old Subject",
+            hold_reason="fee_negotiation",
+            negotiable_fee=100,
+        )
+        with (
+            patch("main.alert"),
+            patch("main.settings", self._settings()),
+            patch("organist_bot.notifier.application_store"),
+            patch("main.load_seen_gigs", return_value=set()),
+            patch("main.load_listings_hash", return_value="old_hash"),
+            patch("main.save_listings_hash"),
+            patch("main.save_seen_gigs"),
+            patch("main.filter_store"),
+            patch("main.SMTPTransport"),
+            patch("main.set_run_id"),
+            patch("main.runtime_config") as mock_rc,
+            patch("main.GmailClient") as mock_gmail_cls,
+        ):
+            mock_rc.get.side_effect = lambda k, d: d
+            mock_gmail_cls.return_value.create_draft.return_value = "new-neg-draft-id"
+            main_module.main(self._mock_scraper_with_one_gig(fee="NEG", link=link))
+        mock_gmail_cls.return_value.delete_draft.assert_called_once_with("new-neg-draft-id")
+        expected_gig_id = hashlib.sha256(link.encode()).hexdigest()[:12]
+        assert application_store.get_by_gig_id(expected_gig_id)["draft_id"] == "old-neg-draft-id"
+
     def test_below_min_fee_gig_is_not_drafted(self, tmp_path, monkeypatch):
         self._run(
             self._settings(), self._mock_scraper_with_one_gig(fee="£50"), tmp_path, monkeypatch
@@ -1291,6 +1367,157 @@ class TestReviewDrafts:
             mock_rc.get.side_effect = lambda k, d: d
             main_module.main(empty_scraper)
         mock_gmail_cls.return_value.delete_draft.assert_called_once_with("stale-draft-id")
+        expected_gig_id = hashlib.sha256(gig.link.encode()).hexdigest()[:12]
+        assert application_store.get_by_gig_id(expected_gig_id)["status"] == "expired"
+
+    def test_review_draft_duplicate_url_deletes_new_orphaned_draft(self, tmp_path, monkeypatch):
+        """record_held_draft returning created=False (a row for this gig's
+        URL already exists in any state) must delete the just-created Gmail
+        draft — the NEW draft id returned by this tick's create_draft call,
+        not the pre-existing row's original draft id."""
+        monkeypatch.setattr(application_store, "_PATH", tmp_path / "applications.json")
+        existing = Gig(
+            header="Evensong",
+            organisation="St Mary's",
+            locality="London",
+            date="Monday, January 01, 2030",
+            time="6:00 PM",
+            fee="£100",
+            link="https://e.com/evensong",
+            email="jane@stmarys.org",
+        )
+        application_store.record_held_draft(
+            existing,
+            status="review_pending",
+            draft_id="old-review-draft-id",
+            draft_subject="Old Subject",
+            hold_reason="weekday",
+        )
+        with (
+            patch("main.alert"),
+            patch("main.settings", self._settings()),
+            patch("organist_bot.notifier.application_store"),
+            patch("main.load_seen_gigs", return_value=set()),
+            patch("main.load_listings_hash", return_value="old_hash"),
+            patch("main.save_listings_hash"),
+            patch("main.save_seen_gigs"),
+            patch("main.filter_store"),
+            patch("main.SMTPTransport"),
+            patch("main.set_run_id"),
+            patch("main.runtime_config") as mock_rc,
+            patch("main.GmailClient") as mock_gmail_cls,
+            patch(
+                "main.classify_gig",
+                return_value=gig_classifier.Classification(
+                    decision="hold_for_review", reason="other_service_type"
+                ),
+            ),
+        ):
+            mock_rc.get.side_effect = lambda k, d: d
+            mock_gmail_cls.return_value.create_draft.return_value = "new-review-draft-id"
+            main_module.main(self._scraper(date=self._date_on_weekday(6)))
+        mock_gmail_cls.return_value.delete_draft.assert_called_once_with("new-review-draft-id")
+        expected_gig_id = hashlib.sha256(b"https://e.com/evensong").hexdigest()[:12]
+        row = application_store.get_by_gig_id(expected_gig_id)
+        assert row["draft_id"] == "old-review-draft-id"
+
+    def test_expiry_delete_404_is_silently_ignored(self, tmp_path, monkeypatch, caplog):
+        """A 404 deleting the expired row's Gmail draft (already gone) must
+        be treated as already-cleaned-up — no warning logged, nothing raised."""
+        from organist_bot.integrations.gmail_client import GmailNotFoundError
+
+        past = (_dt.date.today() - _dt.timedelta(days=5)).strftime("%A, %B %d, %Y")
+        monkeypatch.setattr(application_store, "_PATH", tmp_path / "applications.json")
+        gig = Gig(
+            header="Evensong",
+            organisation="St Mary's",
+            locality="London",
+            date=past,
+            time="6:00 PM",
+            fee="£100",
+            link="https://e.com/past-evensong-404",
+            email="jane@stmarys.org",
+        )
+        application_store.record_held_draft(
+            gig,
+            status="review_pending",
+            draft_id="already-gone-draft-id",
+            draft_subject="S",
+            hold_reason="weekday",
+        )
+        empty_scraper = MagicMock()
+        empty_scraper.fetch.return_value = "<html/>"
+        empty_scraper.parse_gig_listings.return_value = []
+        with (
+            patch("main.alert"),
+            patch("main.settings", self._settings()),
+            patch("organist_bot.notifier.application_store"),
+            patch("main.load_seen_gigs", return_value=set()),
+            patch("main.load_listings_hash", return_value="different_hash"),
+            patch("main.save_listings_hash"),
+            patch("main.save_seen_gigs"),
+            patch("main.filter_store"),
+            patch("main.SMTPTransport"),
+            patch("main.set_run_id"),
+            patch("main.runtime_config") as mock_rc,
+            patch("main.GmailClient") as mock_gmail_cls,
+            caplog.at_level(logging.WARNING),
+        ):
+            mock_rc.get.side_effect = lambda k, d: d
+            mock_gmail_cls.return_value.delete_draft.side_effect = GmailNotFoundError()
+            main_module.main(empty_scraper)  # must not raise
+        mock_gmail_cls.return_value.delete_draft.assert_called_once_with("already-gone-draft-id")
+        assert not any("Could not delete Gmail draft" in r.message for r in caplog.records)
+        expected_gig_id = hashlib.sha256(gig.link.encode()).hexdigest()[:12]
+        assert application_store.get_by_gig_id(expected_gig_id)["status"] == "expired"
+
+    def test_expiry_delete_non_404_error_logs_warning(self, tmp_path, monkeypatch, caplog):
+        """A non-404 error deleting the expired row's Gmail draft must be
+        logged as a warning, not silently swallowed or raised — and must not
+        block the row's own expiry transition."""
+        past = (_dt.date.today() - _dt.timedelta(days=5)).strftime("%A, %B %d, %Y")
+        monkeypatch.setattr(application_store, "_PATH", tmp_path / "applications.json")
+        gig = Gig(
+            header="Evensong",
+            organisation="St Mary's",
+            locality="London",
+            date=past,
+            time="6:00 PM",
+            fee="£100",
+            link="https://e.com/past-evensong-error",
+            email="jane@stmarys.org",
+        )
+        application_store.record_held_draft(
+            gig,
+            status="review_pending",
+            draft_id="undeletable-draft-id",
+            draft_subject="S",
+            hold_reason="weekday",
+        )
+        empty_scraper = MagicMock()
+        empty_scraper.fetch.return_value = "<html/>"
+        empty_scraper.parse_gig_listings.return_value = []
+        with (
+            patch("main.alert"),
+            patch("main.settings", self._settings()),
+            patch("organist_bot.notifier.application_store"),
+            patch("main.load_seen_gigs", return_value=set()),
+            patch("main.load_listings_hash", return_value="different_hash"),
+            patch("main.save_listings_hash"),
+            patch("main.save_seen_gigs"),
+            patch("main.filter_store"),
+            patch("main.SMTPTransport"),
+            patch("main.set_run_id"),
+            patch("main.runtime_config") as mock_rc,
+            patch("main.GmailClient") as mock_gmail_cls,
+            caplog.at_level(logging.WARNING),
+        ):
+            mock_rc.get.side_effect = lambda k, d: d
+            mock_gmail_cls.return_value.delete_draft.side_effect = RuntimeError("quota exceeded")
+            main_module.main(empty_scraper)  # must not raise
+        mock_gmail_cls.return_value.delete_draft.assert_called_once_with("undeletable-draft-id")
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert any("Could not delete Gmail draft" in r.message for r in warnings)
         expected_gig_id = hashlib.sha256(gig.link.encode()).hexdigest()[:12]
         assert application_store.get_by_gig_id(expected_gig_id)["status"] == "expired"
 
