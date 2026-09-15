@@ -255,14 +255,35 @@ class TestSetupLoggingCaplogCompatibility:
     def test_caplog_still_captures_after_setup_logging_runs(
         self, monkeypatch, tmp_path, caplog, _clean_root_logger
     ):
-        """setup_logging() must not interfere with pytest's own log-capture handler."""
+        """setup_logging() must not interfere with pytest's own log-capture handler,
+        and its own production handlers must genuinely be the ones doing the work.
+
+        Clearing _clean_root_logger.handlers (as in TestSetupLoggingConsoleSelection)
+        is required so setup_logging()'s idempotency guard doesn't no-op — but that
+        also strips pytest's own capture handler off the root logger. Grab a
+        reference to it first, via caplog.handler, and re-attach it *after*
+        setup_logging() runs, so caplog's capture path and setup_logging()'s real
+        console/file handlers are all live on the root logger simultaneously. That
+        way this test actually fails if setup_logging() is broken or a no-op —
+        unlike asserting on caplog.records alone, which caplog would satisfy by
+        itself even with setup_logging() deleted.
+        """
         monkeypatch.setattr(sys.stdout, "isatty", lambda: False)
         from organist_bot.logging_config import setup_logging
 
-        setup_logging(str(tmp_path / "gigs.log"))
+        caplog_handler = caplog.handler
+        _clean_root_logger.handlers = []
+        log_file = tmp_path / "gigs.log"
+        setup_logging(str(log_file))
+        _clean_root_logger.addHandler(caplog_handler)
 
         logger = logging.getLogger("organist_bot.test_caplog_compat")
         with caplog.at_level(logging.INFO, logger="organist_bot.test_caplog_compat"):
             logger.info("caplog compatibility check")
 
         assert any(r.message == "caplog compatibility check" for r in caplog.records)
+
+        # Prove setup_logging()'s own rotating file handler (DEBUG+) was genuinely
+        # attached and processing records, not merely bypassed by the re-attached
+        # caplog handler.
+        assert "caplog compatibility check" in log_file.read_text()
