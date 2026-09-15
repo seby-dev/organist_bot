@@ -17,7 +17,7 @@
 - Classifier model is fixed: `claude-haiku-4-5-20251001`, called directly via `anthropic.Anthropic`, never through the agent's litellm multi-provider path — mirrors `reply_monitor._classify_reply` exactly.
 - No in-Telegram text editing of a draft anywhere in this feature — editing happens directly in Gmail. Every old free-text NEG command (`approve <id>`, `edit <id>: ...`, `reject <id>`) and its supporting machinery (disambiguation picker, active-draft chat state) is removed, not deprecated alongside the new buttons.
 - `draft_body` is never stored in `applications.json` again — the draft's content lives only in Gmail once created.
-- Every new/changed production function needs a matching test in the same task before moving to the next task (TDD) — a task isn't done until `uv run pytest` (with `EMAIL_SENDER=ci@test.com EMAIL_PASSWORD=x CC_EMAIL=ci@test.com`) is green and `uv run ruff check .` / `uv run ruff format --check .` / `uv run mypy organist_bot/` all pass.
+- Every new/changed production function needs a matching test in the same task before moving to the next task (TDD) — a task isn't done until *that task's own test file(s)* are green under `uv run pytest` (with `EMAIL_SENDER=ci@test.com EMAIL_PASSWORD=x CC_EMAIL=ci@test.com`) and its own changed files pass `ruff check` / `ruff format --check` / `mypy`. **The full-project `uv run pytest` / `mypy organist_bot/` are expected to be RED from partway through Task 2 (once `record_neg_pending`/`list_neg_pending`/`transition_neg_pending`/`update_neg_draft` are removed while `main.py`/`unified_agent.py`/their tests still call them) until Task 7 Step 9** — that's the point every earlier task's changes first get exercised together, and the first point the full suite must be green. Don't treat an earlier task's full-suite red as a regression to chase; each task's own Step 4/5 pass criterion is what matters until then. (Pre-commit's mypy hook only checks staged files, so this doesn't block any task's own commit.)
 
 ---
 
@@ -355,6 +355,8 @@ Add these methods to the `GmailClient` class, after `fetch_invoice_replies` (bef
             return False
 ```
 
+Note this deliberately deviates from the spec's literal suggestion of a "light `drafts().list(maxResults=1)`" — that would be a no-op check: listing drafts succeeds under the OLD `gmail.readonly`-only scope too (it's a read operation), so it can never actually detect a missing compose scope. The trade-off: `warn_if_gmail_write_scope_missing` (Task 7) now creates and immediately deletes a real throwaway draft in the user's Gmail on every scheduler startup — harmless, but real API traffic, and a `create` that succeeds followed by a `delete` that fails would leave a stray "scope check" draft behind (rare — only on a mid-check API hiccup, and the leftover is self-explanatory to the user if they ever see it).
+
 Add at the bottom of the file, after `_extract_body`:
 
 ```python
@@ -684,6 +686,47 @@ class TestExpireHeldDrafts:
 
 The `_neg_gig()` fixture function above this block (around line 429) stays as-is — it already sets `contact="Jane"` on the `Gig`, which `record_held_draft`'s new `contact` field needs.
 
+Separately, `expire_past_applied`'s return-type change also breaks the existing `class TestExpirePastApplied:` (a different, earlier class in this file, around lines 127–163, testing plain `applied`→`no_response` expiry — nothing to do with NEG/held drafts). Its four assertions compare `changed` to an `int` and must be updated to the new `list[dict]` shape:
+
+```python
+class TestExpirePastApplied:
+    def _add_applied(self, url: str, date: str) -> None:
+        store.record_application(_make_gig(link=url, date=date))
+
+    def test_expire_past_applied_marks_old_records(self):
+        # 2020-01-01 is unambiguously in the past
+        self._add_applied("https://organistsonline.org/gig/1", "Sunday, 1 January 2020")
+        changed = store.expire_past_applied()
+        assert len(changed) == 1
+        records = json.loads(store._PATH.read_text())
+        assert records[0]["status"] == "no_response"
+
+    def test_expire_past_applied_leaves_future_records(self):
+        # 2099-12-31 is unambiguously in the future
+        self._add_applied("https://organistsonline.org/gig/1", "Sunday, 31 December 2099")
+        changed = store.expire_past_applied()
+        assert changed == []
+        records = json.loads(store._PATH.read_text())
+        assert records[0]["status"] == "applied"
+
+    def test_expire_past_applied_leaves_non_applied_records(self):
+        self._add_applied("https://organistsonline.org/gig/1", "Sunday, 1 January 2020")
+        store.update_status("https://organistsonline.org/gig/1", "accepted")
+        changed = store.expire_past_applied()
+        assert changed == []
+        records = json.loads(store._PATH.read_text())
+        assert records[0]["status"] == "accepted"
+
+    def test_expire_returns_count_of_changed_records(self):
+        self._add_applied("https://organistsonline.org/gig/1", "Sunday, 1 January 2020")
+        self._add_applied("https://organistsonline.org/gig/2", "Sunday, 8 January 2020")
+        self._add_applied(
+            "https://organistsonline.org/gig/3", "Sunday, 31 December 2099"
+        )  # future — unchanged
+        changed = store.expire_past_applied()
+        assert len(changed) == 2
+```
+
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `EMAIL_SENDER=ci@test.com EMAIL_PASSWORD=x CC_EMAIL=ci@test.com uv run pytest tests/test_application_store.py -v -k "HeldDraft"`
@@ -932,13 +975,17 @@ class TestClassifyGig:
         assert result.decision == "hold_for_review"
 
     def test_prompt_includes_header_musical_requirements_time_and_fee(self):
+        # Use a time NOT equal to _CLASSIFY_PROMPT's own hard-coded example
+        # ("9:00 AM & 6:00 PM") — reusing that exact string would make the
+        # `time` assertion pass even if gig.time were never interpolated at
+        # all, since it's already baked into the template text.
         with patch("organist_bot.gig_classifier.anthropic.Anthropic") as mock_cls:
             mock_cls.return_value.messages.create.return_value = _mock_response("auto_eligible")
             classify_gig(
                 _make_gig(
                     header="Wedding at St Mary's",
                     musical_requirements="Traditional hymns",
-                    time="9:00 AM & 6:00 PM",
+                    time="8:15 AM & 6:45 PM",
                     fee="£80 per service",
                 )
             )
@@ -946,7 +993,7 @@ class TestClassifyGig:
         prompt_text = call_kwargs["messages"][0]["content"]
         assert "Wedding at St Mary's" in prompt_text
         assert "Traditional hymns" in prompt_text
-        assert "9:00 AM & 6:00 PM" in prompt_text
+        assert "8:15 AM & 6:45 PM" in prompt_text
         assert "£80 per service" in prompt_text
 
     def test_uses_fixed_haiku_model(self):
@@ -1131,7 +1178,12 @@ class TestDraftApplication:
         notifier = Notifier(self._settings(), transport)
         gig = self._make_gig()
         _, drafted_body = notifier.draft_application(gig)
-        notifier.apply_to_gig(gig)
+        # apply_to_gig calls application_store.record_application as a
+        # side effect — patch it out so this test never touches the real
+        # data/applications.json (same reason the neighboring
+        # TestApplyToGigRecordsApplication class patches it).
+        with patch("organist_bot.notifier.application_store"):
+            notifier.apply_to_gig(gig)
         sent_body = transport.sent[0]["message"]
         assert drafted_body in sent_body  # sent_body wraps drafted_body in MIME headers
 ```
@@ -1165,6 +1217,24 @@ Add immediately after `draft_negotiation` (which ends the `Notifier` class):
         )
         subject = f"Application for Organist Position – {gig.date}"
         return subject, body
+```
+
+Also fix `draft_negotiation`'s now-stale docstring (still describes the pre-this-feature storage model): find
+```python
+        """Render the NEG-fee application as (subject, body). Does NOT send.
+
+        Returned strings are stored on the neg_pending application_store row
+        and re-used verbatim when the user approves the draft in Telegram.
+        """
+```
+and replace with:
+```python
+        """Render the NEG-fee application as (subject, body). Does NOT send.
+
+        The returned body is what gets emailed into a real Gmail draft
+        (main.py's NEG-drafts block, via GmailClient.create_draft) — Gmail
+        itself is what the user reviews/edits from here, not this string.
+        """
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
@@ -1209,10 +1279,27 @@ git commit -m "feat: add Notifier.draft_application for held-for-review gigs"
 
 - [ ] **Step 1: Write the failing tests**
 
-In `tests/test_unified_agent.py`, replace the entire block from the NEG draft fixture helper through the end of `class TestNegDeterministicActions:` (currently spanning roughly the `_neg_gig`-style fixture just above `neg_store`, `class TestNegTools:`, `class TestNegActiveDraftState:`, `class TestNegConfirmButtons:`, and `class TestNegDeterministicActions:` — **not** the interleaved `TestTrimHistory`, `TestManageLlmProvider`, `TestLlmConfirmAndCancelSwitch` classes, which stay untouched) with:
+`tests/test_unified_agent.py`'s NEG tests are **not one contiguous block** —
+they're interleaved with `TestTrimHistory`/`TestManageLlmProvider`/
+`TestLlmConfirmAndCancelSwitch`, which stay untouched, and with one shared
+import line that later classes (including the new ones below) depend on.
+Delete exactly these four ranges (verify against the current file before
+deleting — these line numbers assume no other change has touched this file
+yet):
+
+- **Lines 2070–2219**: `def _seed_neg_pending(...)`, the `neg_store` fixture, and all of `class TestNegTools:` — ends right before the `# ── NEG active-draft state, buttons, and deterministic actions ──` comment.
+- **Lines 2226–2242**: `class TestNegActiveDraftState:` in full — ends right before the `# ── _trim_history ──` comment.
+- **Lines 2311–2328**: `class TestNegConfirmButtons:` in full — ends right before `class TestManageLlmProvider:`.
+- **Lines 2557–2636**: `class TestNegDeterministicActions:` in full — ends right before `def test_agent_response_buttons_defaults_to_none():` (unrelated, stays).
+
+**Do NOT delete line 2223** — `from organist_bot.integrations import unified_agent  # noqa: E402` — even though it sits inside the comment block right after the first deleted range. `unified_agent` (the bare module, for `unified_agent.foo()` call syntax) is imported ONLY on this one line in the whole file; every surviving class below it (`TestTrimHistory`, `TestManageLlmProvider`, `TestLlmConfirmAndCancelSwitch`, and the new classes this task adds) uses that name and would break with `NameError: name 'unified_agent' is not defined` if this line were removed. The two lines immediately above it — `import organist_bot.application_store as application_store  # noqa: E402` (2038) and `import organist_bot.runtime_config_store as rcs  # noqa: E402` (2039) plus `from organist_bot.integrations.unified_agent import _TOOL_HANDLERS  # noqa: E402` (2040) — are outside every range above and also stay untouched.
+
+Add these four deleted ranges' replacement in one place — right after where line 2219 used to end (i.e. immediately before the surviving `from organist_bot.integrations import unified_agent` import):
 
 ```python
 def _held_gig(link="https://e.com/1"):
+    from organist_bot.models import Gig  # same local-import convention _seed_neg_pending used
+
     return Gig(
         header="Sunday Service",
         organisation="St Mary's",
@@ -1327,18 +1414,28 @@ class TestReviewConfirmSend:
     async def test_404_on_send_when_row_already_applied_shows_already_sent(
         self, held_store, monkeypatch
     ):
-        fake_gmail = FakeGmailClient()
-        draft_id = fake_gmail.create_draft(
-            sender="bot@test.com", recipient="jane@example.com", cc=None,
-            subject="S", body_html="B",
-        )
-        fake_gmail.simulate_not_found(draft_id)
-        monkeypatch.setattr(unified_agent, "_make_gmail_client", lambda: fake_gmail)
+        """Simulates the actual race the 404-on-send branch exists for: this
+        call finds the row still pending (so it proceeds to send_draft), but
+        by the time send_draft actually runs, a concurrent tap/path has
+        already sent it and transitioned the row to applied — send_draft
+        then 404s because the draft it's targeting is already gone. Setting
+        the row to applied BEFORE calling review_confirm_send would instead
+        make _find_held_row return None immediately (row no longer pending)
+        and never reach send_draft at all — that's a different, already
+        -covered code path (the plain "already decided" lookup error)."""
         gig_id, _ = application_store.record_held_draft(
-            _held_gig(), status="review_pending", draft_id=draft_id, draft_subject="S",
+            _held_gig(), status="review_pending", draft_id="draft-1", draft_subject="S",
             hold_reason="weekday",
         )
-        application_store.transition_held(gig_id, to="applied")  # sent via Gmail's own UI
+
+        def _send_draft_raced(draft_id):
+            application_store.transition_held(gig_id, to="applied")
+            raise GmailNotFoundError(f"draft {draft_id} not found")
+
+        fake_gmail = MagicMock()
+        fake_gmail.send_draft.side_effect = _send_draft_raced
+        monkeypatch.setattr(unified_agent, "_make_gmail_client", lambda: fake_gmail)
+
         ok, result = await unified_agent.review_confirm_send(gig_id)
         assert ok is True
         assert "Already sent" in result
@@ -1415,9 +1512,9 @@ class TestReviewDecline:
         assert "No draft found" in result
 ```
 
-At the top of `tests/test_unified_agent.py`, add the imports these tests need (check what's already imported first — likely `application_store`, `Gig`, `MagicMock`, `json`, `pytest` already are; add if missing):
+At the top of `tests/test_unified_agent.py`, add the imports these tests need (check what's already imported first — `application_store`, `MagicMock`, `json`, `pytest` already are per the existing imports at lines 3–11 and 2038; `Gig` is NOT imported at module level anywhere in this file today — `_held_gig` imports it locally, matching the convention the old `_seed_neg_pending` used):
 ```python
-from organist_bot.integrations.gmail_client import FakeGmailClient
+from organist_bot.integrations.gmail_client import FakeGmailClient, GmailNotFoundError
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -1615,6 +1712,19 @@ In `reset_conversation`, remove:
 
 Remove the now-unused imports `Notifier`, `SMTPTransport`, `send_application_email` from the `from organist_bot.notifier import ...` line — check first whether any other surviving code in the file still uses them (search the file after making the above deletions; if `Notifier`/`SMTPTransport`/`send_application_email` have zero remaining references, drop them from the import, otherwise keep only the ones still used). `Gig` stays imported (used elsewhere in the file, e.g. `add_gig`).
 
+Fix `llm_confirm_switch`'s now-stale docstring, which still cross-references the removed `neg_confirm_send` by name — find:
+```python
+    """Apply a pending provider/model switch. Called by the deterministic
+    Telegram button handler, never by the LLM — same two-step pattern as
+    neg_confirm_send. Requires the (provider, model_key) target to still
+```
+and replace with:
+```python
+    """Apply a pending provider/model switch. Called by the deterministic
+    Telegram button handler, never by the LLM — same two-step pattern as
+    review_confirm_send. Requires the (provider, model_key) target to still
+```
+
 - [ ] **Step 4: Update `organist_bot/integrations/agent_state.py`**
 
 Change:
@@ -1628,9 +1738,11 @@ _KEYS = ("last_invoice", "last_gig_listing", "last_application_listing")
 
 In `tests/test_agent_state.py`, find the assertion(s) referencing `"active_neg_draft": None` (or similar) in the persisted-shape checks and remove `active_neg_draft` from the expected dict — grep `active_neg_draft` in that file and update every hit to match the new 3-key shape.
 
-- [ ] **Step 5: Remove now-stale tests and run the full test_unified_agent.py**
+- [ ] **Step 5: Delete the remaining stale test, remove dangling references, run the full `test_unified_agent.py`**
 
-Grep `tests/test_unified_agent.py` for any remaining reference to `neg_pending`, `_active_neg_draft`, `set_active_neg_draft`, `get_active_neg_draft`, `stash_pending_neg_instruction`, `pop_pending_neg_instruction`, `neg_confirm_buttons`, `neg_confirm_send`, `neg_confirm_reject`, `neg_draft_view`, `_draft_buttons`, `approve_neg_application`, `edit_neg_application`, `reject_neg_application`, `list_neg_pending` outside of what Step 1 already replaced (there should be none left — Step 1's replacement block was scoped to cover exactly this). If anything remains (e.g. a stray reference in a docstring/comment in an unrelated test), fix it in place.
+One more test lives far outside Step 1's four deleted ranges and exercises the now-gone `needs_pick`/picker mechanism end-to-end through `process_message` — **delete it entirely**, don't try to salvage it: `async def test_process_message_stashes_instruction_on_needs_pick(tmp_path, monkeypatch):` (currently lines 3736–3774, ending right before `def test_settings_has_openai_and_gemini_api_key_fields(monkeypatch):`, which stays).
+
+Then grep `tests/test_unified_agent.py` for any remaining reference to `neg_pending`, `_active_neg_draft`, `set_active_neg_draft`, `get_active_neg_draft`, `stash_pending_neg_instruction`, `pop_pending_neg_instruction`, `neg_confirm_buttons`, `neg_confirm_send`, `neg_confirm_reject`, `neg_draft_view`, `_draft_buttons`, `approve_neg_application`, `edit_neg_application`, `reject_neg_application`, `list_neg_pending`, `needs_pick` — there should be zero hits now that Step 1's four ranges and this test are gone. Fix anything that remains.
 
 Run: `EMAIL_SENDER=ci@test.com EMAIL_PASSWORD=x CC_EMAIL=ci@test.com uv run pytest tests/test_unified_agent.py tests/test_agent_state.py -v`
 Expected: PASS, full file.
@@ -1663,59 +1775,70 @@ git commit -m "refactor: replace NEG free-text/picker machinery with the review-
 
 - [ ] **Step 1: Write the failing tests**
 
-Replace `class TestHandleNegCallback:` (currently lines ~272–460, ending right before `class TestHandleLlmCallback:`) with:
+Replace `class TestHandleNegCallback:` (currently lines 272–459, ending right before `class TestHandleLlmCallback:` at 461) with a class using the SAME shared module-level helpers `TestHandleNegCallback` itself used — `_make_callback_update(chat_id, data, message_id)` (defined at line 262, directly above the `class TestHandleNegCallback:` being replaced — this helper and its `# ── NEG callback handler ──` section-header comment just above it at line 259 both stay, only the header comment text changes, see below) and `_make_context()` (defined at module level, line 29 — shared with `TestHandleMessage` too, do not touch it):
 
 ```python
 class TestHandleReviewCallback:
-    def _make_update(self, data: str, chat_id: int = 123):
-        update = MagicMock()
-        update.callback_query.answer = AsyncMock()
-        update.callback_query.data = data
-        update.callback_query.message.message_id = 999
-        update.effective_chat.id = chat_id
-        return update
+    @pytest.fixture(autouse=True)
+    def patch_settings(self):
+        with patch("organist_bot.integrations.telegram_bot.settings") as mock:
+            mock.telegram_chat_id = "7973955362"
+            yield mock
 
-    def _make_context(self):
-        context = MagicMock()
-        context.bot.edit_message_reply_markup = AsyncMock()
-        context.bot.edit_message_text = AsyncMock()
-        return context
-
+    @pytest.mark.asyncio
     async def test_rejects_unauthorised_chat(self):
-        update = self._make_update("review:accept:abc123", chat_id=999)
-        context = self._make_context()
-        with patch("organist_bot.integrations.telegram_bot.settings") as mock_settings:
-            mock_settings.telegram_chat_id = "123"
+        update = _make_callback_update(chat_id=9999, data="review:accept:abc123")
+        context = _make_context()
+        with patch("organist_bot.integrations.unified_agent.review_confirm_send_buttons") as mock_fn:
             await handle_review_callback(update, context)
+        mock_fn.assert_not_called()
+        update.callback_query.answer.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_ignores_non_review_callback_data(self):
+        update = _make_callback_update(data="something:else")
+        context = _make_context()
+        await handle_review_callback(update, context)
         context.bot.edit_message_reply_markup.assert_not_called()
         context.bot.edit_message_text.assert_not_called()
+        update.callback_query.answer.assert_called_once()
 
-    async def test_ignores_non_review_callback_data(self):
-        update = self._make_update("llm:confirm:anthropic/sonnet")
-        context = self._make_context()
-        with patch("organist_bot.integrations.telegram_bot.settings") as mock_settings:
-            mock_settings.telegram_chat_id = "123"
-            await handle_review_callback(update, context)
-        context.bot.edit_message_reply_markup.assert_not_called()
-
+    @pytest.mark.asyncio
     async def test_accept_swaps_buttons_only_not_text(self):
-        update = self._make_update("review:accept:abc123")
-        context = self._make_context()
-        with patch("organist_bot.integrations.telegram_bot.settings") as mock_settings:
-            mock_settings.telegram_chat_id = "123"
+        update = _make_callback_update(data="review:accept:abc123")
+        context = _make_context()
+        with patch(
+            "organist_bot.integrations.unified_agent.review_confirm_send_buttons",
+            return_value=[
+                [
+                    {"text": "Confirm", "callback_data": "review:confirm_send:abc123"},
+                    {"text": "Cancel", "callback_data": "review:cancel:abc123"},
+                ]
+            ],
+        ):
             await handle_review_callback(update, context)
         context.bot.edit_message_reply_markup.assert_called_once()
         context.bot.edit_message_text.assert_not_called()
         kwargs = context.bot.edit_message_reply_markup.call_args.kwargs
+        assert kwargs["chat_id"] == 7973955362
+        assert kwargs["message_id"] == 55
         buttons = kwargs["reply_markup"].inline_keyboard
         callback_data = {b.callback_data for row in buttons for b in row}
         assert callback_data == {"review:confirm_send:abc123", "review:cancel:abc123"}
 
+    @pytest.mark.asyncio
     async def test_cancel_swaps_buttons_back_to_accept_decline(self):
-        update = self._make_update("review:cancel:abc123")
-        context = self._make_context()
-        with patch("organist_bot.integrations.telegram_bot.settings") as mock_settings:
-            mock_settings.telegram_chat_id = "123"
+        update = _make_callback_update(data="review:cancel:abc123")
+        context = _make_context()
+        with patch(
+            "organist_bot.integrations.unified_agent.review_accept_buttons",
+            return_value=[
+                [
+                    {"text": "✅ Accept", "callback_data": "review:accept:abc123"},
+                    {"text": "❌ Decline", "callback_data": "review:decline:abc123"},
+                ]
+            ],
+        ):
             await handle_review_callback(update, context)
         context.bot.edit_message_reply_markup.assert_called_once()
         context.bot.edit_message_text.assert_not_called()
@@ -1724,93 +1847,91 @@ class TestHandleReviewCallback:
         callback_data = {b.callback_data for row in buttons for b in row}
         assert callback_data == {"review:accept:abc123", "review:decline:abc123"}
 
+    @pytest.mark.asyncio
     async def test_confirm_send_success_shows_sent(self):
-        update = self._make_update("review:confirm_send:abc123")
-        context = self._make_context()
-        with (
-            patch("organist_bot.integrations.telegram_bot.settings") as mock_settings,
-            patch(
-                "organist_bot.integrations.unified_agent.review_confirm_send",
-                new=AsyncMock(return_value=(True, "Sent to jane@example.com.")),
-            ),
+        update = _make_callback_update(data="review:confirm_send:abc123")
+        context = _make_context()
+        with patch(
+            "organist_bot.integrations.unified_agent.review_confirm_send",
+            new=AsyncMock(return_value=(True, "Sent to jane@example.com.")),
         ):
-            mock_settings.telegram_chat_id = "123"
             await handle_review_callback(update, context)
         text = context.bot.edit_message_text.call_args.kwargs["text"]
         assert text.startswith("✅")
         assert "jane@example.com" in text
 
+    @pytest.mark.asyncio
     async def test_confirm_send_failure_shows_failure(self):
-        update = self._make_update("review:confirm_send:abc123")
-        context = self._make_context()
-        with (
-            patch("organist_bot.integrations.telegram_bot.settings") as mock_settings,
-            patch(
-                "organist_bot.integrations.unified_agent.review_confirm_send",
-                new=AsyncMock(return_value=(False, "Send failed: boom")),
-            ),
+        update = _make_callback_update(data="review:confirm_send:abc123")
+        context = _make_context()
+        with patch(
+            "organist_bot.integrations.unified_agent.review_confirm_send",
+            new=AsyncMock(return_value=(False, "Send failed: boom")),
         ):
-            mock_settings.telegram_chat_id = "123"
             await handle_review_callback(update, context)
         text = context.bot.edit_message_text.call_args.kwargs["text"]
         assert text.startswith("❌")
 
+    @pytest.mark.asyncio
     async def test_decline_success_shows_declined(self):
-        update = self._make_update("review:decline:abc123")
-        context = self._make_context()
-        with (
-            patch("organist_bot.integrations.telegram_bot.settings") as mock_settings,
-            patch(
-                "organist_bot.integrations.unified_agent.review_decline",
-                return_value=(True, "Declined — draft deleted."),
-            ) as mock_decline,
-        ):
-            mock_settings.telegram_chat_id = "123"
+        update = _make_callback_update(data="review:decline:abc123")
+        context = _make_context()
+        with patch(
+            "organist_bot.integrations.unified_agent.review_decline",
+            return_value=(True, "Declined — draft deleted."),
+        ) as mock_decline:
             await handle_review_callback(update, context)
         mock_decline.assert_called_once_with("abc123")
         text = context.bot.edit_message_text.call_args.kwargs["text"]
         assert text.startswith("✅")
         assert "deleted" in text
 
-    async def test_decline_on_already_gone_draft_still_transitions(self):
+    @pytest.mark.asyncio
+    async def test_decline_on_already_gone_draft_still_shows_success(self):
         """404-on-delete is surfaced by unified_agent.review_decline as ok=True
         (see Task 5) — the callback just relays whatever it returns."""
-        update = self._make_update("review:decline:abc123")
-        context = self._make_context()
-        with (
-            patch("organist_bot.integrations.telegram_bot.settings") as mock_settings,
-            patch(
-                "organist_bot.integrations.unified_agent.review_decline",
-                return_value=(True, "Declined — draft deleted."),
-            ),
+        update = _make_callback_update(data="review:decline:abc123")
+        context = _make_context()
+        with patch(
+            "organist_bot.integrations.unified_agent.review_decline",
+            return_value=(True, "Declined — draft deleted."),
         ):
-            mock_settings.telegram_chat_id = "123"
             await handle_review_callback(update, context)
         text = context.bot.edit_message_text.call_args.kwargs["text"]
         assert text.startswith("✅")
 
+    @pytest.mark.asyncio
     async def test_edit_message_badrequest_is_swallowed(self):
-        update = self._make_update("review:confirm_send:abc123")
-        context = self._make_context()
+        update = _make_callback_update(data="review:confirm_send:abc123")
+        context = _make_context()
         context.bot.edit_message_text.side_effect = BadRequest("message not found")
-        with (
-            patch("organist_bot.integrations.telegram_bot.settings") as mock_settings,
-            patch(
-                "organist_bot.integrations.unified_agent.review_confirm_send",
-                new=AsyncMock(return_value=(True, "Sent.")),
-            ),
+        with patch(
+            "organist_bot.integrations.unified_agent.review_confirm_send",
+            new=AsyncMock(return_value=(True, "Sent.")),
         ):
-            mock_settings.telegram_chat_id = "123"
             await handle_review_callback(update, context)  # must not raise
 ```
 
-Update the import block at the top of the file:
+Rename the section-header comment directly above `_make_callback_update` (line 259) from `# ── NEG callback handler ──` to `# ── Review callback handler ──`.
+
+Update the import block at the top of the file — find:
 ```python
 from organist_bot.integrations.telegram_bot import (
-    ...
+    _is_authorised,
+    handle_llm_callback,
+    handle_message,
+    handle_neg_callback,
 )
 ```
-— replace `handle_neg_callback` with `handle_review_callback` in whatever's imported there (check the existing import list and swap the name).
+replace with:
+```python
+from organist_bot.integrations.telegram_bot import (
+    _is_authorised,
+    handle_llm_callback,
+    handle_message,
+    handle_review_callback,
+)
+```
 
 - [ ] **Step 2: Run tests to verify they fail**
 
@@ -1866,6 +1987,40 @@ Update `run()`'s handler registration:
 to:
 ```python
     app.add_handler(CallbackQueryHandler(handle_review_callback, pattern=r"^review:"))
+```
+
+Fix `handle_llm_callback`'s docstring, which still cross-references the removed `handle_neg_callback` by name — find:
+```python
+    """Apply or discard a pending LLM provider/model switch — see
+    manage_llm_provider's "set" action and unified_agent.llm_confirm_switch/
+    llm_cancel_switch. Same two-step confirm pattern as handle_neg_callback."""
+```
+replace with:
+```python
+    """Apply or discard a pending LLM provider/model switch — see
+    manage_llm_provider's "set" action and unified_agent.llm_confirm_switch/
+    llm_cancel_switch. Same two-step confirm pattern as handle_review_callback."""
+```
+
+Also rename the two log messages in `_edit_buttons_quietly`/`_edit_text_quietly` that still say "NEG" (they're generic helpers both `handle_review_callback` and `handle_llm_callback` share, so the messages should read generically too) — find:
+```python
+    except BadRequest as exc:
+        logger.debug("Telegram: NEG button edit failed: %s", exc)
+```
+replace with:
+```python
+    except BadRequest as exc:
+        logger.debug("Telegram: button edit failed: %s", exc)
+```
+and find:
+```python
+    except BadRequest as exc:
+        logger.debug("Telegram: NEG message edit failed: %s", exc)
+```
+replace with:
+```python
+    except BadRequest as exc:
+        logger.debug("Telegram: message edit failed: %s", exc)
 ```
 
 - [ ] **Step 4: Run tests to verify they pass**
@@ -1927,11 +2082,24 @@ from organist_bot.integrations.gmail_client import GmailClient, is_not_found_err
 Replace the whole `_send_neg_alert` function (currently lines 51–89) with:
 
 ```python
-def _send_review_alert(gig: Gig, gig_id: str, *, status: str, hold_reason: str) -> None:
+def _send_review_alert(
+    gig: Gig,
+    gig_id: str,
+    *,
+    status: str,
+    hold_reason: str,
+    negotiable_fee: int | None = None,
+) -> None:
     """Single Telegram message for a held gig (NEG or review) — gig details
     as scraped, with Accept/Decline buttons. Replaces the old two-message
     _send_neg_alert (gig details, then draft text + Accept/Edit/Reject) now
     that the draft itself lives in Gmail, not in this message.
+
+    negotiable_fee is only meaningful for status="neg_pending" — pass the
+    same value the caller just used to render the draft (not re-read from
+    runtime_config here) so the alert can never show a different proposed
+    fee than what was actually drafted, even if the runtime config value
+    changes concurrently.
     """
     label = "🟡 NEG gig" if status == "neg_pending" else "🔵 Review needed"
     org = f" — {gig.organisation}" if gig.organisation else ""
@@ -1941,8 +2109,7 @@ def _send_review_alert(gig: Gig, gig_id: str, *, status: str, hold_reason: str) 
     location_line = f"Location: {gig.postcode}\n" if gig.postcode else ""
     reason_line = f"Reason:   {hold_reason}\n" if status == "review_pending" else ""
     fee_line = f"Fee:      {gig.fee or 'NEG'}\n"
-    if status == "neg_pending":
-        negotiable_fee = runtime_config.get("negotiable_fee", settings.negotiable_fee)
+    if status == "neg_pending" and negotiable_fee is not None:
         fee_line += f"Proposed: £{negotiable_fee}\n"
     details_msg = (
         f"{label} — {gig.header}{org}\n\n"
@@ -2015,6 +2182,117 @@ Call both from the `if __name__ == "__main__":` startup block, right after the e
         warn_if_gig_classifier_unconfigured()
 ```
 
+Add matching tests, in the same shape as the existing `class TestGmailMonitoringConfigWarning:` (`tests/test_main.py`, currently starting around line 932) — add these two classes directly after it:
+
+```python
+class TestGmailWriteScopeWarning:
+    """Tests for warn_if_gmail_write_scope_missing()."""
+
+    def _settings(self, credentials_file, token_file):
+        s = MagicMock()
+        s.gmail_credentials_file = credentials_file
+        s.gmail_token_file = token_file
+        return s
+
+    def test_silent_when_credentials_unset(self, tmp_path):
+        """No credentials configured — warn_if_gmail_monitoring_unconfigured
+        already covers this case, so this check must no-op rather than
+        double-alert."""
+        with (
+            patch("main.settings", self._settings("", str(tmp_path / "token.json"))),
+            patch("main.alert") as mock_alert,
+            patch("main.GmailClient") as mock_gmail_cls,
+        ):
+            main_module.warn_if_gmail_write_scope_missing()
+        mock_alert.send_alert.assert_not_called()
+        mock_gmail_cls.assert_not_called()
+
+    def test_silent_when_token_file_missing(self, tmp_path):
+        creds = tmp_path / "gmail_credentials.json"
+        creds.write_text("{}")
+        with (
+            patch("main.settings", self._settings(str(creds), str(tmp_path / "missing.json"))),
+            patch("main.alert") as mock_alert,
+            patch("main.GmailClient") as mock_gmail_cls,
+        ):
+            main_module.warn_if_gmail_write_scope_missing()
+        mock_alert.send_alert.assert_not_called()
+        mock_gmail_cls.assert_not_called()
+
+    def test_alerts_when_compose_access_false(self, tmp_path):
+        creds = tmp_path / "gmail_credentials.json"
+        creds.write_text("{}")
+        token = tmp_path / "token.json"
+        token.write_text("{}")
+        with (
+            patch("main.settings", self._settings(str(creds), str(token))),
+            patch("main.alert") as mock_alert,
+            patch("main.GmailClient") as mock_gmail_cls,
+        ):
+            mock_gmail_cls.return_value.has_compose_access.return_value = False
+            main_module.warn_if_gmail_write_scope_missing()
+        mock_alert.send_alert.assert_called_once()
+        msg = mock_alert.send_alert.call_args.args[0]
+        assert "setup_gmail_auth" in msg
+
+    def test_silent_when_compose_access_true(self, tmp_path):
+        creds = tmp_path / "gmail_credentials.json"
+        creds.write_text("{}")
+        token = tmp_path / "token.json"
+        token.write_text("{}")
+        with (
+            patch("main.settings", self._settings(str(creds), str(token))),
+            patch("main.alert") as mock_alert,
+            patch("main.GmailClient") as mock_gmail_cls,
+        ):
+            mock_gmail_cls.return_value.has_compose_access.return_value = True
+            main_module.warn_if_gmail_write_scope_missing()
+        mock_alert.send_alert.assert_not_called()
+
+    def test_does_not_raise_when_check_itself_errors(self, tmp_path):
+        creds = tmp_path / "gmail_credentials.json"
+        creds.write_text("{}")
+        token = tmp_path / "token.json"
+        token.write_text("{}")
+        with (
+            patch("main.settings", self._settings(str(creds), str(token))),
+            patch("main.alert") as mock_alert,
+            patch("main.GmailClient", side_effect=RuntimeError("boom")),
+        ):
+            main_module.warn_if_gmail_write_scope_missing()  # must not raise
+        mock_alert.send_alert.assert_not_called()
+
+
+class TestGigClassifierConfigWarning:
+    """Tests for warn_if_gig_classifier_unconfigured()."""
+
+    def _settings(self, anthropic_api_key):
+        s = MagicMock()
+        s.anthropic_api_key = anthropic_api_key
+        return s
+
+    def test_alerts_when_api_key_unset(self, caplog):
+        with (
+            patch("main.settings", self._settings("")),
+            patch("main.alert") as mock_alert,
+            caplog.at_level(logging.WARNING),
+        ):
+            main_module.warn_if_gig_classifier_unconfigured()
+        mock_alert.send_alert.assert_called_once()
+        msg = mock_alert.send_alert.call_args.args[0]
+        assert "ANTHROPIC_API_KEY" in msg
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1
+
+    def test_silent_when_api_key_set(self):
+        with (
+            patch("main.settings", self._settings("sk-ant-fake-key")),
+            patch("main.alert") as mock_alert,
+        ):
+            main_module.warn_if_gig_classifier_unconfigured()
+        mock_alert.send_alert.assert_not_called()
+```
+
 - [ ] **Step 4: Add the classifier partition after the fee partition**
 
 Immediately after the existing fee-partition block's closing comment (`# When enable_neg_drafts is False, FeeFilter was already in the chain so valid_gigs is correct as-is and neg_gigs stays empty.`), insert:
@@ -2060,6 +2338,11 @@ Replace the entire `# ── NEG drafts: render, persist, alert Telegram ──�
     if not dry_run:
         gmail_client = GmailClient(settings.gmail_credentials_file, settings.gmail_token_file)
 
+    # Gigs whose create_draft call failed this tick — excluded from
+    # newly_seen below (see that block) so they're retried next tick instead
+    # of being silently lost forever (SeenFilter would otherwise drop them).
+    draft_failed_links: set[str] = set()
+
     # ── NEG drafts: render, persist, alert Telegram ───────────────────────────
     if neg_gigs and not dry_run:
         assert gmail_client is not None
@@ -2100,10 +2383,18 @@ Replace the entire `# ── NEG drafts: render, persist, alert Telegram ──�
                         )
                     continue
                 _queued_ids.append(gig_id)
-                _send_review_alert(gig, gig_id, status="neg_pending", hold_reason="fee_negotiation")
+                _send_review_alert(
+                    gig,
+                    gig_id,
+                    status="neg_pending",
+                    hold_reason="fee_negotiation",
+                    negotiable_fee=_negotiable_fee,
+                )
             except Exception:
                 logger.exception("NEG draft failed for gig — skipping", extra={"link": gig.link})
                 alert.send_alert(f"⚠️ NEG draft failed for {gig.header} — {gig.link}")
+                if gig.link:
+                    draft_failed_links.add(gig.link)
         logger.info("NEG drafts queued", extra={"count": len(_queued_ids), "gig_ids": _queued_ids})
     elif neg_gigs and dry_run:
         logger.info("Phase 3 — DRY-RUN: would draft NEG gigs", extra={"count": len(neg_gigs)})
@@ -2150,12 +2441,42 @@ Replace the entire `# ── NEG drafts: render, persist, alert Telegram ──�
             except Exception:
                 logger.exception("Review draft failed for gig — skipping", extra={"link": gig.link})
                 alert.send_alert(f"⚠️ Review draft failed for {gig.header} — {gig.link}")
+                if gig.link:
+                    draft_failed_links.add(gig.link)
         logger.info(
             "Review drafts queued",
             extra={"count": len(_queued_review_ids), "gig_ids": _queued_review_ids},
         )
     elif review_gigs and dry_run:
         logger.info("Phase 3 — DRY-RUN: would draft review gigs", extra={"count": len(review_gigs)})
+```
+
+`_send_review_alert` now takes `negotiable_fee` as a parameter for the `neg_pending` call site (rather than re-reading `runtime_config.get("negotiable_fee", ...)` a second time inside the alert function itself) — this keeps the alert's displayed "Proposed: £…" line guaranteed to match the value actually used to render the draft that tick, even if the runtime config value is edited concurrently. Go back and update `_send_review_alert`'s signature accordingly (Step 2, above): add `negotiable_fee: int | None = None` as a keyword parameter, and change the body's
+```python
+    if status == "neg_pending":
+        negotiable_fee = runtime_config.get("negotiable_fee", settings.negotiable_fee)
+        fee_line += f"Proposed: £{negotiable_fee}\n"
+```
+to simply
+```python
+    if status == "neg_pending" and negotiable_fee is not None:
+        fee_line += f"Proposed: £{negotiable_fee}\n"
+```
+(the `runtime_config`/`settings` re-read is no longer needed inside this function at all).
+
+Immediately after this block, find the existing seen-gigs write (unchanged in shape, just the one-line filter added):
+```python
+    if not dry_run:
+        newly_seen = {g.link for g in gig_list if g.link}
+        if newly_seen:
+            save_seen_gigs(seen=seen_gigs_set | newly_seen)
+```
+replace with:
+```python
+    if not dry_run:
+        newly_seen = {g.link for g in gig_list if g.link} - draft_failed_links
+        if newly_seen:
+            save_seen_gigs(seen=seen_gigs_set | newly_seen)
 ```
 
 - [ ] **Step 6: Update the `expire_past_applied` call site**
@@ -2196,9 +2517,44 @@ with:
         logger.warning("application_store: expire_past_applied failed", exc_info=True)
 ```
 
-- [ ] **Step 7: Rewrite `TestNegDrafts` and add `TestReviewDrafts` in `tests/test_main.py`**
+- [ ] **Step 7: Protect the pre-existing `TestMain` class, then rewrite `TestNegDrafts` and add `TestReviewDrafts`, in `tests/test_main.py`**
 
-Add a weekday-pinning helper alongside the existing `_future_date` inside `class TestNegDrafts:` (keep `_future_date` itself deleted — nothing else uses it after this edit, confirmed in Task-planning research):
+**First**, add a class-level `autouse` fixture to the pre-existing `class TestMain:` (lines 226–536, none of it otherwise touched by this task). Every gig its tests build is dated a real Sunday (e.g. `"date": "Sunday, March 1, 2026"`) and non-NEG, so every one of them now reaches the new classifier partition — without this fixture, `test_all_filters_disabled_passes_all_gigs` and `test_suspended_blacklist_filter_lets_gig_through` fail outright (their gig gets held instead of reaching the `send_summary`/`apply_to_gig` calls they assert on), and every other test in the class silently makes a real, unmocked `anthropic.Anthropic(...)` call using `_make_minimal_settings()`'s `MagicMock` `anthropic_api_key` — unwanted live network I/O from the test suite, not just a wrong-answer risk. Add immediately after the class docstring, before `_make_minimal_settings`:
+
+```python
+class TestMain:
+    """Tests for the main() scheduler function."""
+
+    @pytest.fixture(autouse=True)
+    def _classifier_and_gmail_defaults(self):
+        """Every gig built in this class is a non-NEG Sunday gig expected to
+        reach Phase 3 unheld — patch the classifier to always say so, and
+        stub GmailClient so nothing here attempts real Gmail/Anthropic I/O.
+        A test that wants different classifier behavior can still override
+        with its own nested `patch("main.classify_gig", ...)`."""
+        with (
+            patch(
+                "main.classify_gig",
+                return_value=gig_classifier.Classification(
+                    decision="auto_send", reason="auto_eligible"
+                ),
+            ),
+            patch("main.GmailClient"),
+        ):
+            yield
+```
+
+This needs two imports the file doesn't currently have at all — `tests/test_main.py` imports neither `pytest` (it has never used `@pytest.fixture` before; `caplog`/`tmp_path`/`monkeypatch` are built-in pytest fixture *names* auto-injected as test arguments, which needs no import) nor `gig_classifier`. Add both now, at the top of the file, alongside the existing `import main as main_module` / `import organist_bot.application_store as application_store`:
+```python
+import pytest
+
+import main as main_module
+import organist_bot.application_store as application_store
+from organist_bot import gig_classifier
+```
+(`from organist_bot import gig_classifier` is also referenced later in this same task's `TestNegDrafts` section — this one addition covers both uses, don't add it twice.)
+
+**Then**, rewrite `TestNegDrafts` and add `TestReviewDrafts`. Add a weekday-pinning helper alongside the existing `_future_date` inside `class TestNegDrafts:` (keep `_future_date` itself deleted — nothing else uses it after this edit, confirmed in Task-planning research):
 
 ```python
     def _date_on_weekday(self, weekday: int) -> str:
@@ -2266,7 +2622,7 @@ Update `_run` to patch `main.GmailClient` and default `main.classify_gig` to an 
         return mock_alert
 ```
 
-Add the import at the top of the file: `from organist_bot import gig_classifier`.
+(`pytest` and `gig_classifier` are already imported at the top of the file from the `TestMain` fix earlier in this step — nothing further to add here.)
 
 Rewrite the two tests that assert on the now-removed `draft_body`/three-button shape:
 
@@ -2444,6 +2800,22 @@ class TestClassifierPartition:
         ):
             mock_rc.get.side_effect = lambda k, d: d
             mock_gmail_cls.return_value.create_draft.return_value = "fake-draft-id"
+            # main.Notifier is a mocked class here (to assert apply_to_gig /
+            # send_summary calls) — but the held-drafts blocks also call
+            # notifier.draft_application(...)/draft_negotiation(...) and
+            # unpack the result as `subject, body = ...`. Without an explicit
+            # return_value, MagicMock() is not iterable and that unpacking
+            # raises ValueError, which the surrounding `except Exception:`
+            # swallows — silently skipping record_held_draft and making
+            # every "was it held?" assertion below fail for the wrong reason.
+            mock_notifier_cls.return_value.draft_application.return_value = (
+                "Subject",
+                "<p>Body</p>",
+            )
+            mock_notifier_cls.return_value.draft_negotiation.return_value = (
+                "Subject",
+                "<p>Body</p>",
+            )
             if classify_return is not None:
                 mock_classify.return_value = classify_return
             main_module.main(scraper)
