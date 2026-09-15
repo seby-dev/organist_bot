@@ -116,9 +116,18 @@ ProcessorFormatter(
   Stage 2).
 - The `exception` field's shape therefore changes from a string (today) to
   a structured list of frame dicts. This is the one intentional schema
-  change; everything else (`timestamp`, `run_id`, `level`, `logger`,
-  `message`, `module`, `function`, `line`, extras) is preserved byte-for-byte
-  in meaning, field names, and value types.
+  change; everything else (`timestamp`, `run_id`, `logger`, `message`,
+  `module`, `function`, `line`, extras) is preserved byte-for-byte in
+  meaning, field names, and value types.
+- One more small, verified-during-planning value change: `structlog.stdlib.add_log_level`
+  emits lowercase level strings (`"info"`, `"warning"`) — today's hand-rolled
+  formatter emits `record.levelname` uppercase (`"INFO"`, `"WARNING"`). This
+  is structlog's own idiomatic convention (its console output and every
+  stdlib-integration example in its docs use lowercase), and nothing
+  downstream of these logs depends on a specific case today, so this is kept
+  as-is rather than fought with a custom processor. Flagged here because it
+  wasn't caught until real API verification during plan-writing, after this
+  spec was first approved.
 
 ### Console handler (tty-aware)
 
