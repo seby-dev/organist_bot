@@ -132,7 +132,7 @@ class TestExpirePastApplied:
         # 2020-01-01 is unambiguously in the past
         self._add_applied("https://organistsonline.org/gig/1", "Sunday, 1 January 2020")
         changed = store.expire_past_applied()
-        assert changed == 1
+        assert len(changed) == 1
         records = json.loads(store._PATH.read_text())
         assert records[0]["status"] == "no_response"
 
@@ -140,7 +140,7 @@ class TestExpirePastApplied:
         # 2099-12-31 is unambiguously in the future
         self._add_applied("https://organistsonline.org/gig/1", "Sunday, 31 December 2099")
         changed = store.expire_past_applied()
-        assert changed == 0
+        assert changed == []
         records = json.loads(store._PATH.read_text())
         assert records[0]["status"] == "applied"
 
@@ -148,7 +148,7 @@ class TestExpirePastApplied:
         self._add_applied("https://organistsonline.org/gig/1", "Sunday, 1 January 2020")
         store.update_status("https://organistsonline.org/gig/1", "accepted")
         changed = store.expire_past_applied()
-        assert changed == 0
+        assert changed == []
         records = json.loads(store._PATH.read_text())
         assert records[0]["status"] == "accepted"
 
@@ -159,7 +159,7 @@ class TestExpirePastApplied:
             "https://organistsonline.org/gig/3", "Sunday, 31 December 2099"
         )  # future — unchanged
         changed = store.expire_past_applied()
-        assert changed == 2
+        assert len(changed) == 2
 
 
 # ── list_applications ─────────────────────────────────────────────────────────
@@ -448,141 +448,240 @@ def _neg_gig(link="https://example.com/g/abc"):
     )
 
 
-class TestNegPending:
-    def test_record_neg_pending_writes_row(self):
+class TestHeldDrafts:
+    def test_record_held_draft_writes_row(self):
         gig = _neg_gig()
-        gig_id = store.record_neg_pending(
-            gig, draft_subject="S", draft_body="<b>", negotiable_fee=120
+        gig_id, created = store.record_held_draft(
+            gig,
+            status="neg_pending",
+            draft_id="draft-abc",
+            draft_subject="S",
+            hold_reason="fee_negotiation",
+            negotiable_fee=120,
         )
         expected = hashlib.sha256(gig.link.encode()).hexdigest()[:12]
         assert gig_id == expected
-        rows = store.list_neg_pending()
+        assert created is True
+        rows = store.list_held()
         assert len(rows) == 1
         r = rows[0]
         assert r["gig_id"] == expected
         assert r["status"] == "neg_pending"
+        assert r["draft_id"] == "draft-abc"
         assert r["draft_subject"] == "S"
-        assert r["draft_body"] == "<b>"
+        assert r["hold_reason"] == "fee_negotiation"
         assert r["negotiable_fee"] == 120
+        assert r["contact"] == gig.contact
         assert r["url"] == gig.link
         assert r["created_at"]
         assert r["decided_at"] is None
         assert r["decision"] is None
+        assert "draft_body" not in r
 
-    def test_record_neg_pending_is_idempotent_for_same_link(self):
+    def test_record_held_draft_review_pending_has_no_negotiable_fee(self):
         gig = _neg_gig()
-        id1 = store.record_neg_pending(gig, draft_subject="S", draft_body="b", negotiable_fee=120)
-        id2 = store.record_neg_pending(gig, draft_subject="S2", draft_body="b2", negotiable_fee=130)
+        gig_id, created = store.record_held_draft(
+            gig,
+            status="review_pending",
+            draft_id="draft-xyz",
+            draft_subject="S",
+            hold_reason="multi_service",
+        )
+        assert created is True
+        r = store.get_by_gig_id(gig_id)
+        assert r["status"] == "review_pending"
+        assert r["hold_reason"] == "multi_service"
+        assert r["negotiable_fee"] is None
+
+    def test_record_held_draft_is_idempotent_for_same_link_returns_created_false(self):
+        gig = _neg_gig()
+        id1, created1 = store.record_held_draft(
+            gig,
+            status="neg_pending",
+            draft_id="draft-1",
+            draft_subject="S",
+            hold_reason="fee_negotiation",
+            negotiable_fee=120,
+        )
+        id2, created2 = store.record_held_draft(
+            gig,
+            status="neg_pending",
+            draft_id="draft-2",
+            draft_subject="S2",
+            hold_reason="fee_negotiation",
+            negotiable_fee=130,
+        )
         assert id1 == id2
-        rows = store.list_neg_pending()
+        assert created1 is True
+        assert created2 is False
+        rows = store.list_held()
         assert len(rows) == 1
-        # First write wins (preserves the original draft the user is reviewing).
-        assert rows[0]["draft_body"] == "b"
+        # First write wins — the caller (main.py) is responsible for deleting
+        # the now-orphaned second Gmail draft ("draft-2") since created=False.
+        assert rows[0]["draft_id"] == "draft-1"
 
-    def test_list_neg_pending_returns_only_neg_pending_rows(self):
-        store.record_neg_pending(
-            _neg_gig("https://e.com/1"), draft_subject="S", draft_body="b", negotiable_fee=120
+    def test_list_held_returns_only_neg_and_review_pending_rows(self):
+        store.record_held_draft(
+            _neg_gig("https://e.com/1"),
+            status="neg_pending",
+            draft_id="d1",
+            draft_subject="S",
+            hold_reason="fee_negotiation",
+            negotiable_fee=120,
         )
-        store.record_application(_neg_gig("https://e.com/2"))  # status=applied
-        rows = store.list_neg_pending()
-        assert len(rows) == 1
-        assert rows[0]["url"] == "https://e.com/1"
+        store.record_held_draft(
+            _neg_gig("https://e.com/2"),
+            status="review_pending",
+            draft_id="d2",
+            draft_subject="S",
+            hold_reason="weekday",
+        )
+        store.record_application(_neg_gig("https://e.com/3"))  # status=applied
+        rows = store.list_held()
+        assert {r["url"] for r in rows} == {"https://e.com/1", "https://e.com/2"}
 
-    def test_transition_to_applied_sets_applied_at_and_overwrites_body(self):
-        gig_id = store.record_neg_pending(
-            _neg_gig(), draft_subject="S", draft_body="draft body", negotiable_fee=120
+    def test_list_held_filters_by_status(self):
+        store.record_held_draft(
+            _neg_gig("https://e.com/1"),
+            status="neg_pending",
+            draft_id="d1",
+            draft_subject="S",
+            hold_reason="fee_negotiation",
+            negotiable_fee=120,
         )
-        ok = store.transition_neg_pending(gig_id, to="applied", sent_body="final body")
-        assert ok is True
-        r = store._read()[0]
+        store.record_held_draft(
+            _neg_gig("https://e.com/2"),
+            status="review_pending",
+            draft_id="d2",
+            draft_subject="S",
+            hold_reason="weekday",
+        )
+        assert [r["url"] for r in store.list_held(status="neg_pending")] == ["https://e.com/1"]
+        assert [r["url"] for r in store.list_held(status="review_pending")] == ["https://e.com/2"]
+
+    def test_transition_held_to_applied_sets_applied_at(self):
+        gig_id, _ = store.record_held_draft(
+            _neg_gig(),
+            status="neg_pending",
+            draft_id="d1",
+            draft_subject="S",
+            hold_reason="fee_negotiation",
+            negotiable_fee=120,
+        )
+        assert store.transition_held(gig_id, to="applied") is True
+        r = store.get_by_gig_id(gig_id)
         assert r["status"] == "applied"
         assert r["decision"] == "applied"
         assert r["decided_at"]
-        assert r["draft_body"] == "final body"
         assert r["applied_at"]
 
-    def test_transition_to_rejected(self):
-        gig_id = store.record_neg_pending(
-            _neg_gig(), draft_subject="S", draft_body="b", negotiable_fee=120
+    def test_transition_held_works_for_review_pending_too(self):
+        gig_id, _ = store.record_held_draft(
+            _neg_gig(),
+            status="review_pending",
+            draft_id="d1",
+            draft_subject="S",
+            hold_reason="weekday",
         )
-        assert store.transition_neg_pending(gig_id, to="rejected") is True
-        r = store._read()[0]
-        assert r["status"] == "rejected"
-        assert r["decision"] == "rejected"
+        assert store.transition_held(gig_id, to="rejected") is True
+        assert store.get_by_gig_id(gig_id)["status"] == "rejected"
 
-    def test_transition_idempotent_second_call_returns_false(self):
-        gig_id = store.record_neg_pending(
-            _neg_gig(), draft_subject="S", draft_body="b", negotiable_fee=120
+    def test_transition_held_idempotent_second_call_returns_false(self):
+        gig_id, _ = store.record_held_draft(
+            _neg_gig(),
+            status="neg_pending",
+            draft_id="d1",
+            draft_subject="S",
+            hold_reason="fee_negotiation",
+            negotiable_fee=120,
         )
-        assert store.transition_neg_pending(gig_id, to="applied") is True
-        assert store.transition_neg_pending(gig_id, to="rejected") is False
-        assert store._read()[0]["status"] == "applied"
+        assert store.transition_held(gig_id, to="applied") is True
+        assert store.transition_held(gig_id, to="rejected") is False
+        assert store.get_by_gig_id(gig_id)["status"] == "applied"
 
-    def test_transition_unknown_id_returns_false(self):
-        assert store.transition_neg_pending("deadbeefcafe", to="applied") is False
-
-    def test_update_neg_draft_persists_body_and_fee(self):
-        gig_id = store.record_neg_pending(
-            _neg_gig(), draft_subject="S", draft_body="old body", negotiable_fee=120
-        )
-        ok = store.update_neg_draft(
-            gig_id, draft_subject="New subject", draft_body="new body", negotiable_fee=150
-        )
-        assert ok is True
-        r = store._read()[0]
-        assert r["draft_subject"] == "New subject"
-        assert r["draft_body"] == "new body"
-        assert r["negotiable_fee"] == 150
-        assert r["status"] == "neg_pending"
-
-    def test_update_neg_draft_partial_update_leaves_other_fields(self):
-        gig_id = store.record_neg_pending(
-            _neg_gig(), draft_subject="S", draft_body="old body", negotiable_fee=120
-        )
-        ok = store.update_neg_draft(gig_id, draft_body="only body changed")
-        assert ok is True
-        r = store._read()[0]
-        assert r["draft_subject"] == "S"
-        assert r["draft_body"] == "only body changed"
-        assert r["negotiable_fee"] == 120
-
-    def test_update_neg_draft_unknown_id_returns_false(self):
-        assert store.update_neg_draft("deadbeefcafe", draft_body="x") is False
-
-    def test_update_neg_draft_already_decided_returns_false(self):
-        gig_id = store.record_neg_pending(
-            _neg_gig(), draft_subject="S", draft_body="b", negotiable_fee=120
-        )
-        store.transition_neg_pending(gig_id, to="rejected")
-        assert store.update_neg_draft(gig_id, draft_body="too late") is False
-        assert store._read()[0]["draft_body"] == "b"
+    def test_transition_held_unknown_id_returns_false(self):
+        assert store.transition_held("deadbeefcafe", to="applied") is False
 
 
-class TestExpireNegPending:
-    def test_expire_past_neg_pending_flips_to_expired(self):
+class TestExpireHeldDrafts:
+    def test_expire_past_neg_pending_flips_to_expired_and_is_returned(self):
         past = (datetime.date.today() - datetime.timedelta(days=5)).strftime("%A, %B %d, %Y")
         gig = _neg_gig()
         gig.date = past
-        store.record_neg_pending(gig, draft_subject="S", draft_body="b", negotiable_fee=120)
-        changed = store.expire_past_applied()
-        assert changed >= 1
-        r = store._read()[0]
+        store.record_held_draft(
+            gig,
+            status="neg_pending",
+            draft_id="draft-1",
+            draft_subject="S",
+            hold_reason="fee_negotiation",
+            negotiable_fee=120,
+        )
+        expired_rows = store.expire_past_applied()
+        assert len(expired_rows) == 1
+        assert expired_rows[0]["draft_id"] == "draft-1"
+        assert expired_rows[0]["status"] == "expired"
+        r = store.get_by_gig_id(expired_rows[0]["gig_id"])
         assert r["status"] == "expired"
         assert r["decision"] == "expired"
         assert r["decided_at"]
 
-    def test_expire_does_not_flip_future_neg_pending(self):
+    def test_expire_past_review_pending_flips_to_expired_and_is_returned(self):
+        past = (datetime.date.today() - datetime.timedelta(days=5)).strftime("%A, %B %d, %Y")
+        gig = _neg_gig()
+        gig.date = past
+        store.record_held_draft(
+            gig,
+            status="review_pending",
+            draft_id="draft-2",
+            draft_subject="S",
+            hold_reason="weekday",
+        )
+        expired_rows = store.expire_past_applied()
+        assert len(expired_rows) == 1
+        assert expired_rows[0]["draft_id"] == "draft-2"
+        assert store.get_by_gig_id(expired_rows[0]["gig_id"])["status"] == "expired"
+
+    def test_expire_does_not_flip_future_held_rows(self):
         future = (datetime.date.today() + datetime.timedelta(days=30)).strftime("%A, %B %d, %Y")
         gig = _neg_gig()
         gig.date = future
-        store.record_neg_pending(gig, draft_subject="S", draft_body="b", negotiable_fee=120)
-        store.expire_past_applied()
-        assert store._read()[0]["status"] == "neg_pending"
+        store.record_held_draft(
+            gig,
+            status="neg_pending",
+            draft_id="d1",
+            draft_subject="S",
+            hold_reason="fee_negotiation",
+            negotiable_fee=120,
+        )
+        assert store.expire_past_applied() == []
+        assert store.get_by_gig_id(store.list_held()[0]["gig_id"])["status"] == "neg_pending"
 
-    def test_expire_still_flips_past_applied_to_no_response(self):
+    def test_expire_still_flips_past_applied_to_no_response_and_returns_it(self):
         past = (datetime.date.today() - datetime.timedelta(days=5)).strftime("%A, %B %d, %Y")
         gig = _neg_gig()
         gig.date = past
         store.record_application(gig)
-        store.expire_past_applied()
+        expired_rows = store.expire_past_applied()
+        assert len(expired_rows) == 1
+        assert "draft_id" not in expired_rows[0]
+        assert expired_rows[0]["status"] == "no_response"
         assert store._read()[0]["status"] == "no_response"
+
+    def test_expire_returns_both_kinds_of_row_in_one_call(self):
+        past = (datetime.date.today() - datetime.timedelta(days=5)).strftime("%A, %B %d, %Y")
+        applied_gig = _neg_gig("https://e.com/applied")
+        applied_gig.date = past
+        store.record_application(applied_gig)
+        held_gig = _neg_gig("https://e.com/held")
+        held_gig.date = past
+        store.record_held_draft(
+            held_gig,
+            status="review_pending",
+            draft_id="d1",
+            draft_subject="S",
+            hold_reason="weekday",
+        )
+        expired_rows = store.expire_past_applied()
+        assert len(expired_rows) == 2
+        statuses = {r["url"]: r["status"] for r in expired_rows}
+        assert statuses == {"https://e.com/applied": "no_response", "https://e.com/held": "expired"}
