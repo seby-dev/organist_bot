@@ -139,6 +139,13 @@ class TestCheckReplies:
             ),
             patch("organist_bot.reply_monitor.application_store.update_status") as mock_update,
             patch("organist_bot.reply_monitor.application_store.update_reply_message_id"),
+            patch(
+                "organist_bot.reply_monitor.application_store.was_unclear_alerted",
+                return_value=False,
+            ),
+            patch(
+                "organist_bot.reply_monitor.application_store.mark_unclear_alerted"
+            ) as mock_mark_unclear,
             patch("organist_bot.reply_monitor._make_gmail_client") as mock_gmail,
             patch("organist_bot.reply_monitor._classify_reply", return_value="unclear"),
             patch("organist_bot.reply_monitor._send_telegram_notification") as mock_notify,
@@ -149,6 +156,40 @@ class TestCheckReplies:
             check_replies()
         mock_update.assert_not_called()
         mock_notify.assert_called_once()
+        mock_mark_unclear.assert_called_once_with("http://a.com/1", "msg1")
+
+    def test_unclear_reply_already_alerted_does_not_notify_again(self):
+        """A prior tick already alerted on this exact message — the next tick
+        (still classified unclear, still no reply_message_id stamped) must not
+        send a second Telegram notification for the same message_id."""
+        records = [_make_record("http://a.com/1", "church@example.com", "applied")]
+        messages = [_make_message("msg1", "church@example.com")]
+        with (
+            patch("organist_bot.reply_monitor.settings") as mock_settings,
+            patch(
+                "organist_bot.reply_monitor.application_store.list_applications",
+                return_value=records,
+            ),
+            patch("organist_bot.reply_monitor.application_store.update_status") as mock_update,
+            patch("organist_bot.reply_monitor.application_store.update_reply_message_id"),
+            patch(
+                "organist_bot.reply_monitor.application_store.was_unclear_alerted",
+                return_value=True,
+            ),
+            patch(
+                "organist_bot.reply_monitor.application_store.mark_unclear_alerted"
+            ) as mock_mark_unclear,
+            patch("organist_bot.reply_monitor._make_gmail_client") as mock_gmail,
+            patch("organist_bot.reply_monitor._classify_reply", return_value="unclear"),
+            patch("organist_bot.reply_monitor._send_telegram_notification") as mock_notify,
+        ):
+            self._patch_settings(mock_settings)
+            mock_gmail.return_value.fetch_reply_messages.return_value = messages
+
+            check_replies()
+        mock_update.assert_not_called()
+        mock_notify.assert_not_called()
+        mock_mark_unclear.assert_not_called()
 
     def test_dedup_skips_message_when_reply_message_id_already_set(self):
         records = [

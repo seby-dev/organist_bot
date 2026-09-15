@@ -217,6 +217,37 @@ def update_reply_message_id(url: str, message_id: str) -> bool:
     return False
 
 
+def was_unclear_alerted(url: str, message_id: str) -> bool:
+    """True if this exact message_id already triggered an 'unclear reply' alert.
+
+    An 'unclear' classification deliberately does not stamp reply_message_id
+    (see reply_monitor.check_replies) so a later, clearer reply to the same
+    application is still picked up. Without a separate dedup key, the same
+    unclear message gets reclassified and re-alerted every poll tick forever.
+    """
+    for r in _read():
+        if r.get("url") == url:
+            return message_id in (r.get("alerted_unclear_ids") or [])
+    return False
+
+
+def mark_unclear_alerted(url: str, message_id: str) -> bool:
+    """Record that message_id has already triggered an 'unclear reply' alert
+    for the record with this URL. Returns False if not found."""
+    with atomic_store.file_lock(_PATH):
+        records = _read()
+        for r in records:
+            if r.get("url") == url:
+                ids = r.get("alerted_unclear_ids") or []
+                if message_id not in ids:
+                    ids.append(message_id)
+                r["alerted_unclear_ids"] = ids
+                r["updated_at"] = _now_iso()
+                _write(records)
+                return True
+    return False
+
+
 def upsert_accepted(
     url: str | None,
     header: str,
