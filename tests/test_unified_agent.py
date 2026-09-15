@@ -2069,7 +2069,7 @@ async def test_manage_config_rejects_negotiable_fee_out_of_range(tmp_path, monke
 
 
 def _held_gig(link="https://e.com/1"):
-    from organist_bot.models import Gig  # same local-import convention _seed_neg_pending used
+    from organist_bot.models import Gig  # local import to keep this helper self-contained
 
     return Gig(
         header="Sunday Service",

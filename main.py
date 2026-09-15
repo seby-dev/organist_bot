@@ -59,8 +59,8 @@ def _send_review_alert(
 ) -> None:
     """Single Telegram message for a held gig (NEG or review) — gig details
     as scraped, with Accept/Decline buttons. Replaces the old two-message
-    _send_neg_alert (gig details, then draft text + Accept/Edit/Reject) now
-    that the draft itself lives in Gmail, not in this message.
+    alert (gig details, then draft text + Accept/Edit/Reject) now that the
+    draft itself lives in Gmail, not in this message.
 
     negotiable_fee is only meaningful for status="neg_pending" — pass the
     same value the caller just used to render the draft (not re-read from
