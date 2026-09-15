@@ -117,6 +117,101 @@ class TestWorkingTreeClean:
         assert ad._working_tree_clean(not_a_repo) is False
 
 
+class TestMainWrongBranchAlert:
+    """main()'s "HEAD isn't on main" branch — the alert this fix adds."""
+
+    @pytest.fixture(autouse=True)
+    def _isolate(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(ad, "REPO", tmp_path)
+        monkeypatch.setattr(ad, "SHA_FILE", tmp_path / "last_deployed_sha.txt")
+        monkeypatch.setattr(
+            ad, "WRONG_BRANCH_SHA_FILE", tmp_path / "last_wrong_branch_alert_sha.txt"
+        )
+
+    def test_alerts_once_when_head_not_on_main(self):
+        remote_sha = "a" * 40
+        with (
+            patch.object(
+                ad,
+                "run",
+                side_effect=[
+                    _completed(0),  # fetch
+                    _completed(0, stdout=remote_sha),  # rev-parse origin/main
+                    _completed(0, stdout="feature-branch"),  # rev-parse --abbrev-ref HEAD
+                ],
+            ),
+            patch.object(ad, "_send_alert") as mock_alert,
+        ):
+            ad.main()
+        mock_alert.assert_called_once()
+        message = mock_alert.call_args[0][0]
+        assert "feature-branch" in message
+        assert remote_sha[:8] in message
+        assert ad.WRONG_BRANCH_SHA_FILE.read_text().strip() == remote_sha
+
+    def test_does_not_realert_same_stuck_sha_on_next_tick(self):
+        remote_sha = "b" * 40
+        ad.WRONG_BRANCH_SHA_FILE.write_text(remote_sha + "\n")
+        with (
+            patch.object(
+                ad,
+                "run",
+                side_effect=[
+                    _completed(0),
+                    _completed(0, stdout=remote_sha),
+                    _completed(0, stdout="feature-branch"),
+                ],
+            ),
+            patch.object(ad, "_send_alert") as mock_alert,
+        ):
+            ad.main()
+        mock_alert.assert_not_called()
+
+    def test_realerts_when_a_new_commit_lands_while_still_stuck(self):
+        old_sha = "c" * 40
+        new_sha = "d" * 40
+        ad.WRONG_BRANCH_SHA_FILE.write_text(old_sha + "\n")
+        with (
+            patch.object(
+                ad,
+                "run",
+                side_effect=[
+                    _completed(0),
+                    _completed(0, stdout=new_sha),
+                    _completed(0, stdout="feature-branch"),
+                ],
+            ),
+            patch.object(ad, "_send_alert") as mock_alert,
+        ):
+            ad.main()
+        mock_alert.assert_called_once()
+        assert ad.WRONG_BRANCH_SHA_FILE.read_text().strip() == new_sha
+
+    def test_successful_deploy_clears_stale_wrong_branch_marker(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(ad, "FAILED_SHA_FILE", tmp_path / "last_failed_deploy_sha.txt")
+        monkeypatch.setattr(ad, "PLISTS", [])
+        remote_sha = "e" * 40
+        # A stale marker left over from an earlier stuck-branch period.
+        ad.WRONG_BRANCH_SHA_FILE.write_text(("f" * 40) + "\n")
+        with (
+            patch.object(
+                ad,
+                "run",
+                side_effect=[
+                    _completed(0),  # fetch
+                    _completed(0, stdout=remote_sha),  # rev-parse origin/main
+                    _completed(0, stdout="main"),  # rev-parse --abbrev-ref HEAD
+                    _completed(0),  # merge --ff-only
+                    _completed(0),  # uv sync
+                ],
+            ),
+            patch.object(ad, "_run_checks", return_value=None),
+        ):
+            ad.main()
+        assert not ad.WRONG_BRANCH_SHA_FILE.exists()
+        assert ad.SHA_FILE.read_text().strip() == remote_sha
+
+
 class TestSendAlert:
     def test_posts_when_configured(self, tmp_path):
         (tmp_path / ".env").write_text("TELEGRAM_BOT_TOKEN=abc\nTELEGRAM_CHAT_ID=123\n")

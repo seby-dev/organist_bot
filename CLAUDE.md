@@ -37,9 +37,13 @@ than merging immediately.
 Separately, `scripts/auto_deploy.py` re-runs the same checks locally
 (ruff/mypy/pytest) immediately before restarting the live bots, as a
 backstop that doesn't depend on GitHub Actions or `gh` auth being
-reachable from a background launchd process. See its module docstring for
-the exact failure-handling behavior (alert-once-per-SHA, conditional safe
-rollback).
+reachable from a background launchd process. It also refuses to deploy at
+all unless its own checkout (`~/Developer/organist_bot`) has `HEAD` on
+`main` — a checkout left on another branch (e.g. mid-feature-work in the
+same directory instead of a worktree) silently blocks every subsequent
+deploy until it's switched back, and sends one Telegram alert per stuck
+commit for exactly this reason. See its module docstring for the exact
+failure-handling behavior (alert-once-per-SHA, conditional safe rollback).
 
 ## Commands
 
@@ -180,6 +184,7 @@ Optional sections in `.env`:
 | `data/listings_hash.txt` | Hash of last-seen listings HTML for short-circuit detection |
 | `data/last_deployed_sha.txt` | SHA of the last successfully deployed commit; written by `scripts/auto_deploy.py` after each restart (gitignored) |
 | `data/last_failed_deploy_sha.txt` | SHA of the last commit that failed `auto_deploy.py`'s local re-run gate (ruff/mypy/pytest); prevents re-alerting every 60s for the same stuck failure (gitignored) |
+| `data/last_wrong_branch_alert_sha.txt` | SHA of the last commit `auto_deploy.py` couldn't deploy because its checkout wasn't on `main`; prevents re-alerting every 60s while the checkout stays on another branch (gitignored) |
 | `data/gmail_token.json` | OAuth2 token for Gmail reply monitoring (gitignored) |
 | `data/reply_monitor_since_floor.txt` | Earliest date `reply_monitor.check_replies` will ever search Gmail for; set to "today" on first use and never moves backward, so replies to applications made before it was introduced aren't retroactively surfaced |
 | `clients.json` | Invoice client database (project root) |

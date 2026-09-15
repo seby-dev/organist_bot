@@ -8,7 +8,10 @@ the venv and restarts the bots via launchctl.
 REPO is also the interactive dev working copy, so this deliberately never
 does a hard reset on a dirty tree: a fast-forward-only merge just refuses
 (leaving everything untouched) if there are local commits or uncommitted
-changes that would be overwritten, or if HEAD isn't on main. The one
+changes that would be overwritten, or if HEAD isn't on main — that last
+case sends one alert per stuck commit (see WRONG_BRANCH_SHA_FILE) rather
+than failing silently, since a checkout left on another branch otherwise
+blocks every deploy with nothing but a log line to show for it. The one
 exception is the local-check-failure path below, which only resets when
 the tree is already clean — see _working_tree_clean.
 
@@ -37,6 +40,10 @@ SHA_FILE = REPO / "data" / "last_deployed_sha.txt"
 # Records the SHA of the last commit that failed the local re-run gate, so a
 # stuck failure alerts once rather than every 60-second tick.
 FAILED_SHA_FILE = REPO / "data" / "last_failed_deploy_sha.txt"
+# Records the SHA of the last commit that couldn't deploy because HEAD wasn't
+# on main, so that alert also fires once per stuck commit rather than every
+# 60-second tick.
+WRONG_BRANCH_SHA_FILE = REPO / "data" / "last_wrong_branch_alert_sha.txt"
 
 
 def run(cmd, **kwargs):
@@ -112,6 +119,14 @@ def main() -> None:
     ).stdout.strip()
     if branch != "main":
         print(f"[{ts()}] HEAD is on '{branch}', not main -- skipping auto-deploy")
+        if not _already_alerted(remote, WRONG_BRANCH_SHA_FILE):
+            _send_alert(
+                f"⚠️ Deploy blocked — checkout is on '{branch}', not main. "
+                f"Commit {remote[:8]} on origin/main will not deploy until "
+                "this checkout is switched back to main.",
+                REPO,
+            )
+            WRONG_BRANCH_SHA_FILE.write_text(remote + "\n")
         return
 
     print(f"[{ts()}] New commits on main -- attempting deploy")
@@ -158,6 +173,8 @@ def main() -> None:
     SHA_FILE.write_text(remote + "\n")
     if FAILED_SHA_FILE.exists():
         FAILED_SHA_FILE.unlink()
+    if WRONG_BRANCH_SHA_FILE.exists():
+        WRONG_BRANCH_SHA_FILE.unlink()
     print(f"[{ts()}] Deploy complete -- now at {remote}")
 
 
