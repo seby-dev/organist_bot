@@ -334,6 +334,71 @@ class TestUpdateReplyMessageId:
         assert store.update_reply_message_id("http://notfound.com", "msg123") is False
 
 
+# ── was_unclear_alerted / mark_unclear_alerted ───────────────────────────────
+
+
+class TestUnclearAlertDedup:
+    def _make_record(self, url, email="church@example.com"):
+        return {
+            "url": url,
+            "header": "Test",
+            "organisation": "St John",
+            "date": "2026-06-10",
+            "fee": "£100",
+            "email": email,
+            "status": "applied",
+            "applied_at": "2026-06-01T10:00:00Z",
+            "updated_at": "2026-06-01T10:00:00Z",
+        }
+
+    def test_not_alerted_before_marking(self, tmp_path, monkeypatch):
+        import organist_bot.application_store as store
+
+        monkeypatch.setattr(store, "_PATH", tmp_path / "applications.json")
+        (tmp_path / "applications.json").write_text(
+            json.dumps([self._make_record("http://a.com/1")])
+        )
+        assert store.was_unclear_alerted("http://a.com/1", "msg1") is False
+
+    def test_mark_then_was_alerted_round_trip(self, tmp_path, monkeypatch):
+        import organist_bot.application_store as store
+
+        monkeypatch.setattr(store, "_PATH", tmp_path / "applications.json")
+        (tmp_path / "applications.json").write_text(
+            json.dumps([self._make_record("http://a.com/1")])
+        )
+        assert store.mark_unclear_alerted("http://a.com/1", "msg1") is True
+        assert store.was_unclear_alerted("http://a.com/1", "msg1") is True
+        # A different message_id on the same record is unaffected.
+        assert store.was_unclear_alerted("http://a.com/1", "msg2") is False
+
+    def test_mark_is_idempotent_and_does_not_duplicate_ids(self, tmp_path, monkeypatch):
+        import organist_bot.application_store as store
+
+        monkeypatch.setattr(store, "_PATH", tmp_path / "applications.json")
+        (tmp_path / "applications.json").write_text(
+            json.dumps([self._make_record("http://a.com/1")])
+        )
+        store.mark_unclear_alerted("http://a.com/1", "msg1")
+        store.mark_unclear_alerted("http://a.com/1", "msg1")
+        records = json.loads((tmp_path / "applications.json").read_text())
+        assert records[0]["alerted_unclear_ids"] == ["msg1"]
+
+    def test_mark_returns_false_when_url_not_found(self, tmp_path, monkeypatch):
+        import organist_bot.application_store as store
+
+        monkeypatch.setattr(store, "_PATH", tmp_path / "applications.json")
+        (tmp_path / "applications.json").write_text(json.dumps([]))
+        assert store.mark_unclear_alerted("http://notfound.com", "msg1") is False
+
+    def test_was_alerted_returns_false_when_url_not_found(self, tmp_path, monkeypatch):
+        import organist_bot.application_store as store
+
+        monkeypatch.setattr(store, "_PATH", tmp_path / "applications.json")
+        (tmp_path / "applications.json").write_text(json.dumps([]))
+        assert store.was_unclear_alerted("http://notfound.com", "msg1") is False
+
+
 # ── New fields: postcode, time, travel buffer IDs ────────────────────────────
 
 

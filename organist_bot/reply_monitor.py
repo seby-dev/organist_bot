@@ -335,9 +335,13 @@ def check_replies() -> None:
                                 )
 
             elif classification == "unclear":
+                if url and application_store.was_unclear_alerted(url, msg_id):
+                    continue
                 _send_telegram_notification(
                     f'📧 Unclassified reply from {org} ({date}):\n"{msg.get("body", "")[:300]}"'
                 )
+                if url:
+                    application_store.mark_unclear_alerted(url, msg_id)
 
         except Exception as exc:
             logger.warning(
