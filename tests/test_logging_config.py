@@ -2,8 +2,10 @@
 
 import json
 import logging
+import sys
 
 import pytest
+from structlog.stdlib import ProcessorFormatter
 
 from organist_bot.logging_config import (
     RunIdFilter,
@@ -198,3 +200,69 @@ class TestSelectConsoleFormatter:
         with pytest.raises(json.JSONDecodeError):
             json.loads(line)
         assert "check" in line
+
+
+# ── setup_logging() wiring ──────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def _clean_root_logger():
+    """Give setup_logging() a root logger with no handlers, and restore the
+    original ones afterwards so this test can't leak state into others."""
+    root = logging.getLogger()
+    saved_handlers = root.handlers[:]
+    saved_level = root.level
+    root.handlers = []
+    yield root
+    root.handlers = saved_handlers
+    root.setLevel(saved_level)
+
+
+class TestSetupLoggingConsoleSelection:
+    def test_tty_stdout_attaches_console_pipeline(self, monkeypatch, tmp_path, _clean_root_logger):
+        monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+        from organist_bot.logging_config import setup_logging
+
+        # pytest's own log-capture handler re-attaches to the root logger right as
+        # the "call" phase starts — i.e. after _clean_root_logger's fixture body
+        # runs but before this test body gets control — which would otherwise trip
+        # setup_logging()'s idempotency guard. Clear it here, immediately before
+        # exercising setup_logging(), so the guard sees the empty root logger the
+        # fixture actually intended.
+        _clean_root_logger.handlers = []
+        setup_logging(str(tmp_path / "gigs.log"))
+
+        console_handler = _clean_root_logger.handlers[0]
+        assert isinstance(console_handler.formatter, ProcessorFormatter)
+        line = console_handler.formatter.format(_make_record("tty wiring check"))
+        with pytest.raises(json.JSONDecodeError):
+            json.loads(line)
+
+    def test_non_tty_stdout_attaches_json_pipeline(self, monkeypatch, tmp_path, _clean_root_logger):
+        monkeypatch.setattr(sys.stdout, "isatty", lambda: False)
+        from organist_bot.logging_config import setup_logging
+
+        # See the comment in test_tty_stdout_attaches_console_pipeline above.
+        _clean_root_logger.handlers = []
+        setup_logging(str(tmp_path / "gigs.log"))
+
+        console_handler = _clean_root_logger.handlers[0]
+        doc = json.loads(console_handler.formatter.format(_make_record("non-tty wiring check")))
+        assert doc["message"] == "non-tty wiring check"
+
+
+class TestSetupLoggingCaplogCompatibility:
+    def test_caplog_still_captures_after_setup_logging_runs(
+        self, monkeypatch, tmp_path, caplog, _clean_root_logger
+    ):
+        """setup_logging() must not interfere with pytest's own log-capture handler."""
+        monkeypatch.setattr(sys.stdout, "isatty", lambda: False)
+        from organist_bot.logging_config import setup_logging
+
+        setup_logging(str(tmp_path / "gigs.log"))
+
+        logger = logging.getLogger("organist_bot.test_caplog_compat")
+        with caplog.at_level(logging.INFO, logger="organist_bot.test_caplog_compat"):
+            logger.info("caplog compatibility check")
+
+        assert any(r.message == "caplog compatibility check" for r in caplog.records)
