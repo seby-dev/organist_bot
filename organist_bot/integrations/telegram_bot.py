@@ -145,7 +145,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text(f"❌ Unexpected error: {exc}")
 
 
-# ── NEG draft callback handler ──────────────────────────────────────────────
+# ── Review draft callback handler ───────────────────────────────────────────
 
 
 async def _edit_buttons_quietly(
@@ -159,7 +159,7 @@ async def _edit_buttons_quietly(
             chat_id=chat_id, message_id=message_id, reply_markup=_build_reply_markup(buttons)
         )
     except BadRequest as exc:
-        logger.debug("Telegram: NEG button edit failed: %s", exc)
+        logger.debug("Telegram: button edit failed: %s", exc)
 
 
 async def _edit_text_quietly(
@@ -177,10 +177,10 @@ async def _edit_text_quietly(
             reply_markup=_build_reply_markup(buttons),
         )
     except BadRequest as exc:
-        logger.debug("Telegram: NEG message edit failed: %s", exc)
+        logger.debug("Telegram: message edit failed: %s", exc)
 
 
-async def handle_neg_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def handle_review_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     assert update.callback_query is not None
     await update.callback_query.answer()
 
@@ -195,65 +195,30 @@ async def handle_neg_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     data = update.callback_query.data or ""
     parts = data.split(":", 2)
-    if len(parts) != 3 or parts[0] != "neg":
+    if len(parts) != 3 or parts[0] != "review":
         return
     _, action, gig_id = parts
 
     if action == "accept":
         await _edit_buttons_quietly(
-            context, chat_id, message_id, unified_agent.neg_confirm_buttons(gig_id, send=True)
+            context, chat_id, message_id, unified_agent.review_confirm_send_buttons(gig_id)
         )
-    elif action == "reject":
-        await _edit_buttons_quietly(
-            context, chat_id, message_id, unified_agent.neg_confirm_buttons(gig_id, send=False)
-        )
-    elif action == "edit":
-        unified_agent.set_active_neg_draft(chat_id, gig_id)
-        # Persist immediately — unlike the LLM path, nothing else will call
-        # _persist_chat before the user's next message, so a restart between
-        # this tap and that message would otherwise lose the active draft.
-        unified_agent._persist_chat(chat_id)
-        await _edit_text_quietly(
-            context, chat_id, message_id, "✏️ What would you like to change about this draft?"
-        )
-    elif action == "confirm_send":
-        ok, result = await unified_agent.neg_confirm_send(gig_id)
+    elif action == "decline":
+        ok, result = unified_agent.review_decline(gig_id)
         await _edit_text_quietly(context, chat_id, message_id, f"{'✅' if ok else '❌'} {result}")
-    elif action == "confirm_reject":
-        ok, result = unified_agent.neg_confirm_reject(gig_id)
+    elif action == "confirm_send":
+        ok, result = await unified_agent.review_confirm_send(gig_id)
         await _edit_text_quietly(context, chat_id, message_id, f"{'✅' if ok else '❌'} {result}")
     elif action == "cancel":
-        view = unified_agent.neg_draft_view(gig_id)
-        if view is None:
-            await _edit_text_quietly(
-                context, chat_id, message_id, "This draft is no longer available."
-            )
-        else:
-            text, buttons = view
-            await _edit_text_quietly(context, chat_id, message_id, text, buttons)
-    elif action == "pick":
-        unified_agent.set_active_neg_draft(chat_id, gig_id)
-        instruction = unified_agent.pop_pending_neg_instruction(chat_id)
-        if instruction is None:
-            await context.bot.send_message(
-                chat_id=chat_id,
-                text="I lost track of what you asked — please repeat it for this draft.",
-            )
-            return
-        responses = await unified_agent.process_message(chat_id, f"For gig {gig_id}: {instruction}")
-        for resp in responses:
-            if resp.text:
-                await context.bot.send_message(
-                    chat_id=chat_id,
-                    text=resp.text,
-                    reply_markup=_build_reply_markup(resp.buttons),
-                )
+        await _edit_buttons_quietly(
+            context, chat_id, message_id, unified_agent.review_accept_buttons(gig_id)
+        )
 
 
 async def handle_llm_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Apply or discard a pending LLM provider/model switch — see
     manage_llm_provider's "set" action and unified_agent.llm_confirm_switch/
-    llm_cancel_switch. Same two-step confirm pattern as handle_neg_callback."""
+    llm_cancel_switch. Same two-step confirm pattern as handle_review_callback."""
     assert update.callback_query is not None
     await update.callback_query.answer()
 
@@ -290,7 +255,7 @@ def run(token: str) -> None:
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(tg_filters.TEXT & ~tg_filters.COMMAND, handle_message))
-    app.add_handler(CallbackQueryHandler(handle_neg_callback, pattern=r"^neg:"))
+    app.add_handler(CallbackQueryHandler(handle_review_callback, pattern=r"^review:"))
     app.add_handler(CallbackQueryHandler(handle_llm_callback, pattern=r"^llm:"))
 
     cal = unified_agent._make_calendar_client()
