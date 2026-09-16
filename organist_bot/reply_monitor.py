@@ -281,6 +281,16 @@ def check_replies() -> None:
             if classification != "unclear":
                 if url:
                     wrote = application_store.update_reply_message_id(url, msg_id)
+                    # update_reply_message_id persists to a freshly-read copy of
+                    # the store, not this `record` object -- mirror the stamp onto
+                    # it too, unconditionally (even if the disk write itself
+                    # failed), or a second, different message matching this same
+                    # record later in THIS SAME loop (e.g. two separate replies
+                    # from the organiser before either is persisted, or the write
+                    # failing) would still see reply_message_id unset and
+                    # re-trigger the full accepted/rejected/cancellation side
+                    # effects again for the rest of this run.
+                    record["reply_message_id"] = msg_id
                     if not wrote:
                         logger.warning(
                             "reply_monitor: could not persist reply_message_id for url=%r — "

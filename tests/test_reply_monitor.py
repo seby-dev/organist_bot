@@ -213,6 +213,46 @@ class TestCheckReplies:
         mock_classify.assert_not_called()
         mock_update.assert_not_called()
 
+    def test_multiple_messages_matching_same_record_in_one_tick_notify_once(self):
+        """Two separate Gmail messages within the same check_replies() run both
+        match the same application record (e.g. two distinct emails from the
+        same organiser before either is persisted). The reply_message_id guard
+        must dedup across them too, not just across ticks -- otherwise every
+        matching message in the batch re-triggers the full accepted side
+        effects (calendar event + Telegram notification), producing a burst of
+        identical "Booking confirmed" messages that only stops once the next
+        tick reloads the persisted state from disk."""
+        records = [_make_record("http://a.com/1", "church@example.com", "applied")]
+        messages = [
+            _make_message("msg1", "church@example.com"),
+            _make_message("msg2", "church@example.com"),
+        ]
+        with (
+            patch("organist_bot.reply_monitor.settings") as mock_settings,
+            patch(
+                "organist_bot.reply_monitor.application_store.list_applications",
+                return_value=records,
+            ),
+            patch("organist_bot.reply_monitor.application_store.upsert_accepted") as mock_upsert,
+            patch(
+                "organist_bot.reply_monitor.application_store.update_reply_message_id",
+                return_value=True,
+            ) as mock_rid,
+            patch("organist_bot.reply_monitor._make_gmail_client") as mock_gmail,
+            patch("organist_bot.reply_monitor._classify_reply", return_value="accepted"),
+            patch("organist_bot.reply_monitor._send_telegram_notification") as mock_notify,
+            patch("organist_bot.reply_monitor._create_calendar_event") as mock_cal,
+        ):
+            self._patch_settings(mock_settings)
+            mock_gmail.return_value.fetch_reply_messages.return_value = messages
+
+            check_replies()
+
+        assert mock_notify.call_count == 1
+        assert mock_cal.call_count == 1
+        assert mock_upsert.call_count == 1
+        mock_rid.assert_called_once_with("http://a.com/1", "msg1")
+
     def test_message_from_unknown_email_is_skipped(self):
         records = [_make_record("http://a.com/1", "known@example.com", "applied")]
         messages = [_make_message("msg1", "unknown@other.com")]
