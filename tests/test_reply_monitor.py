@@ -1,7 +1,6 @@
 import datetime
 from unittest.mock import MagicMock, patch
 
-import anthropic  # used to construct real TextBlock instances in classify tests
 import pytest
 
 import organist_bot.reply_monitor
@@ -503,89 +502,120 @@ class TestCancellationDeletesBuffers:
 # ── _classify_reply unit tests ────────────────────────────────────────────────
 
 
-def _make_text_block(text: str) -> anthropic.types.TextBlock:
-    """Return a real anthropic.types.TextBlock with the given text."""
-    return anthropic.types.TextBlock(type="text", text=text)
-
-
-def _make_anthropic_response(text: str) -> MagicMock:
-    """Return a mock whose .content[0] is a real TextBlock."""
+def _mock_typesafe_response(choice: str, confidence: float = 0.95, status_ok: bool = True):
     resp = MagicMock()
-    resp.content = [_make_text_block(text)]
+    resp.raise_for_status = (
+        MagicMock() if status_ok else MagicMock(side_effect=RuntimeError("HTTP error"))
+    )
+    resp.json.return_value = {
+        "answers": {
+            "reply_type": {
+                "type": "choice",
+                "choice": choice,
+                "confidence": confidence,
+            }
+        }
+    }
     return resp
 
 
 class TestClassifyReply:
-    """Unit tests for _classify_reply — patches anthropic.Anthropic at the module level."""
+    """Unit tests for _classify_reply — patches requests.post at the module level."""
 
     _MSG = {"sender": "church@example.com", "body": "We'd love to book you."}
     _REC = {"organisation": "St John", "date": "2026-06-15"}
 
-    def _patch_client(self, response):
-        """Patch anthropic.Anthropic in reply_monitor so .messages.create returns *response*."""
-        mock_client = MagicMock()
-        mock_client.messages.create.return_value = response
-        mock_anthropic_cls = MagicMock(return_value=mock_client)
-        return patch(
-            "organist_bot.reply_monitor.anthropic.Anthropic", mock_anthropic_cls
-        ), mock_client
-
-    # (a) valid label "accepted" is returned as-is
+    # (a) high-confidence "accepted" is returned as-is
     def test_accepted_label_returned(self):
-        ctx, mock_client = self._patch_client(_make_anthropic_response("accepted"))
-        with (
-            ctx,
-            patch("organist_bot.reply_monitor.settings") as s,
-        ):
-            s.anthropic_api_key = "key"
+        with patch("organist_bot.reply_monitor.requests.post") as mock_post:
+            mock_post.return_value = _mock_typesafe_response("accepted", confidence=0.95)
             result = _classify_reply(self._MSG, self._REC)
         assert result == "accepted"
-        mock_client.messages.create.assert_called_once()
+        mock_post.assert_called_once()
 
     # (a) second valid label: "rejected"
     def test_rejected_label_returned(self):
-        ctx, _mock_client = self._patch_client(_make_anthropic_response("rejected"))
-        with (
-            ctx,
-            patch("organist_bot.reply_monitor.settings") as s,
-        ):
-            s.anthropic_api_key = "key"
+        with patch("organist_bot.reply_monitor.requests.post") as mock_post:
+            mock_post.return_value = _mock_typesafe_response("rejected", confidence=0.9)
             result = _classify_reply(self._MSG, self._REC)
         assert result == "rejected"
 
-    # (b) an unexpected label from the model normalises to "unclear"
-    def test_unexpected_label_normalises_to_unclear(self):
-        ctx, _mock_client = self._patch_client(_make_anthropic_response("DEFINITELY_NOT_A_LABEL"))
-        with (
-            ctx,
-            patch("organist_bot.reply_monitor.settings") as s,
-        ):
-            s.anthropic_api_key = "key"
+    # (b) an unexpected choice from the model normalises to "unclear"
+    def test_unexpected_choice_normalises_to_unclear(self):
+        with patch("organist_bot.reply_monitor.requests.post") as mock_post:
+            mock_post.return_value = _mock_typesafe_response(
+                "DEFINITELY_NOT_A_CHOICE", confidence=0.9
+            )
             result = _classify_reply(self._MSG, self._REC)
-        # Must be exactly "unclear", NOT the raw unexpected label
+        # Must be exactly "unclear", NOT the raw unexpected choice
         assert result == "unclear"
 
-    # (b) whitespace / mixed-case in unexpected label still normalises to "unclear"
-    def test_unexpected_label_with_extra_whitespace_normalises_to_unclear(self):
-        ctx, _mock_client = self._patch_client(_make_anthropic_response("  MAYBE  "))
-        with (
-            ctx,
-            patch("organist_bot.reply_monitor.settings") as s,
-        ):
-            s.anthropic_api_key = "key"
+    # (c) a low-confidence read of an actionable choice falls back to "unclear"
+    # instead of being trusted at face value — this is the whole point of the
+    # confidence floor: a shaky "accepted" must not trigger a calendar mutation.
+    def test_low_confidence_actionable_choice_normalises_to_unclear(self):
+        with patch("organist_bot.reply_monitor.requests.post") as mock_post:
+            mock_post.return_value = _mock_typesafe_response("accepted", confidence=0.5)
             result = _classify_reply(self._MSG, self._REC)
         assert result == "unclear"
 
-    # (c) API exception does not propagate and returns "unclear"
+    # (d) API exception does not propagate and returns "unclear"
     def test_api_exception_returns_unclear_without_raising(self):
-        mock_client = MagicMock()
-        mock_client.messages.create.side_effect = Exception("network timeout")
-        mock_anthropic_cls = MagicMock(return_value=mock_client)
-        with (
-            patch("organist_bot.reply_monitor.anthropic.Anthropic", mock_anthropic_cls),
-            patch("organist_bot.reply_monitor.settings") as s,
-        ):
-            s.anthropic_api_key = "key"
+        with patch("organist_bot.reply_monitor.requests.post") as mock_post:
+            mock_post.side_effect = Exception("network timeout")
             result = _classify_reply(self._MSG, self._REC)
         # Must not raise; must fall back to "unclear"
         assert result == "unclear"
+
+    # (d) HTTP error response also falls back to "unclear" without raising
+    def test_http_error_returns_unclear_without_raising(self):
+        with patch("organist_bot.reply_monitor.requests.post") as mock_post:
+            mock_post.return_value = _mock_typesafe_response("accepted", status_ok=False)
+            result = _classify_reply(self._MSG, self._REC)
+        assert result == "unclear"
+
+    def test_state_includes_organisation_date_sender_direction_and_truncated_body(self):
+        with patch("organist_bot.reply_monitor.requests.post") as mock_post:
+            mock_post.return_value = _mock_typesafe_response("accepted")
+            _classify_reply(
+                {
+                    "sender": "vicar@church.example",
+                    "direction": "incoming",
+                    "body": "x" * 3000,
+                },
+                {"organisation": "St Mary's", "date": "2026-07-12"},
+            )
+        state = mock_post.call_args.kwargs["json"]["state"]
+        assert state["organisation"] == "St Mary's"
+        assert state["date"] == "2026-07-12"
+        assert state["sender"] == "vicar@church.example"
+        assert state["direction"] == "incoming"
+        assert len(state["body"]) == 2000
+
+
+@pytest.mark.live
+class TestClassifyReplyLive:
+    """Opt-in: makes a real call to the TypeSafe API. Run with `pytest -m live`."""
+
+    _REC = {"organisation": "St Mary's", "date": "2026-07-12"}
+
+    def test_clear_acceptance_against_real_api(self):
+        msg = {
+            "sender": "vicar@church.example",
+            "body": "Great news, we'd love to book you for the service. See you then!",
+        }
+        assert _classify_reply(msg, self._REC) == "accepted"
+
+    def test_clear_rejection_against_real_api(self):
+        msg = {
+            "sender": "vicar@church.example",
+            "body": "Thanks for applying, but we've filled the position with someone else.",
+        }
+        assert _classify_reply(msg, self._REC) == "rejected"
+
+    def test_logistical_question_against_real_api(self):
+        msg = {
+            "sender": "vicar@church.example",
+            "body": "What time do you usually like to arrive before the service starts?",
+        }
+        assert _classify_reply(msg, self._REC) == "unclear"
