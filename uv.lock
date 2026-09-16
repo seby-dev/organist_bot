@@ -1367,6 +1367,7 @@ dependencies = [
     { name = "python-telegram-bot" },
     { name = "requests" },
     { name = "schedule" },
+    { name = "sebby" },
     { name = "tenacity" },
 ]
 
@@ -1404,6 +1405,7 @@ requires-dist = [
     { name = "requests", specifier = ">=2.31" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.4" },
     { name = "schedule", specifier = ">=1.2" },
+    { name = "sebby", git = "https://github.com/seby-dev/sebby.git?rev=v0.1.0" },
     { name = "tenacity", specifier = ">=8.2" },
     { name = "types-requests", marker = "extra == 'dev'" },
 ]
@@ -2157,6 +2159,11 @@ sdist = { url = "https://files.pythonhosted.org/packages/0c/91/b525790063015759f
 wheels = [
     { url = "https://files.pythonhosted.org/packages/20/a7/84c96b61fd13205f2cafbe263cdb2745965974bdf3e0078f121dfeca5f02/schedule-1.2.2-py3-none-any.whl", hash = "sha256:5bef4a2a0183abf44046ae0d164cadcac21b1db011bdd8102e4a0c1e91e06a7d", size = 12220, upload-time = "2024-05-25T18:41:59.121Z" },
 ]
+
+[[package]]
+name = "sebby"
+version = "0.1.0"
+source = { git = "https://github.com/seby-dev/sebby.git?rev=v0.1.0#e6056cd085a285010ce87c9d9994ffcbd0419017" }
 
 [[package]]
 name = "six"
