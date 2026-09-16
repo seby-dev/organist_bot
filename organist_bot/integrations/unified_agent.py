@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import cast
 
+from sebby.llm.cache import mark_cache_breakpoint, mark_cache_breakpoint_on_tools
+
 from organist_bot import (
     alert,
     analytics,
@@ -371,26 +373,20 @@ def _with_anthropic_cache_control(
     every call, including every iteration of one turn's tool-calling loop.
 
     Anthropic-only: OpenAI and Gemini both apply automatic prompt-prefix
-    caching already, and don't understand this field. Always returns new
-    list/dict objects rather than mutating `messages`/`tools` in place --
-    those are the shared SYSTEM_PROMPT/TOOLS module constants (or a history
-    list still owned by the caller), reused by every other provider's calls,
-    and must come back out exactly as they went in."""
+    caching already, and don't understand this field.
+
+    Delegates the actual breakpoint-marking mechanics to `sebby.llm.cache`
+    (shared across sebby's projects, see that module's docstrings for the
+    shallow-copy/never-mutates guarantee this relies on). `mark_cache_breakpoint`
+    marks the LAST entry of the list it's given a breakpoint -- passing a
+    single-element list containing only the system message makes it mark
+    that message specifically.
+    """
     cached_messages = list(messages)
     if cached_messages and cached_messages[0].get("role") == "system":
-        system = cached_messages[0]
-        content = system["content"]
-        if isinstance(content, str):
-            cached_messages[0] = {
-                **system,
-                "content": [
-                    {"type": "text", "text": content, "cache_control": {"type": "ephemeral"}}
-                ],
-            }
+        cached_messages[0] = mark_cache_breakpoint([cached_messages[0]])[0]
 
-    cached_tools = list(tools)
-    if cached_tools:
-        cached_tools[-1] = {**cached_tools[-1], "cache_control": {"type": "ephemeral"}}
+    cached_tools = mark_cache_breakpoint_on_tools(list(tools))
 
     return cached_messages, cached_tools
 
