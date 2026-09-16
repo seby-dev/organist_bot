@@ -32,6 +32,25 @@ class TestRecordCall:
         store.record_call("openai", "openai/gpt-5.6-luna", 10, 5)
         assert len(store._read()) == 2
 
+    def test_record_call_defaults_cache_fields_to_zero(self):
+        store.record_call("anthropic", "anthropic/claude-sonnet-4-6", 100, 50)
+        r = store._read()[0]
+        assert r["cached_tokens"] == 0
+        assert r["cache_write_tokens"] == 0
+
+    def test_record_call_stores_cache_token_fields(self):
+        store.record_call(
+            "anthropic",
+            "anthropic/claude-sonnet-4-6",
+            1000,
+            50,
+            cached_tokens=800,
+            cache_write_tokens=150,
+        )
+        r = store._read()[0]
+        assert r["cached_tokens"] == 800
+        assert r["cache_write_tokens"] == 150
+
 
 class TestSummary:
     def test_summary_with_no_records_is_empty(self):
@@ -50,6 +69,27 @@ class TestSummary:
         assert result["anthropic"]["total_tokens"] == 165
         assert result["openai"]["call_count"] == 1
         assert result["openai"]["total_tokens"] == 2
+
+    def test_summary_aggregates_cache_tokens(self):
+        store.record_call(
+            "anthropic",
+            "anthropic/claude-sonnet-4-6",
+            1000,
+            50,
+            cached_tokens=800,
+            cache_write_tokens=150,
+        )
+        store.record_call(
+            "anthropic",
+            "anthropic/claude-sonnet-4-6",
+            1000,
+            50,
+            cached_tokens=900,
+            cache_write_tokens=0,
+        )
+        result = store.summary()
+        assert result["anthropic"]["cached_tokens"] == 1700
+        assert result["anthropic"]["cache_write_tokens"] == 150
 
     def test_summary_since_excludes_older_records(self):
         old = datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=1)

@@ -2871,6 +2871,31 @@ class TestChatResponseFromResponsesApi:
         chat_response = unified_agent._chat_response_from_responses_api(response)
         assert chat_response.choices[0].message.content == "hi"
 
+    def test_cache_read_tokens_translated_from_input_tokens_details(self):
+        """The Responses API (gpt-6-astra) reports its own automatic prefix-cache
+        hits via usage.input_tokens_details.cached_tokens -- _record_llm_usage
+        reads prompt_tokens_details.cached_tokens off whatever this returns, so
+        that count must survive the translation instead of silently dropping to
+        the "no details" default."""
+        response = _fake_responses_api_response(
+            output=[_fake_responses_message("hi")],
+            usage=SimpleNamespace(
+                input_tokens=1000,
+                output_tokens=5,
+                input_tokens_details=SimpleNamespace(cached_tokens=800),
+            ),
+        )
+        chat_response = unified_agent._chat_response_from_responses_api(response)
+        assert chat_response.usage.prompt_tokens_details.cached_tokens == 800
+
+    def test_missing_input_tokens_details_defaults_cache_to_zero(self):
+        response = _fake_responses_api_response(
+            output=[_fake_responses_message("hi")],
+            usage=SimpleNamespace(input_tokens=10, output_tokens=5),
+        )
+        chat_response = unified_agent._chat_response_from_responses_api(response)
+        assert chat_response.usage.prompt_tokens_details.cached_tokens == 0
+
 
 class TestResponsesInputFromMessages:
     def test_user_text_becomes_user_message_item(self):
@@ -3102,6 +3127,42 @@ class TestCallLlmWithFailover:
         assert result.choices[0].message.content == "ok"
         mock_aresponses.assert_awaited_once()
         mock_acompletion.assert_not_awaited()
+
+    async def test_responses_api_call_records_its_own_cache_read_tokens(
+        self, tmp_path, monkeypatch
+    ):
+        """gpt-6-astra's Responses API call gets OpenAI's automatic prefix
+        caching with no request-side code (see _with_anthropic_cache_control's
+        docstring) -- but the cache-hit count it reports must still make it
+        into llm_usage_store, the same as an Anthropic call's."""
+        import litellm
+
+        monkeypatch.chdir(tmp_path)
+        fake_response = _fake_responses_api_response(
+            output=[_fake_responses_message("ok")],
+            usage=SimpleNamespace(
+                input_tokens=1000,
+                output_tokens=5,
+                input_tokens_details=SimpleNamespace(cached_tokens=900),
+            ),
+        )
+        monkeypatch.setattr(litellm, "aresponses", AsyncMock(return_value=fake_response))
+        monkeypatch.setattr(
+            litellm, "acompletion", AsyncMock(side_effect=AssertionError("must not be called"))
+        )
+        monkeypatch.setattr(unified_agent.alert, "send_alert", lambda *a, **k: None)
+
+        await unified_agent._call_llm_with_failover(
+            "openai",
+            "openai/gpt-6-astra",
+            messages=[{"role": "system", "content": "S"}],
+            tools=unified_agent.TOOLS,
+        )
+
+        from organist_bot import llm_usage_store
+
+        summary = llm_usage_store.summary()
+        assert summary["openai"]["cached_tokens"] == 900
 
     async def test_responses_api_failure_falls_over_to_next_provider(self, tmp_path, monkeypatch):
         import litellm
@@ -3377,6 +3438,191 @@ class TestCallLlmWithFailover:
         assert summary["anthropic"]["prompt_tokens"] == 10
         assert summary["anthropic"]["completion_tokens"] == 5
 
+    async def test_records_cache_tokens_when_present(self, tmp_path, monkeypatch):
+        import litellm
+
+        monkeypatch.chdir(tmp_path)
+        response = _fake_litellm_response(
+            content="ok",
+            usage=SimpleNamespace(
+                prompt_tokens=1000,
+                completion_tokens=5,
+                prompt_tokens_details=SimpleNamespace(cached_tokens=800, cache_write_tokens=200),
+            ),
+        )
+        monkeypatch.setattr(litellm, "acompletion", AsyncMock(return_value=response))
+
+        await unified_agent._call_llm_with_failover(
+            "anthropic", "anthropic/claude-sonnet-4-6", messages=[], tools=[]
+        )
+
+        from organist_bot import llm_usage_store
+
+        summary = llm_usage_store.summary()
+        assert summary["anthropic"]["cached_tokens"] == 800
+        assert summary["anthropic"]["cache_write_tokens"] == 200
+
+    async def test_explicit_none_cache_fields_record_as_zero_not_a_crash(
+        self, tmp_path, monkeypatch
+    ):
+        """Some providers return prompt_tokens_details with cached_tokens/
+        cache_write_tokens present but explicitly None rather than omitting
+        them -- `or 0` must catch that the same as a missing attribute."""
+        import litellm
+
+        monkeypatch.chdir(tmp_path)
+        response = _fake_litellm_response(
+            content="ok",
+            usage=SimpleNamespace(
+                prompt_tokens=1000,
+                completion_tokens=5,
+                prompt_tokens_details=SimpleNamespace(cached_tokens=None, cache_write_tokens=None),
+            ),
+        )
+        monkeypatch.setattr(litellm, "acompletion", AsyncMock(return_value=response))
+
+        await unified_agent._call_llm_with_failover(
+            "anthropic", "anthropic/claude-sonnet-4-6", messages=[], tools=[]
+        )
+
+        from organist_bot import llm_usage_store
+
+        summary = llm_usage_store.summary()
+        assert summary["anthropic"]["cached_tokens"] == 0
+        assert summary["anthropic"]["cache_write_tokens"] == 0
+
+
+class TestAnthropicCacheControl:
+    """Anthropic-only prompt-cache breakpoints on the system prompt + last tool.
+
+    OpenAI and Gemini both apply automatic prompt-prefix caching with no code
+    required, so cache_control must be attached only for Anthropic candidates
+    -- never mutating the shared messages/tools objects other providers reuse.
+    """
+
+    async def test_anthropic_call_gets_cache_control_on_system_and_last_tool(
+        self, tmp_path, monkeypatch
+    ):
+        import litellm
+
+        monkeypatch.chdir(tmp_path)
+        mock_acompletion = AsyncMock(return_value=_fake_litellm_response(content="ok"))
+        monkeypatch.setattr(litellm, "acompletion", mock_acompletion)
+
+        messages = [
+            {"role": "system", "content": "SYS"},
+            {"role": "user", "content": "hi"},
+        ]
+        tools = [
+            {"type": "function", "function": {"name": "a"}},
+            {"type": "function", "function": {"name": "b"}},
+        ]
+
+        await unified_agent._call_llm_with_failover(
+            "anthropic", "anthropic/claude-sonnet-4-6", messages=messages, tools=tools
+        )
+
+        sent = mock_acompletion.call_args.kwargs
+        assert sent["messages"][0]["content"] == [
+            {"type": "text", "text": "SYS", "cache_control": {"type": "ephemeral"}}
+        ]
+        assert sent["messages"][1] == {"role": "user", "content": "hi"}
+        assert "cache_control" not in sent["tools"][0]
+        assert sent["tools"][-1]["cache_control"] == {"type": "ephemeral"}
+        assert sent["tools"][-1]["function"] == {"name": "b"}
+
+    async def test_does_not_mutate_the_caller_supplied_messages_and_tools(
+        self, tmp_path, monkeypatch
+    ):
+        """SYSTEM_PROMPT/TOOLS are shared module-level constants reused across
+        every provider -- an Anthropic call must never leave cache_control
+        behind on the objects a later OpenAI/Gemini call reuses."""
+        import litellm
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(
+            litellm, "acompletion", AsyncMock(return_value=_fake_litellm_response(content="ok"))
+        )
+
+        messages = [{"role": "system", "content": "SYS"}]
+        tools = [{"type": "function", "function": {"name": "a"}}]
+
+        await unified_agent._call_llm_with_failover(
+            "anthropic", "anthropic/claude-sonnet-4-6", messages=messages, tools=tools
+        )
+
+        assert messages == [{"role": "system", "content": "SYS"}]
+        assert tools == [{"type": "function", "function": {"name": "a"}}]
+
+    async def test_openai_call_does_not_get_cache_control(self, tmp_path, monkeypatch):
+        import litellm
+
+        monkeypatch.chdir(tmp_path)
+        mock_acompletion = AsyncMock(return_value=_fake_litellm_response(content="ok"))
+        monkeypatch.setattr(litellm, "acompletion", mock_acompletion)
+
+        messages = [{"role": "system", "content": "SYS"}]
+        tools = [{"type": "function", "function": {"name": "a"}}]
+
+        await unified_agent._call_llm_with_failover(
+            "openai", "openai/gpt-5.6-luna", messages=messages, tools=tools
+        )
+
+        sent = mock_acompletion.call_args.kwargs
+        assert sent["messages"][0]["content"] == "SYS"
+        assert "cache_control" not in sent["tools"][0]
+
+    async def test_gemini_call_does_not_get_cache_control(self, tmp_path, monkeypatch):
+        import litellm
+
+        monkeypatch.chdir(tmp_path)
+        mock_acompletion = AsyncMock(return_value=_fake_litellm_response(content="ok"))
+        monkeypatch.setattr(litellm, "acompletion", mock_acompletion)
+
+        messages = [{"role": "system", "content": "SYS"}]
+        tools = [{"type": "function", "function": {"name": "a"}}]
+
+        await unified_agent._call_llm_with_failover(
+            "gemini", "gemini/gemini-3.1-pro-preview", messages=messages, tools=tools
+        )
+
+        sent = mock_acompletion.call_args.kwargs
+        assert sent["messages"][0]["content"] == "SYS"
+        assert "cache_control" not in sent["tools"][0]
+
+    async def test_failover_to_anthropic_still_gets_cache_control(self, tmp_path, monkeypatch):
+        """A mid-conversation failover onto Anthropic (e.g. after an OpenAI
+        outage) must still get the cache breakpoints -- they're attached per
+        candidate inside the failover loop, not just on the first attempt."""
+        import litellm
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(unified_agent.settings, "anthropic_api_key", "sk-anthropic-test")
+        monkeypatch.setattr(unified_agent.settings, "openai_api_key", "sk-test")
+        monkeypatch.setattr(unified_agent.settings, "gemini_api_key", "")
+        monkeypatch.setattr(unified_agent.alert, "send_alert", lambda *a, **k: None)
+
+        good_response = _fake_litellm_response(content="ok")
+        mock_acompletion = AsyncMock(side_effect=[RuntimeError("openai is down"), good_response])
+        monkeypatch.setattr(litellm, "acompletion", mock_acompletion)
+
+        messages = [{"role": "system", "content": "SYS"}]
+        tools = [{"type": "function", "function": {"name": "a"}}]
+
+        result, provider, model = await unified_agent._call_llm_with_failover(
+            "openai", "openai/gpt-5.6-luna", messages=messages, tools=tools
+        )
+
+        assert provider == "anthropic"
+        second_call_kwargs = mock_acompletion.call_args_list[1].kwargs
+        assert second_call_kwargs["messages"][0]["content"] == [
+            {"type": "text", "text": "SYS", "cache_control": {"type": "ephemeral"}}
+        ]
+        assert second_call_kwargs["tools"][-1]["cache_control"] == {"type": "ephemeral"}
+        # And the failed first (openai) attempt got the plain, uncached form.
+        first_call_kwargs = mock_acompletion.call_args_list[0].kwargs
+        assert first_call_kwargs["messages"][0]["content"] == "SYS"
+
 
 class TestGetLlmUsageSummary:
     async def test_no_usage_recorded_yet(self, tmp_path, monkeypatch):
@@ -3398,6 +3644,33 @@ class TestGetLlmUsageSummary:
         assert "openai" in data["result"]
         assert "150" in data["result"]  # anthropic total tokens
         assert "15" in data["result"]  # openai total tokens
+
+    async def test_shows_cache_hit_tokens_when_present(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        from organist_bot import llm_usage_store
+
+        llm_usage_store.record_call(
+            "anthropic",
+            "anthropic/claude-sonnet-4-6",
+            1000,
+            50,
+            cached_tokens=900,
+            cache_write_tokens=100,
+        )
+
+        result = await _execute_tool("get_llm_usage_summary", {}, CHAT_ID)
+        data = json.loads(result)
+        assert "900" in data["result"]
+
+    async def test_omits_cache_line_when_no_cache_tokens_recorded(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        from organist_bot import llm_usage_store
+
+        llm_usage_store.record_call("openai", "openai/gpt-5.6-luna", 10, 5)
+
+        result = await _execute_tool("get_llm_usage_summary", {}, CHAT_ID)
+        data = json.loads(result)
+        assert "cache" not in data["result"].lower()
 
 
 # ── process_message on_step progress reporting ──────────────────────────────

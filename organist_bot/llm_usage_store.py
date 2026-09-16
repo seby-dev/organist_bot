@@ -16,7 +16,14 @@ from organist_bot import atomic_store
 
 _PATH = Path("data/llm_usage.json")
 
-_EMPTY_BUCKET = {"call_count": 0, "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+_EMPTY_BUCKET = {
+    "call_count": 0,
+    "prompt_tokens": 0,
+    "completion_tokens": 0,
+    "total_tokens": 0,
+    "cached_tokens": 0,
+    "cache_write_tokens": 0,
+}
 
 
 def _now_iso() -> str:
@@ -27,10 +34,23 @@ def _read() -> list[dict]:
     return atomic_store.read_json(_PATH, [])
 
 
-def record_call(provider: str, model: str, prompt_tokens: int, completion_tokens: int) -> None:
+def record_call(
+    provider: str,
+    model: str,
+    prompt_tokens: int,
+    completion_tokens: int,
+    *,
+    cached_tokens: int = 0,
+    cache_write_tokens: int = 0,
+) -> None:
     """Append one usage record. Raises on a write failure — callers on the hot
     path (process_message) wrap this in try/except so a tracking failure
-    never breaks the chat turn that triggered it."""
+    never breaks the chat turn that triggered it.
+
+    `cached_tokens`/`cache_write_tokens` are prompt-cache read/write token
+    counts (Anthropic cache_control hits, or a provider's own automatic
+    caching) — 0 for a call that reported none, so caching visibility is
+    additive and doesn't change behavior for callers that don't pass them."""
     with atomic_store.file_lock(_PATH):
         records = _read()
         records.append(
@@ -41,6 +61,8 @@ def record_call(provider: str, model: str, prompt_tokens: int, completion_tokens
                 "prompt_tokens": prompt_tokens,
                 "completion_tokens": completion_tokens,
                 "total_tokens": prompt_tokens + completion_tokens,
+                "cached_tokens": cached_tokens,
+                "cache_write_tokens": cache_write_tokens,
             }
         )
         atomic_store.write_json(_PATH, records, lock=False)
@@ -48,10 +70,11 @@ def record_call(provider: str, model: str, prompt_tokens: int, completion_tokens
 
 def summary(*, since: datetime.datetime | None = None) -> dict[str, dict[str, int]]:
     """Return per-provider totals (call_count, prompt_tokens, completion_tokens,
-    total_tokens), optionally restricted to records at/after `since` (a
-    timezone-aware UTC datetime). A record with a missing/unparseable
-    timestamp is excluded from a `since`-restricted summary (it can't be
-    placed in time) but always counted in the unrestricted one."""
+    total_tokens, cached_tokens, cache_write_tokens), optionally restricted to
+    records at/after `since` (a timezone-aware UTC datetime). A record with a
+    missing/unparseable timestamp is excluded from a `since`-restricted
+    summary (it can't be placed in time) but always counted in the
+    unrestricted one."""
     result: dict[str, dict[str, int]] = {}
     for r in _read():
         if since is not None:
@@ -68,4 +91,6 @@ def summary(*, since: datetime.datetime | None = None) -> dict[str, dict[str, in
         bucket["prompt_tokens"] += r.get("prompt_tokens", 0)
         bucket["completion_tokens"] += r.get("completion_tokens", 0)
         bucket["total_tokens"] += r.get("total_tokens", 0)
+        bucket["cached_tokens"] += r.get("cached_tokens", 0)
+        bucket["cache_write_tokens"] += r.get("cache_write_tokens", 0)
     return result

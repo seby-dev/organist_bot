@@ -105,16 +105,26 @@ def _configured_providers() -> list[str]:
 
 def _record_llm_usage(provider: str, model: str, response) -> None:
     """Best-effort usage tracking -- a logging/storage failure must never
-    break the chat turn that triggered the real LLM call it's recording."""
+    break the chat turn that triggered the real LLM call it's recording.
+
+    cached_tokens/cache_write_tokens come from usage.prompt_tokens_details,
+    litellm's normalized name for a cache hit/write regardless of which
+    provider actually reported it (Anthropic's cache_read_input_tokens /
+    cache_creation_input_tokens, OpenAI's own automatic-caching fields) --
+    absent for a response that didn't report any, which getattr's default
+    turns into a plain 0 rather than an error."""
     usage = getattr(response, "usage", None)
     if usage is None:
         return
     try:
+        details = getattr(usage, "prompt_tokens_details", None)
         llm_usage_store.record_call(
             provider,
             model,
             getattr(usage, "prompt_tokens", 0) or 0,
             getattr(usage, "completion_tokens", 0) or 0,
+            cached_tokens=getattr(details, "cached_tokens", 0) or 0,
+            cache_write_tokens=getattr(details, "cache_write_tokens", 0) or 0,
         )
     except Exception:
         logger.warning("llm_usage_store: failed to record call", exc_info=True)
@@ -207,13 +217,31 @@ def _chat_response_from_responses_api(response) -> SimpleNamespace:
     """Wrap a Responses API result as a chat-completions-shaped response object
     (`.choices[0].message`, `.usage.prompt_tokens/.completion_tokens`) -- same
     field names _record_llm_usage() already reads, translated from the
-    Responses API's own usage.input_tokens/output_tokens."""
+    Responses API's own usage.input_tokens/output_tokens.
+
+    Also translates usage.input_tokens_details.cached_tokens into the same
+    `prompt_tokens_details.cached_tokens` shape the acompletion() path's
+    litellm Usage object exposes -- the Responses API (gpt-6-astra) gets
+    OpenAI's automatic prefix caching same as any other OpenAI call (see
+    _with_anthropic_cache_control's docstring for why no request-side code is
+    needed here), but the resulting cache-hit count still needs to reach
+    _record_llm_usage, or it silently reads as zero cache hits forever on
+    this path. OpenAI doesn't bill/report a cache *write* count on Responses
+    the way Anthropic does, so prompt_tokens_details carries only
+    cached_tokens -- _record_llm_usage's getattr default turns the absent
+    cache_write_tokens into a correct 0."""
     message = _chat_message_from_responses_output(response.output)
     usage = _item_get(response, "usage")
     chat_usage = (
         SimpleNamespace(
             prompt_tokens=_item_get(usage, "input_tokens", 0) or 0,
             completion_tokens=_item_get(usage, "output_tokens", 0) or 0,
+            prompt_tokens_details=SimpleNamespace(
+                cached_tokens=_item_get(
+                    _item_get(usage, "input_tokens_details"), "cached_tokens", 0
+                )
+                or 0
+            ),
         )
         if usage is not None
         else None
@@ -333,6 +361,40 @@ async def _call_openai_responses_api(
     return _chat_response_from_responses_api(response)
 
 
+def _with_anthropic_cache_control(
+    messages: list[dict], tools: list[dict]
+) -> tuple[list[dict], list[dict]]:
+    """Return copies of `messages`/`tools` with Anthropic prompt-cache
+    breakpoints on the system prompt and the last tool. Anthropic caches the
+    entire prefix up to and including a marked block, so these two
+    breakpoints cover SYSTEM_PROMPT + TOOLS -- otherwise resent verbatim on
+    every call, including every iteration of one turn's tool-calling loop.
+
+    Anthropic-only: OpenAI and Gemini both apply automatic prompt-prefix
+    caching already, and don't understand this field. Always returns new
+    list/dict objects rather than mutating `messages`/`tools` in place --
+    those are the shared SYSTEM_PROMPT/TOOLS module constants (or a history
+    list still owned by the caller), reused by every other provider's calls,
+    and must come back out exactly as they went in."""
+    cached_messages = list(messages)
+    if cached_messages and cached_messages[0].get("role") == "system":
+        system = cached_messages[0]
+        content = system["content"]
+        if isinstance(content, str):
+            cached_messages[0] = {
+                **system,
+                "content": [
+                    {"type": "text", "text": content, "cache_control": {"type": "ephemeral"}}
+                ],
+            }
+
+    cached_tools = list(tools)
+    if cached_tools:
+        cached_tools[-1] = {**cached_tools[-1], "cache_control": {"type": "ephemeral"}}
+
+    return cached_messages, cached_tools
+
+
 async def _call_llm_with_failover(
     provider: str,
     model: str,
@@ -389,6 +451,14 @@ async def _call_llm_with_failover(
                     responses_session=responses_session,
                 )
             else:
+                # Anthropic-only prompt-cache breakpoints on SYSTEM_PROMPT +
+                # TOOLS -- see _with_anthropic_cache_control's docstring.
+                # Applied per-candidate (not once before the loop) so a
+                # mid-loop failover onto/off of Anthropic gets exactly the
+                # right shape for whichever provider is actually being tried.
+                call_messages, call_tools = messages, tools
+                if p == "anthropic":
+                    call_messages, call_tools = _with_anthropic_cache_control(messages, tools)
                 response = await litellm.acompletion(
                     model=m,
                     # Not max_tokens: some providers' newer models (e.g. OpenAI's
@@ -400,8 +470,8 @@ async def _call_llm_with_failover(
                     # everywhere -- unlike max_tokens, which isn't for all of them.
                     max_completion_tokens=4096,
                     api_key=getattr(settings, _PROVIDER_API_KEY_FIELD[p]),
-                    messages=messages,
-                    tools=tools,
+                    messages=call_messages,
+                    tools=call_tools,
                 )
         except Exception as exc:
             logger.warning("LLM call failed for provider %s: %s", p, exc)
@@ -2504,6 +2574,14 @@ async def _handle_get_llm_usage_summary(input_data: dict, chat_id: int) -> str:
             f"- {provider}: today {t['call_count']} calls / {t['total_tokens']} tokens "
             f"— all-time {a['call_count']} calls / {a['total_tokens']} tokens"
         )
+        # Only when non-zero: a provider with no recorded cache hits/writes
+        # (e.g. one prompt-caching hasn't kicked in for yet) shouldn't clutter
+        # the summary with a permanent "0 cached" line.
+        if a.get("cached_tokens") or a.get("cache_write_tokens"):
+            lines.append(
+                f"    prompt cache: {a['cached_tokens']} tokens read, "
+                f"{a['cache_write_tokens']} tokens written (all-time)"
+            )
     return json.dumps({"result": "\n".join(lines)})
 
 
