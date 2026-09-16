@@ -52,6 +52,7 @@ command that merely exits non-zero, which every check above already
 handles -- still alerts instead of just crashing the tick silently.
 """
 
+import fcntl
 import os
 import subprocess
 from datetime import UTC, datetime
@@ -60,6 +61,16 @@ from pathlib import Path
 REPO = Path.home() / "Developer/organist_bot"
 UV = Path.home() / ".local/bin/uv"
 UID = os.getuid()
+# The installed launchd job (StartInterval, no KeepAlive) already serializes
+# its own ticks -- per launchd.plist(5), a firing is skipped outright if the
+# previous one is still running. This lock instead guards the *other* ways
+# two _deploy_tick() runs (`_run_checks` alone is minutes-long on this repo)
+# could overlap: a manual `python scripts/auto_deploy.py`, `launchctl
+# kickstart -k`, or a bootout/bootstrap reinstall landing mid-tick. Same
+# fcntl pattern as main.py's own scheduler lock
+# (/tmp/organistbot_scheduler.lock), which does guard a real launchd race --
+# that job restarts itself via this script's own bootout/bootstrap calls.
+_LOCK_FILE = "/tmp/organistbot_autodeploy.lock"
 
 GIT = ["git", "-C", str(REPO)]
 PLISTS = [
@@ -380,19 +391,53 @@ def _deploy_tick() -> None:
     print(f"[{ts()}] Deploy complete -- now at {main_sha}")
 
 
-def main() -> None:
-    """Thin wrapper: every check above this line guards against a *checked*
-    git/uv failure (a non-zero exit code) and alerts accordingly, but none
-    of that protects against a *raised* exception -- git/uv missing
-    entirely, a disk-full OSError writing one of the *_SHA_FILE markers,
-    and so on. Catch anything that slips past all of that here so a crash
-    still alerts instead of launchd just silently relaunching this every
-    60 seconds with nothing in Telegram to show for it."""
+def main(lock_file: str | None = None) -> None:
+    """Thin wrapper: every check inside _deploy_tick guards against a
+    *checked* git/uv failure (a non-zero exit code) and alerts accordingly,
+    but none of that protects against a *raised* exception -- git/uv
+    missing entirely, a disk-full OSError writing one of the *_SHA_FILE
+    markers, and so on. Catch anything that slips past all of that here so
+    a crash still alerts instead of launchd just silently relaunching this
+    every 60 seconds with nothing in Telegram to show for it. The exclusive,
+    non-blocking fcntl lock this takes first is covered by that same
+    guarantee: a failure to even acquire it (as opposed to the lock being
+    genuinely held by another run, which is expected and skipped silently)
+    alerts too, rather than leaving deploys stuck with nothing in Telegram
+    to show for it either.
+
+    See _LOCK_FILE's own comment for what the lock actually guards against.
+    """
+    # Read _LOCK_FILE live (not as a bound default) so tests can override it
+    # for every main() call via a single autouse fixture patching the module
+    # attribute, rather than threading lock_file= through every call site --
+    # same rationale as main.py's own scheduler lock.
+    try:
+        lock = open(lock_file or _LOCK_FILE, "w")
+    except Exception as exc:
+        print(f"[{ts()}] auto_deploy could not open its run lock file: {exc}")
+        _send_alert(f"🛑 auto_deploy.py could not open its run lock file: {exc}", REPO)
+        return
+
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        print(f"[{ts()}] Previous run still in progress -- skipping this tick")
+        lock.close()
+        return
+    except Exception as exc:
+        print(f"[{ts()}] auto_deploy could not take its run lock: {exc}")
+        _send_alert(f"🛑 auto_deploy.py could not take its run lock: {exc}", REPO)
+        lock.close()
+        return
+
     try:
         _deploy_tick()
     except Exception as exc:
         print(f"[{ts()}] auto_deploy crashed: {exc}")
         _send_alert(f"🛑 auto_deploy.py crashed unexpectedly: {exc}", REPO)
+    finally:
+        fcntl.flock(lock, fcntl.LOCK_UN)
+        lock.close()
 
 
 if __name__ == "__main__":

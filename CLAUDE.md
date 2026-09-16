@@ -48,12 +48,21 @@ without fetching, merging, or deploying anything itself.
 
 It re-runs the same checks locally (ruff/mypy/pytest) immediately before
 restarting the live bots, as a backstop that doesn't depend on GitHub
-Actions or `gh` auth being reachable from a background launchd process. It
-also refuses to deploy at all unless its own checkout has `HEAD` on `main`
-and no uncommitted changes — a checkout left on another branch, or
-mid-edit (e.g. mid-feature-work in the same directory instead of a
-worktree), silently blocks every subsequent deploy until fixed, and sends
-one Telegram alert per stuck commit for exactly this reason.
+Actions or `gh` auth being reachable from a background launchd process —
+this alone is minutes-long. The installed launchd job already serializes
+its own ticks (a `StartInterval` firing is skipped outright if the
+previous one is still running), so a `fcntl` exclusive lock on
+`/tmp/organistbot_autodeploy.lock` (the same pattern as `main.py`'s own
+scheduler lock, which does guard a real launchd race there) instead
+guards the other ways two ticks could overlap — a manual run, `launchctl
+kickstart -k`, a bootout/bootstrap reinstall landing mid-tick; an overlap
+from any of those is expected and harmless, so it's skipped with a log
+line, not an alert. It also refuses to deploy at all unless its own
+checkout has `HEAD` on `main` and no
+uncommitted changes — a checkout left on another branch, or mid-edit (e.g.
+mid-feature-work in the same directory instead of a worktree), silently
+blocks every subsequent deploy until fixed, and sends one Telegram alert
+per stuck commit for exactly this reason.
 
 See its module docstring for the exact failure-handling behavior —
 alert-once-per-SHA throughout. A commit that fails the ruff/mypy/pytest

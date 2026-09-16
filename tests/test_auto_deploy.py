@@ -6,6 +6,7 @@ would previously have triggered a real `git fetch` against the live repo
 merely by importing the module.
 """
 
+import fcntl
 import os
 import subprocess
 from unittest.mock import MagicMock, patch
@@ -910,6 +911,111 @@ class TestWorkingTreeClean:
         not_a_repo = tmp_path / "not_a_repo"
         not_a_repo.mkdir()
         assert ad._working_tree_clean(not_a_repo) is False
+
+
+class TestRunLock:
+    """The suite-wide _isolate_autodeploy_lock_file fixture (conftest.py)
+    points auto_deploy._LOCK_FILE at a tmp_path for every test -- real
+    production behavior (the module-level default,
+    /tmp/organistbot_autodeploy.lock, the exact path the live launchd job
+    com.organistbot.autodeploy locks every 60 seconds) is unaffected.
+
+    Mirrors main.py's TestRunLock (see tests/test_main.py) -- main.py's own
+    scheduler already guards the equivalent overlapping-tick race with an
+    fcntl lock on /tmp/organistbot_scheduler.lock."""
+
+    def test_skips_when_lock_held(self, capsys):
+        """An overlapping tick is expected and harmless (the prior tick is
+        still mid-way through the minutes-long check gate), not a failure
+        -- it must skip silently, with no Telegram alert."""
+        with (
+            patch("fcntl.flock", side_effect=BlockingIOError),
+            patch.object(ad, "_deploy_tick") as mock_tick,
+            patch.object(ad, "_send_alert") as mock_alert,
+        ):
+            ad.main()
+        mock_tick.assert_not_called()
+        mock_alert.assert_not_called()
+        assert "skipping this tick" in capsys.readouterr().out
+
+    def test_runs_when_lock_free(self):
+        with patch.object(ad, "_deploy_tick") as mock_tick:
+            ad.main()
+        mock_tick.assert_called_once()
+
+    def test_alerts_if_lock_file_cannot_be_opened(self, tmp_path, monkeypatch):
+        """Unlike the lock being genuinely held (expected, silent), failing
+        to even open the lock file (e.g. a permissions problem on /tmp) is
+        itself a crash-shaped failure -- it must alert, not just print and
+        leave deploys silently stuck forever."""
+        monkeypatch.setattr(ad, "REPO", tmp_path)
+        # A directory can't be opened with "w" -- a real, simple way to
+        # trigger a genuine open() failure without mocking the builtin.
+        monkeypatch.setattr(ad, "_LOCK_FILE", str(tmp_path))
+        with (
+            patch.object(ad, "_deploy_tick") as mock_tick,
+            patch.object(ad, "_send_alert") as mock_alert,
+        ):
+            ad.main()
+        mock_tick.assert_not_called()
+        mock_alert.assert_called_once()
+
+    def test_alerts_if_flock_fails_for_a_reason_other_than_already_held(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(ad, "REPO", tmp_path)
+        with (
+            patch("fcntl.flock", side_effect=OSError("No locks available")),
+            patch.object(ad, "_deploy_tick") as mock_tick,
+            patch.object(ad, "_send_alert") as mock_alert,
+        ):
+            ad.main()
+        mock_tick.assert_not_called()
+        mock_alert.assert_called_once()
+
+    def test_lock_released_after_deploy_tick_raises(self, tmp_path, monkeypatch):
+        """A crash inside _deploy_tick (caught by main()'s own try/except
+        crash-safety net) must not leave the lock held -- otherwise every
+        subsequent tick would silently skip forever, with no alert either
+        (that alert fires once for the crash itself, not for being
+        permanently locked out afterwards)."""
+        lock_path = tmp_path / "autodeploy.lock"
+        monkeypatch.setattr(ad, "_LOCK_FILE", str(lock_path))
+        with (
+            patch.object(ad, "_deploy_tick", side_effect=RuntimeError("boom")),
+            patch.object(ad, "_send_alert"),
+        ):
+            ad.main()
+
+        # If the lock weren't released, this second, independent flock on
+        # the same path would raise BlockingIOError.
+        lock2 = open(lock_path, "w")
+        try:
+            fcntl.flock(lock2, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(lock2, fcntl.LOCK_UN)
+        finally:
+            lock2.close()
+
+    def test_lock_is_held_while_deploy_tick_runs(self, tmp_path, monkeypatch):
+        """The invariant that actually matters: the lock must be held for
+        the full duration of _deploy_tick, not just released by the time
+        main() returns (which CPython's own file-object refcounting would
+        cause anyway, lock or no lock, making a released-after-the-fact
+        check alone prove nothing about whether overlapping ticks were ever
+        actually prevented)."""
+        lock_path = tmp_path / "autodeploy.lock"
+        monkeypatch.setattr(ad, "_LOCK_FILE", str(lock_path))
+
+        def _assert_locked_out():
+            rival = open(lock_path, "w")
+            try:
+                with pytest.raises(BlockingIOError):
+                    fcntl.flock(rival, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            finally:
+                rival.close()
+
+        with patch.object(ad, "_deploy_tick", side_effect=_assert_locked_out):
+            ad.main()
 
 
 class TestMainCrashSafety:
