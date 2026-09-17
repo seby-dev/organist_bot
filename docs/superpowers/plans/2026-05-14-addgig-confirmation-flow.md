@@ -62,9 +62,7 @@ class TestExecuteToolAddGigPreview:
 
     async def test_does_not_write_to_calendar(self):
         """confirmed=false must never touch the calendar client."""
-        with patch(
-            "organist_bot.integrations.gig_agent._make_calendar_client"
-        ) as mock_factory:
+        with patch("organist_bot.integrations.gig_agent._make_calendar_client") as mock_factory:
             await _execute_tool("add_gig", _FULL_INPUT)
         mock_factory.assert_not_called()
 
@@ -78,9 +76,7 @@ class TestExecuteToolAddGigConfirmed:
     async def test_writes_to_calendar_and_returns_result(self):
         """confirmed=true calls calendar and returns JSON with 'result'."""
         input_data = {**_FULL_INPUT, "confirmed": True}
-        with patch(
-            "organist_bot.integrations.gig_agent._make_calendar_client"
-        ) as mock_factory:
+        with patch("organist_bot.integrations.gig_agent._make_calendar_client") as mock_factory:
             mock_cal = MagicMock()
             mock_cal.add_gig.return_value = "evt_abc123"
             mock_factory.return_value = mock_cal
@@ -112,9 +108,7 @@ class TestExecuteToolAddGigConfirmed:
     async def test_calendar_exception_returns_error(self):
         """confirmed=true when calendar.add_gig raises returns error JSON."""
         input_data = {**_FULL_INPUT, "confirmed": True}
-        with patch(
-            "organist_bot.integrations.gig_agent._make_calendar_client"
-        ) as mock_factory:
+        with patch("organist_bot.integrations.gig_agent._make_calendar_client") as mock_factory:
             mock_cal = MagicMock()
             mock_cal.add_gig.side_effect = RuntimeError("calendar down")
             mock_factory.return_value = mock_cal
@@ -176,6 +170,7 @@ You are a gig calendar assistant for an organist. Your job is to add gig booking
 Replace the `add_gig` dict in `TOOLS` (currently the second element) with:
 
 ```python
+(
     {
         "name": "add_gig",
         "description": (
@@ -198,6 +193,7 @@ Replace the `add_gig` dict in `TOOLS` (currently the second element) with:
             "required": ["confirmed", "header", "date", "time"],
         },
     },
+)
 ```
 
 - [ ] **Step 3: Replace the `add_gig` branch in `_execute_tool`**
@@ -205,47 +201,47 @@ Replace the `add_gig` dict in `TOOLS` (currently the second element) with:
 Replace the existing `if name == "add_gig":` block with:
 
 ```python
-    if name == "add_gig":
-        confirmed = input_data.get("confirmed", False)
-        fields = {
-            "header":       input_data.get("header", ""),
-            "organisation": input_data.get("organisation") or "",
-            "locality":     input_data.get("locality") or "",
-            "date":         input_data.get("date", ""),
-            "time":         input_data.get("time", ""),
-            "fee":          input_data.get("fee") or "not specified",
-        }
+if name == "add_gig":
+    confirmed = input_data.get("confirmed", False)
+    fields = {
+        "header": input_data.get("header", ""),
+        "organisation": input_data.get("organisation") or "",
+        "locality": input_data.get("locality") or "",
+        "date": input_data.get("date", ""),
+        "time": input_data.get("time", ""),
+        "fee": input_data.get("fee") or "not specified",
+    }
 
-        if not confirmed:
-            summary = (
-                "*Please confirm the following gig:*\n"
-                f"• *Title:* {fields['header']}\n"
-                f"• *Organisation:* {fields['organisation']}\n"
-                f"• *Locality:* {fields['locality']}\n"
-                f"• *Date:* {fields['date']}\n"
-                f"• *Time:* {fields['time']}\n"
-                f"• *Fee:* {fields['fee']}\n\n"
-                "Reply *yes* to add to calendar, or tell me what to change."
-            )
-            return summary
+    if not confirmed:
+        summary = (
+            "*Please confirm the following gig:*\n"
+            f"• *Title:* {fields['header']}\n"
+            f"• *Organisation:* {fields['organisation']}\n"
+            f"• *Locality:* {fields['locality']}\n"
+            f"• *Date:* {fields['date']}\n"
+            f"• *Time:* {fields['time']}\n"
+            f"• *Fee:* {fields['fee']}\n\n"
+            "Reply *yes* to add to calendar, or tell me what to change."
+        )
+        return summary
 
-        try:
-            cal = _make_calendar_client()
-            if cal is None:
-                return json.dumps({"error": "Google Calendar not configured."})
-            gig = Gig(
-                header=fields["header"],
-                organisation=fields["organisation"],
-                locality=fields["locality"],
-                date=fields["date"],
-                time=fields["time"],
-                fee=fields["fee"] if fields["fee"] != "not specified" else None,
-                link="",
-            )
-            event_id = cal.add_gig(gig)
-            return json.dumps({"result": f"Added to calendar. Event ID: {event_id}"})
-        except Exception as exc:
-            return json.dumps({"error": str(exc)})
+    try:
+        cal = _make_calendar_client()
+        if cal is None:
+            return json.dumps({"error": "Google Calendar not configured."})
+        gig = Gig(
+            header=fields["header"],
+            organisation=fields["organisation"],
+            locality=fields["locality"],
+            date=fields["date"],
+            time=fields["time"],
+            fee=fields["fee"] if fields["fee"] != "not specified" else None,
+            link="",
+        )
+        event_id = cal.add_gig(gig)
+        return json.dumps({"result": f"Added to calendar. Event ID: {event_id}"})
+    except Exception as exc:
+        return json.dumps({"error": str(exc)})
 ```
 
 - [ ] **Step 4: Fix the async client**

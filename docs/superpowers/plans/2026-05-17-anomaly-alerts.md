@@ -378,13 +378,18 @@ class TestDrainAlerts:
         import logging
 
         record = logging.LogRecord(
-            name="test", level=logging.INFO, pathname="", lineno=0,
-            msg="hello", args=(), exc_info=None,
+            name="test",
+            level=logging.INFO,
+            pathname="",
+            lineno=0,
+            msg="hello",
+            args=(),
+            exc_info=None,
         )
         sheets_logger.emit(record)
         # Make the append call fail
-        mock_service.spreadsheets().values().append.return_value.execute.side_effect = (
-            Exception("quota exceeded")
+        mock_service.spreadsheets().values().append.return_value.execute.side_effect = Exception(
+            "quota exceeded"
         )
         with patch("organist_bot.integrations.sheets_logger.alert") as mock_alert:
             with pytest.raises(Exception):
@@ -413,7 +418,9 @@ class TestPostcodeFilterAlert:
             )
 
         gig = Gig(
-            header="Test", date="2025-06-01", link="https://x.com/1",
+            header="Test",
+            date="2025-06-01",
+            link="https://x.com/1",
             postcode="EC1A 1BB",
         )
 
@@ -447,9 +454,7 @@ from organist_bot import alert
 In `has_event_on_date`, find the `except Exception as exc:` block (around line 113). After the existing `logger.warning(...)` call, add:
 
 ```python
-            alert.send_alert(
-                f"⚠️ Google Calendar API error (CalendarFilter query): {exc}"
-            )
+alert.send_alert(f"⚠️ Google Calendar API error (CalendarFilter query): {exc}")
 ```
 
 The full updated block looks like:
@@ -478,9 +483,7 @@ from organist_bot import alert
 In `drain()`, find the outermost `except Exception:` block (around line 306) — the one that restores rows to the buffer. After `with self._lock: self._buffer = rows + self._buffer`, add:
 
 ```python
-            alert.send_alert(
-                f"⚠️ Google Sheets API error (batch append failed): {exc}"
-            )
+alert.send_alert(f"⚠️ Google Sheets API error (batch append failed): {exc}")
 ```
 
 The full updated outer except block looks like:
@@ -508,9 +511,7 @@ from organist_bot import alert
 In `PostcodeFilter._drive_time`, find the `except Exception as exc:` block (around line 394). After the existing `logger.warning(...)` call, add:
 
 ```python
-            alert.send_alert(
-                f"⚠️ Google Maps API error (PostcodeFilter): {exc}"
-            )
+alert.send_alert(f"⚠️ Google Maps API error (PostcodeFilter): {exc}")
 ```
 
 The full updated block looks like:

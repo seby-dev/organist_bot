@@ -33,40 +33,43 @@
 Add to `tests/test_application_store.py`, inside `class TestNegPending` (after `test_transition_unknown_id_returns_false`, before the closing of the class at line 523):
 
 ```python
-    def test_update_neg_draft_persists_body_and_fee(self):
-        gig_id = store.record_neg_pending(
-            _neg_gig(), draft_subject="S", draft_body="old body", negotiable_fee=120
-        )
-        ok = store.update_neg_draft(
-            gig_id, draft_subject="New subject", draft_body="new body", negotiable_fee=150
-        )
-        assert ok is True
-        r = store._read()[0]
-        assert r["draft_subject"] == "New subject"
-        assert r["draft_body"] == "new body"
-        assert r["negotiable_fee"] == 150
-        assert r["status"] == "neg_pending"
+def test_update_neg_draft_persists_body_and_fee(self):
+    gig_id = store.record_neg_pending(
+        _neg_gig(), draft_subject="S", draft_body="old body", negotiable_fee=120
+    )
+    ok = store.update_neg_draft(
+        gig_id, draft_subject="New subject", draft_body="new body", negotiable_fee=150
+    )
+    assert ok is True
+    r = store._read()[0]
+    assert r["draft_subject"] == "New subject"
+    assert r["draft_body"] == "new body"
+    assert r["negotiable_fee"] == 150
+    assert r["status"] == "neg_pending"
 
-    def test_update_neg_draft_partial_update_leaves_other_fields(self):
-        gig_id = store.record_neg_pending(
-            _neg_gig(), draft_subject="S", draft_body="old body", negotiable_fee=120
-        )
-        store.update_neg_draft(gig_id, draft_body="only body changed")
-        r = store._read()[0]
-        assert r["draft_subject"] == "S"
-        assert r["draft_body"] == "only body changed"
-        assert r["negotiable_fee"] == 120
 
-    def test_update_neg_draft_unknown_id_returns_false(self):
-        assert store.update_neg_draft("deadbeefcafe", draft_body="x") is False
+def test_update_neg_draft_partial_update_leaves_other_fields(self):
+    gig_id = store.record_neg_pending(
+        _neg_gig(), draft_subject="S", draft_body="old body", negotiable_fee=120
+    )
+    store.update_neg_draft(gig_id, draft_body="only body changed")
+    r = store._read()[0]
+    assert r["draft_subject"] == "S"
+    assert r["draft_body"] == "only body changed"
+    assert r["negotiable_fee"] == 120
 
-    def test_update_neg_draft_already_decided_returns_false(self):
-        gig_id = store.record_neg_pending(
-            _neg_gig(), draft_subject="S", draft_body="b", negotiable_fee=120
-        )
-        store.transition_neg_pending(gig_id, to="rejected")
-        assert store.update_neg_draft(gig_id, draft_body="too late") is False
-        assert store._read()[0]["draft_body"] == "b"
+
+def test_update_neg_draft_unknown_id_returns_false(self):
+    assert store.update_neg_draft("deadbeefcafe", draft_body="x") is False
+
+
+def test_update_neg_draft_already_decided_returns_false(self):
+    gig_id = store.record_neg_pending(
+        _neg_gig(), draft_subject="S", draft_body="b", negotiable_fee=120
+    )
+    store.transition_neg_pending(gig_id, to="rejected")
+    assert store.update_neg_draft(gig_id, draft_body="too late") is False
+    assert store._read()[0]["draft_body"] == "b"
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -147,58 +150,55 @@ git commit -m "feat: add application_store.update_neg_draft"
 Add these two methods to the existing `class TestSendAlert:` in `tests/test_alert.py` (after `test_network_failure_is_swallowed`, matching that class's existing style exactly — `mock_post = MagicMock()`, the same `with (patch(...), patch(...))` block shape, and `mock_post.call_args.kwargs["json"]` for payload assertions):
 
 ```python
-    def test_reply_markup_included_when_given(self):
-        """reply_markup is included in the POST payload when provided."""
-        mock_post = MagicMock()
-        buttons = {
-            "inline_keyboard": [[{"text": "Accept", "callback_data": "neg:accept:abc123"}]]
-        }
-        with (
-            patch("organist_bot.alert.settings") as mock_settings,
-            patch("organist_bot.alert._requests.post", mock_post),
-        ):
-            mock_settings.telegram_bot_token = "TOKEN123"
-            mock_settings.telegram_chat_id = 42
-            send_alert("test message", reply_markup=buttons)
+def test_reply_markup_included_when_given(self):
+    """reply_markup is included in the POST payload when provided."""
+    mock_post = MagicMock()
+    buttons = {"inline_keyboard": [[{"text": "Accept", "callback_data": "neg:accept:abc123"}]]}
+    with (
+        patch("organist_bot.alert.settings") as mock_settings,
+        patch("organist_bot.alert._requests.post", mock_post),
+    ):
+        mock_settings.telegram_bot_token = "TOKEN123"
+        mock_settings.telegram_chat_id = 42
+        send_alert("test message", reply_markup=buttons)
 
-        mock_post.assert_called_once()
-        assert mock_post.call_args.kwargs["json"]["reply_markup"] == buttons
+    mock_post.assert_called_once()
+    assert mock_post.call_args.kwargs["json"]["reply_markup"] == buttons
 
-    def test_reply_markup_omitted_when_not_given(self):
-        """reply_markup key is absent from the payload when not provided —
-        existing callers of send_alert are unaffected."""
-        mock_post = MagicMock()
-        with (
-            patch("organist_bot.alert.settings") as mock_settings,
-            patch("organist_bot.alert._requests.post", mock_post),
-        ):
-            mock_settings.telegram_bot_token = "TOKEN123"
-            mock_settings.telegram_chat_id = 42
-            send_alert("test message")
 
-        assert "reply_markup" not in mock_post.call_args.kwargs["json"]
+def test_reply_markup_omitted_when_not_given(self):
+    """reply_markup key is absent from the payload when not provided —
+    existing callers of send_alert are unaffected."""
+    mock_post = MagicMock()
+    with (
+        patch("organist_bot.alert.settings") as mock_settings,
+        patch("organist_bot.alert._requests.post", mock_post),
+    ):
+        mock_settings.telegram_bot_token = "TOKEN123"
+        mock_settings.telegram_chat_id = 42
+        send_alert("test message")
+
+    assert "reply_markup" not in mock_post.call_args.kwargs["json"]
 ```
 
 Also add this test to `tests/test_main.py`, inside `class TestNegDrafts` (after `test_neg_gig_is_recorded_as_pending_and_alerts_telegram`, which currently ends at line 869):
 
 ```python
-    def test_neg_draft_alert_carries_accept_edit_reject_buttons(self, tmp_path, monkeypatch):
-        mock_alert = self._run(
-            self._settings(), self._mock_scraper_with_one_gig(fee="NEG"), tmp_path, monkeypatch
-        )
-        rows = application_store.list_neg_pending()
-        gig_id = rows[0]["gig_id"]
-        draft_calls = [
-            c for c in mock_alert.send_alert.call_args_list if gig_id in c.args[0]
-        ]
-        assert len(draft_calls) == 1
-        buttons = draft_calls[0].kwargs["reply_markup"]["inline_keyboard"][0]
-        callback_data = {b["callback_data"] for b in buttons}
-        assert callback_data == {
-            f"neg:accept:{gig_id}",
-            f"neg:edit:{gig_id}",
-            f"neg:reject:{gig_id}",
-        }
+def test_neg_draft_alert_carries_accept_edit_reject_buttons(self, tmp_path, monkeypatch):
+    mock_alert = self._run(
+        self._settings(), self._mock_scraper_with_one_gig(fee="NEG"), tmp_path, monkeypatch
+    )
+    rows = application_store.list_neg_pending()
+    gig_id = rows[0]["gig_id"]
+    draft_calls = [c for c in mock_alert.send_alert.call_args_list if gig_id in c.args[0]]
+    assert len(draft_calls) == 1
+    buttons = draft_calls[0].kwargs["reply_markup"]["inline_keyboard"][0]
+    callback_data = {b["callback_data"] for b in buttons}
+    assert callback_data == {
+        f"neg:accept:{gig_id}",
+        f"neg:edit:{gig_id}",
+        f"neg:reject:{gig_id}",
+    }
 ```
 
 - [ ] **Step 3: Run tests to verify they fail**
@@ -884,6 +884,7 @@ Expected: FAIL — `approve_neg_application`/`edit_neg_application`/`reject_neg_
 **3a.** In the `TOOLS` list, replace the three NEG-tool entries (currently lines 579-635, `approve_neg_application` through `reject_neg_application`) with:
 
 ```python
+(
     {
         "name": "approve_neg_application",
         "description": (
@@ -905,6 +906,8 @@ Expected: FAIL — `approve_neg_application`/`edit_neg_application`/`reject_neg_
             "required": [],
         },
     },
+)
+(
     {
         "name": "edit_neg_application",
         "description": (
@@ -928,6 +931,8 @@ Expected: FAIL — `approve_neg_application`/`edit_neg_application`/`reject_neg_
             "required": [],
         },
     },
+)
+(
     {
         "name": "reject_neg_application",
         "description": (
@@ -943,6 +948,7 @@ Expected: FAIL — `approve_neg_application`/`edit_neg_application`/`reject_neg_
             "required": [],
         },
     },
+)
 ```
 
 **3b.** Add `_resolve_neg_gig_id` and `_neg_picker_response` right after the `neg_draft_view` function added in Task 3 (i.e., immediately before `@_handler("list_neg_pending")`):
@@ -1085,18 +1091,16 @@ async def _handle_reject_neg(input_data: dict, chat_id: int) -> str:
 **3f.** In `process_message`'s `_VERBATIM_RESPONSE_TOOLS` block (currently lines 2135-2142), pass `buttons` through and stash the pending instruction on `needs_pick`:
 
 ```python
-            if block.name in _VERBATIM_RESPONSE_TOOLS:
-                try:
-                    data = json.loads(result)
-                    if "result" in data:
-                        responses.append(
-                            AgentResponse(text=data["result"], buttons=data.get("buttons"))
-                        )
-                        if data.get("needs_pick"):
-                            stash_pending_neg_instruction(chat_id, text)
-                        result = json.dumps({"result": "Listing sent to user."})
-                except (json.JSONDecodeError, KeyError):
-                    pass
+if block.name in _VERBATIM_RESPONSE_TOOLS:
+    try:
+        data = json.loads(result)
+        if "result" in data:
+            responses.append(AgentResponse(text=data["result"], buttons=data.get("buttons")))
+            if data.get("needs_pick"):
+                stash_pending_neg_instruction(chat_id, text)
+            result = json.dumps({"result": "Listing sent to user."})
+    except (json.JSONDecodeError, KeyError):
+        pass
 ```
 
 **3g.** Replace the `## NEG-fee drafts` section of `SYSTEM_PROMPT` (currently lines 103-107) with:
@@ -1214,9 +1218,7 @@ class TestHandleNegCallback:
     async def test_reject_swaps_to_confirm_reject_buttons(self):
         update = _make_callback_update(data="neg:reject:abc123")
         context = _make_context()
-        with patch(
-            "organist_bot.integrations.unified_agent.neg_confirm_buttons"
-        ) as mock_buttons:
+        with patch("organist_bot.integrations.unified_agent.neg_confirm_buttons") as mock_buttons:
             mock_buttons.return_value = []
             await handle_neg_callback(update, context)
         mock_buttons.assert_called_once_with("abc123", send=False)
@@ -1229,9 +1231,10 @@ class TestHandleNegCallback:
             await handle_neg_callback(update, context)
         mock_set.assert_called_once_with(7973955362, "abc123")
         context.bot.edit_message_text.assert_called_once()
-        assert "what would you like to change" in context.bot.edit_message_text.call_args.kwargs[
-            "text"
-        ].lower()
+        assert (
+            "what would you like to change"
+            in context.bot.edit_message_text.call_args.kwargs["text"].lower()
+        )
 
     @pytest.mark.asyncio
     async def test_confirm_send_success_shows_sent(self):
@@ -1288,9 +1291,7 @@ class TestHandleNegCallback:
     async def test_cancel_when_draft_gone(self):
         update = _make_callback_update(data="neg:cancel:abc123")
         context = _make_context()
-        with patch(
-            "organist_bot.integrations.unified_agent.neg_draft_view", return_value=None
-        ):
+        with patch("organist_bot.integrations.unified_agent.neg_draft_view", return_value=None):
             await handle_neg_callback(update, context)
         text = context.bot.edit_message_text.call_args.kwargs["text"]
         assert "no longer available" in text.lower()
@@ -1370,7 +1371,11 @@ Also add a test to `class TestHandleMessage:` confirming `resp.buttons` reaches 
 Update the import line at the top of `tests/test_telegram_integration.py` to also import `handle_neg_callback`:
 
 ```python
-from organist_bot.integrations.telegram_bot import _is_authorised, handle_message, handle_neg_callback
+from organist_bot.integrations.telegram_bot import (
+    _is_authorised,
+    handle_message,
+    handle_neg_callback,
+)
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -1406,9 +1411,7 @@ from telegram.ext import (
 def _build_reply_markup(buttons: list[list[dict]] | None) -> InlineKeyboardMarkup | None:
     if not buttons:
         return None
-    return InlineKeyboardMarkup(
-        [[InlineKeyboardButton(**cell) for cell in row] for row in buttons]
-    )
+    return InlineKeyboardMarkup([[InlineKeyboardButton(**cell) for cell in row] for row in buttons])
 
 
 async def _reply(
@@ -1432,10 +1435,8 @@ async def _reply(
 **3c.** In `handle_message`, pass buttons through on the text-send line (currently line 129-130, `if resp.text: await _reply(update.message, resp.text)`):
 
 ```python
-            if resp.text:
-                await _reply(
-                    update.message, resp.text, reply_markup=_build_reply_markup(resp.buttons)
-                )
+if resp.text:
+    await _reply(update.message, resp.text, reply_markup=_build_reply_markup(resp.buttons))
 ```
 
 **3d.** Add `handle_neg_callback` and its small edit helpers, placed after `handle_message` and before the `# ── Bot setup ──` section:
@@ -1532,9 +1533,7 @@ async def handle_neg_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
                 text="I lost track of what you asked — please repeat it for this draft.",
             )
             return
-        responses = await unified_agent.process_message(
-            chat_id, f"For gig {gig_id}: {instruction}"
-        )
+        responses = await unified_agent.process_message(chat_id, f"For gig {gig_id}: {instruction}")
         for resp in responses:
             if resp.text:
                 await context.bot.send_message(

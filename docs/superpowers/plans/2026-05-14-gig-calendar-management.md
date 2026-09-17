@@ -74,21 +74,31 @@ def _read_config() -> dict:
 class TestPurgePastPeriods:
     def test_removes_past_single_day(self):
         yesterday = (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
-        _write_config({"unavailable_periods": [yesterday], "blacklist_emails": [], "available_only_periods": []})
+        _write_config(
+            {
+                "unavailable_periods": [yesterday],
+                "blacklist_emails": [],
+                "available_only_periods": [],
+            }
+        )
         removed = fs.purge_past_periods()
         assert removed == 1
         assert _read_config()["unavailable_periods"] == []
 
     def test_keeps_today(self):
         today = datetime.date.today().isoformat()
-        _write_config({"unavailable_periods": [today], "blacklist_emails": [], "available_only_periods": []})
+        _write_config(
+            {"unavailable_periods": [today], "blacklist_emails": [], "available_only_periods": []}
+        )
         removed = fs.purge_past_periods()
         assert removed == 0
         assert today in _read_config()["unavailable_periods"]
 
     def test_keeps_future_single_day(self):
         future = (datetime.date.today() + datetime.timedelta(days=30)).isoformat()
-        _write_config({"unavailable_periods": [future], "blacklist_emails": [], "available_only_periods": []})
+        _write_config(
+            {"unavailable_periods": [future], "blacklist_emails": [], "available_only_periods": []}
+        )
         removed = fs.purge_past_periods()
         assert removed == 0
 
@@ -97,7 +107,9 @@ class TestPurgePastPeriods:
         start = (datetime.date.today() - datetime.timedelta(days=10)).isoformat()
         end = (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
         token = f"{start}:{end}"
-        _write_config({"unavailable_periods": [token], "blacklist_emails": [], "available_only_periods": []})
+        _write_config(
+            {"unavailable_periods": [token], "blacklist_emails": [], "available_only_periods": []}
+        )
         removed = fs.purge_past_periods()
         assert removed == 1
 
@@ -105,7 +117,9 @@ class TestPurgePastPeriods:
         start = (datetime.date.today() - datetime.timedelta(days=5)).isoformat()
         end = datetime.date.today().isoformat()
         token = f"{start}:{end}"
-        _write_config({"unavailable_periods": [token], "blacklist_emails": [], "available_only_periods": []})
+        _write_config(
+            {"unavailable_periods": [token], "blacklist_emails": [], "available_only_periods": []}
+        )
         removed = fs.purge_past_periods()
         assert removed == 0
 
@@ -116,12 +130,24 @@ class TestPurgePastPeriods:
             past_month = f"{today.year - 1}-12"
         else:
             past_month = f"{today.year}-{today.month - 1:02d}"
-        _write_config({"unavailable_periods": [past_month], "blacklist_emails": [], "available_only_periods": []})
+        _write_config(
+            {
+                "unavailable_periods": [past_month],
+                "blacklist_emails": [],
+                "available_only_periods": [],
+            }
+        )
         removed = fs.purge_past_periods()
         assert removed == 1
 
     def test_leaves_unparseable_tokens(self):
-        _write_config({"unavailable_periods": ["not-a-date"], "blacklist_emails": [], "available_only_periods": []})
+        _write_config(
+            {
+                "unavailable_periods": ["not-a-date"],
+                "blacklist_emails": [],
+                "available_only_periods": [],
+            }
+        )
         removed = fs.purge_past_periods()
         assert removed == 0
         assert "not-a-date" in _read_config()["unavailable_periods"]
@@ -129,11 +155,13 @@ class TestPurgePastPeriods:
     def test_does_not_touch_other_keys(self):
         yesterday = (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
         future = (datetime.date.today() + datetime.timedelta(days=1)).isoformat()
-        _write_config({
-            "unavailable_periods": [yesterday],
-            "blacklist_emails": ["a@b.com"],
-            "available_only_periods": [future],
-        })
+        _write_config(
+            {
+                "unavailable_periods": [yesterday],
+                "blacklist_emails": ["a@b.com"],
+                "available_only_periods": [future],
+            }
+        )
         fs.purge_past_periods()
         data = _read_config()
         assert data["blacklist_emails"] == ["a@b.com"]
@@ -146,7 +174,13 @@ class TestPurgePastPeriods:
     def test_mixed_keeps_future_removes_past(self):
         yesterday = (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
         future = (datetime.date.today() + datetime.timedelta(days=10)).isoformat()
-        _write_config({"unavailable_periods": [yesterday, future], "blacklist_emails": [], "available_only_periods": []})
+        _write_config(
+            {
+                "unavailable_periods": [yesterday, future],
+                "blacklist_emails": [],
+                "available_only_periods": [],
+            }
+        )
         removed = fs.purge_past_periods()
         assert removed == 1
         data = _read_config()
@@ -158,7 +192,13 @@ class TestAutoPurgeOnUnavailableOperations:
     def test_unavailable_periods_getter_purges_stale(self):
         yesterday = (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
         future = (datetime.date.today() + datetime.timedelta(days=5)).isoformat()
-        _write_config({"unavailable_periods": [yesterday, future], "blacklist_emails": [], "available_only_periods": []})
+        _write_config(
+            {
+                "unavailable_periods": [yesterday, future],
+                "blacklist_emails": [],
+                "available_only_periods": [],
+            }
+        )
         result = fs.unavailable_periods()
         assert yesterday not in result
         assert future in result
@@ -166,7 +206,13 @@ class TestAutoPurgeOnUnavailableOperations:
     def test_add_period_unavailable_purges_first(self):
         yesterday = (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
         future = (datetime.date.today() + datetime.timedelta(days=5)).isoformat()
-        _write_config({"unavailable_periods": [yesterday], "blacklist_emails": [], "available_only_periods": []})
+        _write_config(
+            {
+                "unavailable_periods": [yesterday],
+                "blacklist_emails": [],
+                "available_only_periods": [],
+            }
+        )
         fs.add_period("unavailable_periods", future)
         data = _read_config()
         assert yesterday not in data["unavailable_periods"]
@@ -175,7 +221,13 @@ class TestAutoPurgeOnUnavailableOperations:
     def test_remove_period_unavailable_purges_first(self):
         yesterday = (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
         future = (datetime.date.today() + datetime.timedelta(days=5)).isoformat()
-        _write_config({"unavailable_periods": [yesterday, future], "blacklist_emails": [], "available_only_periods": []})
+        _write_config(
+            {
+                "unavailable_periods": [yesterday, future],
+                "blacklist_emails": [],
+                "available_only_periods": [],
+            }
+        )
         fs.remove_period("unavailable_periods", future)
         data = _read_config()
         assert yesterday not in data["unavailable_periods"]
@@ -184,7 +236,13 @@ class TestAutoPurgeOnUnavailableOperations:
     def test_add_period_blacklist_does_not_purge_unavailable(self):
         """Only unavailable_periods operations trigger purge — not blacklist operations."""
         yesterday = (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
-        _write_config({"unavailable_periods": [yesterday], "blacklist_emails": [], "available_only_periods": []})
+        _write_config(
+            {
+                "unavailable_periods": [yesterday],
+                "blacklist_emails": [],
+                "available_only_periods": [],
+            }
+        )
         fs.add_blacklist_email("x@y.com")
         # blacklist add should NOT have purged unavailable
         data = _read_config()
@@ -233,7 +291,8 @@ def purge_past_periods() -> int:
     data = _read()
     before = len(data["unavailable_periods"])
     data["unavailable_periods"] = [
-        t for t in data["unavailable_periods"]
+        t
+        for t in data["unavailable_periods"]
         if (end := _period_end_date(t)) is None or end >= today
     ]
     removed = before - len(data["unavailable_periods"])
@@ -441,22 +500,23 @@ def list_upcoming_events(self, max_results: int = 10) -> list[dict]:
                     *[int(p) for p in date_str.split("-")],
                     tzinfo=datetime.timezone.utc,
                 )
-            events.append({
-                "id": item["id"],
-                "summary": item.get("summary", "(No title)"),
-                "start_dt": start_dt,
-                "date_str": date_str,
-            })
+            events.append(
+                {
+                    "id": item["id"],
+                    "summary": item.get("summary", "(No title)"),
+                    "start_dt": start_dt,
+                    "date_str": date_str,
+                }
+            )
         return events
     except Exception as exc:
         logger.warning("list_upcoming_events failed — returning []", extra={"error": str(exc)})
         return []
 
+
 def delete_event(self, event_id: str) -> None:
     """Delete a calendar event by ID. Raises on failure."""
-    self._service.events().delete(
-        calendarId=self.calendar_id, eventId=event_id
-    ).execute()
+    self._service.events().delete(calendarId=self.calendar_id, eventId=event_id).execute()
 ```
 
 - [ ] **Step 4: Run tests to verify they pass**
@@ -575,7 +635,9 @@ class TestCmdGigs:
     @pytest.mark.asyncio
     async def test_replies_not_configured_when_no_calendar(self):
         update = _make_update()
-        with patch("organist_bot.integrations.telegram_bot._make_calendar_client", return_value=None):
+        with patch(
+            "organist_bot.integrations.telegram_bot._make_calendar_client", return_value=None
+        ):
             await cmd_gigs(update, MagicMock())
         reply = update.message.reply_text.call_args[0][0]
         assert "not configured" in reply.lower()
@@ -738,6 +800,7 @@ _gig_listing: dict[int, list[dict]] = {}
 def _make_calendar_client():
     if settings.google_calendar_id and settings.google_calendar_credentials_file:
         from organist_bot.integrations.calendar_client import GoogleCalendarClient
+
         return GoogleCalendarClient(
             credentials_file=settings.google_calendar_credentials_file,
             calendar_id=settings.google_calendar_id,
@@ -764,13 +827,20 @@ async def cmd_gigs(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     import datetime as _dt
+
     now_str = _dt.datetime.now().strftime("%H:%M")
     lines = [f"*Upcoming gigs* \\(fetched at {now_str}\\)"]
     for i, ev in enumerate(events, start=1):
         start_dt = ev["start_dt"]
         time_str = start_dt.strftime("%-I:%M%p").lower()
         date_str = start_dt.strftime("%a %-d %b %Y")
-        summary = ev["summary"].replace(".", "\\.").replace("-", "\\-").replace("(", "\\(").replace(")", "\\)")
+        summary = (
+            ev["summary"]
+            .replace(".", "\\.")
+            .replace("-", "\\-")
+            .replace("(", "\\(")
+            .replace(")", "\\)")
+        )
         lines.append(f"{i}\\. {summary} · {date_str} · {time_str}")
     lines.append("\nUse /deletegig \\<number\\> to remove one\\.")
     await update.message.reply_text("\n".join(lines), parse_mode="MarkdownV2")
@@ -781,7 +851,9 @@ async def cmd_deletegig(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         _reject(update)
         return
     if not context.args:
-        await update.message.reply_text("Usage: /deletegig <number>  — run /gigs first to see the list.")
+        await update.message.reply_text(
+            "Usage: /deletegig <number>  — run /gigs first to see the list."
+        )
         return
     try:
         n = int(context.args[0])
@@ -810,6 +882,7 @@ async def cmd_deletegig(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
 
     from organist_bot import filter_store
+
     filter_store.remove_period("unavailable_periods", event["date_str"])
     _gig_listing[chat_id] = [e for i, e in enumerate(listing) if i != n - 1]
     await update.message.reply_text(
@@ -907,6 +980,7 @@ class TestExecuteToolAddGigAutoUnavailable:
             mock_factory.return_value = mock_cal
             result = await _execute_tool("add_gig", input_data)
         import json
+
         data = json.loads(result)
         assert "result" in data  # calendar write succeeded
         mock_fs.add_period.assert_not_called()  # but unavailable not touched
@@ -940,7 +1014,9 @@ if yyyymmdd:
         date_str = datetime.datetime.strptime(yyyymmdd, "%Y%m%d").strftime("%Y-%m-%d")
         filter_store.add_period("unavailable_periods", date_str)
     except Exception:
-        logger.warning("Failed to add gig date to unavailable periods", extra={"date": fields["date"]})
+        logger.warning(
+            "Failed to add gig date to unavailable periods", extra={"date": fields["date"]}
+        )
 ```
 
 The full `confirmed=true` section after the change:
@@ -953,7 +1029,9 @@ if yyyymmdd:
         date_str = datetime.datetime.strptime(yyyymmdd, "%Y%m%d").strftime("%Y-%m-%d")
         filter_store.add_period("unavailable_periods", date_str)
     except Exception:
-        logger.warning("Failed to add gig date to unavailable periods", extra={"date": fields["date"]})
+        logger.warning(
+            "Failed to add gig date to unavailable periods", extra={"date": fields["date"]}
+        )
 return json.dumps({"result": f"Added to calendar. Event ID: {event_id}"})
 ```
 

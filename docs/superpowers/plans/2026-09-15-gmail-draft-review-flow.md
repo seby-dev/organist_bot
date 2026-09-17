@@ -169,7 +169,9 @@ class TestHasComposeAccess:
     def test_false_when_create_raises(self, tmp_path):
         client = self._make_client(tmp_path)
         mock_service = MagicMock()
-        mock_service.users().drafts().create().execute.side_effect = RuntimeError("403 insufficient scope")
+        mock_service.users().drafts().create().execute.side_effect = RuntimeError(
+            "403 insufficient scope"
+        )
         with patch.object(client, "_get_service", return_value=mock_service):
             assert client.has_compose_access() is False
 
@@ -283,76 +285,71 @@ Replace with:
 Add these methods to the `GmailClient` class, after `fetch_invoice_replies` (before the module-level `_extract_body` function):
 
 ```python
-    def create_draft(
-        self,
-        *,
-        sender: str,
-        recipient: str,
-        cc: list[str] | None,
-        subject: str,
-        body_html: str,
-    ) -> str:
-        """Create a Gmail draft addressed to recipient. Returns the new draft id.
+def create_draft(
+    self,
+    *,
+    sender: str,
+    recipient: str,
+    cc: list[str] | None,
+    subject: str,
+    body_html: str,
+) -> str:
+    """Create a Gmail draft addressed to recipient. Returns the new draft id.
 
-        Raises on any API failure — callers decide whether to catch (see
-        main.py's NEG/review-drafts blocks, which log+alert and skip the gig
-        rather than let one gig's failure drop the rest of the tick).
-        """
-        msg = MIMEText(body_html, "html")
-        msg["Subject"] = subject
-        msg["From"] = sender
-        msg["To"] = recipient
-        if cc:
-            msg["Cc"] = ", ".join(cc)
+    Raises on any API failure — callers decide whether to catch (see
+    main.py's NEG/review-drafts blocks, which log+alert and skip the gig
+    rather than let one gig's failure drop the rest of the tick).
+    """
+    msg = MIMEText(body_html, "html")
+    msg["Subject"] = subject
+    msg["From"] = sender
+    msg["To"] = recipient
+    if cc:
+        msg["Cc"] = ", ".join(cc)
+    raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
+    service = self._get_service()
+    draft = service.users().drafts().create(userId="me", body={"message": {"raw": raw}}).execute()
+    return draft["id"]
+
+
+def send_draft(self, draft_id: str) -> None:
+    """Send exactly what's currently in the draft — drafts().send. Raises
+    on failure, including a 404 if the draft no longer exists (callers
+    use is_not_found_error to distinguish that case — see §7 of the spec)."""
+    service = self._get_service()
+    service.users().drafts().send(userId="me", body={"id": draft_id}).execute()
+
+
+def delete_draft(self, draft_id: str) -> None:
+    """Delete a draft. Raises on failure, including a 404 if it's already
+    gone (callers use is_not_found_error to treat that as success)."""
+    service = self._get_service()
+    service.users().drafts().delete(userId="me", id=draft_id).execute()
+
+
+def has_compose_access(self) -> bool:
+    """True if this token can create AND delete a draft.
+
+    A mere drafts().list() call would succeed even under the OLD
+    gmail.readonly-only scope (listing drafts is a read operation), so
+    it can't distinguish "has compose" from "read-only" — only a real
+    create (+ immediate cleanup delete) genuinely exercises write access.
+    Never raises — used only by the startup smoke-check in main.py,
+    which alerts on False rather than crashing the scheduler.
+    """
+    try:
+        service = self._get_service()
+        msg = MIMEText("")
+        msg["Subject"] = "OrganistBot scope check (safe to ignore/delete)"
         raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
-        service = self._get_service()
         draft = (
-            service.users()
-            .drafts()
-            .create(userId="me", body={"message": {"raw": raw}})
-            .execute()
+            service.users().drafts().create(userId="me", body={"message": {"raw": raw}}).execute()
         )
-        return draft["id"]
-
-    def send_draft(self, draft_id: str) -> None:
-        """Send exactly what's currently in the draft — drafts().send. Raises
-        on failure, including a 404 if the draft no longer exists (callers
-        use is_not_found_error to distinguish that case — see §7 of the spec)."""
-        service = self._get_service()
-        service.users().drafts().send(userId="me", body={"id": draft_id}).execute()
-
-    def delete_draft(self, draft_id: str) -> None:
-        """Delete a draft. Raises on failure, including a 404 if it's already
-        gone (callers use is_not_found_error to treat that as success)."""
-        service = self._get_service()
-        service.users().drafts().delete(userId="me", id=draft_id).execute()
-
-    def has_compose_access(self) -> bool:
-        """True if this token can create AND delete a draft.
-
-        A mere drafts().list() call would succeed even under the OLD
-        gmail.readonly-only scope (listing drafts is a read operation), so
-        it can't distinguish "has compose" from "read-only" — only a real
-        create (+ immediate cleanup delete) genuinely exercises write access.
-        Never raises — used only by the startup smoke-check in main.py,
-        which alerts on False rather than crashing the scheduler.
-        """
-        try:
-            service = self._get_service()
-            msg = MIMEText("")
-            msg["Subject"] = "OrganistBot scope check (safe to ignore/delete)"
-            raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
-            draft = (
-                service.users()
-                .drafts()
-                .create(userId="me", body={"message": {"raw": raw}})
-                .execute()
-            )
-            service.users().drafts().delete(userId="me", id=draft["id"]).execute()
-            return True
-        except Exception as exc:
-            logger.warning("Gmail: compose-access smoke check failed: %s", exc)
-            return False
+        service.users().drafts().delete(userId="me", id=draft["id"]).execute()
+        return True
+    except Exception as exc:
+        logger.warning("Gmail: compose-access smoke check failed: %s", exc)
+        return False
 ```
 
 Note this deliberately deviates from the spec's literal suggestion of a "light `drafts().list(maxResults=1)`" — that would be a no-op check: listing drafts succeeds under the OLD `gmail.readonly`-only scope too (it's a read operation), so it can never actually detect a missing compose scope. The trade-off: `warn_if_gmail_write_scope_missing` (Task 7) now creates and immediately deletes a real throwaway draft in the user's Gmail on every scheduler startup — harmless, but real API traffic, and a `create` that succeeds followed by a `delete` that fails would leave a stray "scope check" draft behind (rare — only on a mid-check API hiccup, and the leftover is self-explanatory to the user if they ever see it).
@@ -540,12 +537,20 @@ class TestHeldDrafts:
     def test_record_held_draft_is_idempotent_for_same_link_returns_created_false(self):
         gig = _neg_gig()
         id1, created1 = store.record_held_draft(
-            gig, status="neg_pending", draft_id="draft-1", draft_subject="S",
-            hold_reason="fee_negotiation", negotiable_fee=120,
+            gig,
+            status="neg_pending",
+            draft_id="draft-1",
+            draft_subject="S",
+            hold_reason="fee_negotiation",
+            negotiable_fee=120,
         )
         id2, created2 = store.record_held_draft(
-            gig, status="neg_pending", draft_id="draft-2", draft_subject="S2",
-            hold_reason="fee_negotiation", negotiable_fee=130,
+            gig,
+            status="neg_pending",
+            draft_id="draft-2",
+            draft_subject="S2",
+            hold_reason="fee_negotiation",
+            negotiable_fee=130,
         )
         assert id1 == id2
         assert created1 is True
@@ -558,12 +563,19 @@ class TestHeldDrafts:
 
     def test_list_held_returns_only_neg_and_review_pending_rows(self):
         store.record_held_draft(
-            _neg_gig("https://e.com/1"), status="neg_pending", draft_id="d1",
-            draft_subject="S", hold_reason="fee_negotiation", negotiable_fee=120,
+            _neg_gig("https://e.com/1"),
+            status="neg_pending",
+            draft_id="d1",
+            draft_subject="S",
+            hold_reason="fee_negotiation",
+            negotiable_fee=120,
         )
         store.record_held_draft(
-            _neg_gig("https://e.com/2"), status="review_pending", draft_id="d2",
-            draft_subject="S", hold_reason="weekday",
+            _neg_gig("https://e.com/2"),
+            status="review_pending",
+            draft_id="d2",
+            draft_subject="S",
+            hold_reason="weekday",
         )
         store.record_application(_neg_gig("https://e.com/3"))  # status=applied
         rows = store.list_held()
@@ -571,20 +583,31 @@ class TestHeldDrafts:
 
     def test_list_held_filters_by_status(self):
         store.record_held_draft(
-            _neg_gig("https://e.com/1"), status="neg_pending", draft_id="d1",
-            draft_subject="S", hold_reason="fee_negotiation", negotiable_fee=120,
+            _neg_gig("https://e.com/1"),
+            status="neg_pending",
+            draft_id="d1",
+            draft_subject="S",
+            hold_reason="fee_negotiation",
+            negotiable_fee=120,
         )
         store.record_held_draft(
-            _neg_gig("https://e.com/2"), status="review_pending", draft_id="d2",
-            draft_subject="S", hold_reason="weekday",
+            _neg_gig("https://e.com/2"),
+            status="review_pending",
+            draft_id="d2",
+            draft_subject="S",
+            hold_reason="weekday",
         )
         assert [r["url"] for r in store.list_held(status="neg_pending")] == ["https://e.com/1"]
         assert [r["url"] for r in store.list_held(status="review_pending")] == ["https://e.com/2"]
 
     def test_transition_held_to_applied_sets_applied_at(self):
         gig_id, _ = store.record_held_draft(
-            _neg_gig(), status="neg_pending", draft_id="d1", draft_subject="S",
-            hold_reason="fee_negotiation", negotiable_fee=120,
+            _neg_gig(),
+            status="neg_pending",
+            draft_id="d1",
+            draft_subject="S",
+            hold_reason="fee_negotiation",
+            negotiable_fee=120,
         )
         assert store.transition_held(gig_id, to="applied") is True
         r = store.get_by_gig_id(gig_id)
@@ -595,7 +618,10 @@ class TestHeldDrafts:
 
     def test_transition_held_works_for_review_pending_too(self):
         gig_id, _ = store.record_held_draft(
-            _neg_gig(), status="review_pending", draft_id="d1", draft_subject="S",
+            _neg_gig(),
+            status="review_pending",
+            draft_id="d1",
+            draft_subject="S",
             hold_reason="weekday",
         )
         assert store.transition_held(gig_id, to="rejected") is True
@@ -603,8 +629,12 @@ class TestHeldDrafts:
 
     def test_transition_held_idempotent_second_call_returns_false(self):
         gig_id, _ = store.record_held_draft(
-            _neg_gig(), status="neg_pending", draft_id="d1", draft_subject="S",
-            hold_reason="fee_negotiation", negotiable_fee=120,
+            _neg_gig(),
+            status="neg_pending",
+            draft_id="d1",
+            draft_subject="S",
+            hold_reason="fee_negotiation",
+            negotiable_fee=120,
         )
         assert store.transition_held(gig_id, to="applied") is True
         assert store.transition_held(gig_id, to="rejected") is False
@@ -620,8 +650,12 @@ class TestExpireHeldDrafts:
         gig = _neg_gig()
         gig.date = past
         store.record_held_draft(
-            gig, status="neg_pending", draft_id="draft-1", draft_subject="S",
-            hold_reason="fee_negotiation", negotiable_fee=120,
+            gig,
+            status="neg_pending",
+            draft_id="draft-1",
+            draft_subject="S",
+            hold_reason="fee_negotiation",
+            negotiable_fee=120,
         )
         expired_rows = store.expire_past_applied()
         assert len(expired_rows) == 1
@@ -637,7 +671,10 @@ class TestExpireHeldDrafts:
         gig = _neg_gig()
         gig.date = past
         store.record_held_draft(
-            gig, status="review_pending", draft_id="draft-2", draft_subject="S",
+            gig,
+            status="review_pending",
+            draft_id="draft-2",
+            draft_subject="S",
             hold_reason="weekday",
         )
         expired_rows = store.expire_past_applied()
@@ -650,8 +687,12 @@ class TestExpireHeldDrafts:
         gig = _neg_gig()
         gig.date = future
         store.record_held_draft(
-            gig, status="neg_pending", draft_id="d1", draft_subject="S",
-            hold_reason="fee_negotiation", negotiable_fee=120,
+            gig,
+            status="neg_pending",
+            draft_id="d1",
+            draft_subject="S",
+            hold_reason="fee_negotiation",
+            negotiable_fee=120,
         )
         assert store.expire_past_applied() == []
         assert store.get_by_gig_id(store.list_held()[0]["gig_id"])["status"] == "neg_pending"
@@ -675,7 +716,10 @@ class TestExpireHeldDrafts:
         held_gig = _neg_gig("https://e.com/held")
         held_gig.date = past
         store.record_held_draft(
-            held_gig, status="review_pending", draft_id="d1", draft_subject="S",
+            held_gig,
+            status="review_pending",
+            draft_id="d1",
+            draft_subject="S",
             hold_reason="weekday",
         )
         expired_rows = store.expire_past_applied()
@@ -951,7 +995,9 @@ class TestClassifyGig:
 
     def test_other_service_type_maps_to_hold_for_review(self):
         with patch("organist_bot.gig_classifier.anthropic.Anthropic") as mock_cls:
-            mock_cls.return_value.messages.create.return_value = _mock_response("other_service_type")
+            mock_cls.return_value.messages.create.return_value = _mock_response(
+                "other_service_type"
+            )
             result = classify_gig(_make_gig(header="Evensong"))
         assert result == Classification(decision="hold_for_review", reason="other_service_type")
 
@@ -964,7 +1010,9 @@ class TestClassifyGig:
 
     def test_whitespace_and_case_insensitive(self):
         with patch("organist_bot.gig_classifier.anthropic.Anthropic") as mock_cls:
-            mock_cls.return_value.messages.create.return_value = _mock_response("  Auto_Eligible \n")
+            mock_cls.return_value.messages.create.return_value = _mock_response(
+                "  Auto_Eligible \n"
+            )
             result = classify_gig(_make_gig())
         assert result.decision == "auto_send"
 
@@ -1099,9 +1147,7 @@ def classify_gig(gig: Gig) -> Classification:
             return Classification(decision="auto_send", reason="auto_eligible")
         if result in ("multi_service", "other_service_type"):
             return Classification(decision="hold_for_review", reason=result)
-        logger.warning(
-            "gig_classifier: unexpected classification %r — holding for review", result
-        )
+        logger.warning("gig_classifier: unexpected classification %r — holding for review", result)
         return Classification(decision="hold_for_review", reason="other_service_type")
     except Exception as exc:
         logger.warning("gig_classifier: classification failed: %s — holding for review", exc)
@@ -1321,12 +1367,19 @@ def held_store(tmp_path, monkeypatch):
 class TestListPendingDrafts:
     async def test_returns_pending_rows_across_both_statuses(self, held_store):
         application_store.record_held_draft(
-            _held_gig("https://e.com/1"), status="neg_pending", draft_id="d1",
-            draft_subject="S", hold_reason="fee_negotiation", negotiable_fee=120,
+            _held_gig("https://e.com/1"),
+            status="neg_pending",
+            draft_id="d1",
+            draft_subject="S",
+            hold_reason="fee_negotiation",
+            negotiable_fee=120,
         )
         application_store.record_held_draft(
-            _held_gig("https://e.com/2"), status="review_pending", draft_id="d2",
-            draft_subject="S", hold_reason="weekday",
+            _held_gig("https://e.com/2"),
+            status="review_pending",
+            draft_id="d2",
+            draft_subject="S",
+            hold_reason="weekday",
         )
         result = await unified_agent._execute_tool("list_pending_drafts", {}, chat_id=1)
         data = json.loads(result)
@@ -1363,12 +1416,18 @@ class TestReviewConfirmSend:
     async def test_success_sends_draft_and_transitions_to_applied(self, held_store, monkeypatch):
         fake_gmail = FakeGmailClient()
         draft_id = fake_gmail.create_draft(
-            sender="bot@test.com", recipient="jane@example.com", cc=None,
-            subject="S", body_html="B",
+            sender="bot@test.com",
+            recipient="jane@example.com",
+            cc=None,
+            subject="S",
+            body_html="B",
         )
         monkeypatch.setattr(unified_agent, "_make_gmail_client", lambda: fake_gmail)
         gig_id, _ = application_store.record_held_draft(
-            _held_gig(), status="review_pending", draft_id=draft_id, draft_subject="S",
+            _held_gig(),
+            status="review_pending",
+            draft_id=draft_id,
+            draft_subject="S",
             hold_reason="weekday",
         )
         ok, result = await unified_agent.review_confirm_send(gig_id)
@@ -1385,12 +1444,18 @@ class TestReviewConfirmSend:
     async def test_already_decided_returns_already_message(self, held_store, monkeypatch):
         fake_gmail = FakeGmailClient()
         draft_id = fake_gmail.create_draft(
-            sender="bot@test.com", recipient="jane@example.com", cc=None,
-            subject="S", body_html="B",
+            sender="bot@test.com",
+            recipient="jane@example.com",
+            cc=None,
+            subject="S",
+            body_html="B",
         )
         monkeypatch.setattr(unified_agent, "_make_gmail_client", lambda: fake_gmail)
         gig_id, _ = application_store.record_held_draft(
-            _held_gig(), status="review_pending", draft_id=draft_id, draft_subject="S",
+            _held_gig(),
+            status="review_pending",
+            draft_id=draft_id,
+            draft_subject="S",
             hold_reason="weekday",
         )
         application_store.transition_held(gig_id, to="rejected")
@@ -1403,7 +1468,10 @@ class TestReviewConfirmSend:
         fake_gmail.send_draft.side_effect = RuntimeError("SMTP down")
         monkeypatch.setattr(unified_agent, "_make_gmail_client", lambda: fake_gmail)
         gig_id, _ = application_store.record_held_draft(
-            _held_gig(), status="review_pending", draft_id="d1", draft_subject="S",
+            _held_gig(),
+            status="review_pending",
+            draft_id="d1",
+            draft_subject="S",
             hold_reason="weekday",
         )
         ok, result = await unified_agent.review_confirm_send(gig_id)
@@ -1424,7 +1492,10 @@ class TestReviewConfirmSend:
         and never reach send_draft at all — that's a different, already
         -covered code path (the plain "already decided" lookup error)."""
         gig_id, _ = application_store.record_held_draft(
-            _held_gig(), status="review_pending", draft_id="draft-1", draft_subject="S",
+            _held_gig(),
+            status="review_pending",
+            draft_id="draft-1",
+            draft_subject="S",
             hold_reason="weekday",
         )
 
@@ -1445,13 +1516,19 @@ class TestReviewConfirmSend:
     ):
         fake_gmail = FakeGmailClient()
         draft_id = fake_gmail.create_draft(
-            sender="bot@test.com", recipient="jane@example.com", cc=None,
-            subject="S", body_html="B",
+            sender="bot@test.com",
+            recipient="jane@example.com",
+            cc=None,
+            subject="S",
+            body_html="B",
         )
         fake_gmail.simulate_not_found(draft_id)
         monkeypatch.setattr(unified_agent, "_make_gmail_client", lambda: fake_gmail)
         gig_id, _ = application_store.record_held_draft(
-            _held_gig(), status="review_pending", draft_id=draft_id, draft_subject="S",
+            _held_gig(),
+            status="review_pending",
+            draft_id=draft_id,
+            draft_subject="S",
             hold_reason="weekday",
         )
         ok, result = await unified_agent.review_confirm_send(gig_id)
@@ -1464,13 +1541,20 @@ class TestReviewDecline:
     def test_success_deletes_draft_and_transitions_to_rejected(self, held_store, monkeypatch):
         fake_gmail = FakeGmailClient()
         draft_id = fake_gmail.create_draft(
-            sender="bot@test.com", recipient="jane@example.com", cc=None,
-            subject="S", body_html="B",
+            sender="bot@test.com",
+            recipient="jane@example.com",
+            cc=None,
+            subject="S",
+            body_html="B",
         )
         monkeypatch.setattr(unified_agent, "_make_gmail_client", lambda: fake_gmail)
         gig_id, _ = application_store.record_held_draft(
-            _held_gig(), status="neg_pending", draft_id=draft_id, draft_subject="S",
-            hold_reason="fee_negotiation", negotiable_fee=120,
+            _held_gig(),
+            status="neg_pending",
+            draft_id=draft_id,
+            draft_subject="S",
+            hold_reason="fee_negotiation",
+            negotiable_fee=120,
         )
         ok, result = unified_agent.review_decline(gig_id)
         assert ok is True
@@ -1480,13 +1564,19 @@ class TestReviewDecline:
     def test_404_on_delete_still_treated_as_success(self, held_store, monkeypatch):
         fake_gmail = FakeGmailClient()
         draft_id = fake_gmail.create_draft(
-            sender="bot@test.com", recipient="jane@example.com", cc=None,
-            subject="S", body_html="B",
+            sender="bot@test.com",
+            recipient="jane@example.com",
+            cc=None,
+            subject="S",
+            body_html="B",
         )
         fake_gmail.simulate_not_found(draft_id)
         monkeypatch.setattr(unified_agent, "_make_gmail_client", lambda: fake_gmail)
         gig_id, _ = application_store.record_held_draft(
-            _held_gig(), status="review_pending", draft_id=draft_id, draft_subject="S",
+            _held_gig(),
+            status="review_pending",
+            draft_id=draft_id,
+            draft_subject="S",
             hold_reason="weekday",
         )
         ok, result = unified_agent.review_decline(gig_id)
@@ -1498,7 +1588,10 @@ class TestReviewDecline:
         fake_gmail.delete_draft.side_effect = RuntimeError("network down")
         monkeypatch.setattr(unified_agent, "_make_gmail_client", lambda: fake_gmail)
         gig_id, _ = application_store.record_held_draft(
-            _held_gig(), status="review_pending", draft_id="d1", draft_subject="S",
+            _held_gig(),
+            status="review_pending",
+            draft_id="d1",
+            draft_subject="S",
             hold_reason="weekday",
         )
         ok, result = unified_agent.review_decline(gig_id)
@@ -1608,7 +1701,9 @@ async def review_confirm_send(gig_id: str) -> tuple[bool, str]:
         if is_not_found_error(exc):
             refreshed = application_store.get_by_gig_id(gig_id)
             if refreshed is not None and refreshed.get("status") == "applied":
-                decided = refreshed.get("decided_at") or refreshed.get("updated_at") or "unknown time"
+                decided = (
+                    refreshed.get("decided_at") or refreshed.get("updated_at") or "unknown time"
+                )
                 return True, f"Already sent — applied at {decided}."
             return False, (
                 "Draft no longer exists in Gmail — if you already sent it there "
@@ -1671,7 +1766,8 @@ async def _handle_list_pending_drafts(input_data: dict, chat_id: int) -> str:
 
 Replace the four tool schemas in `_TOOLS_SCHEMA` (the `# ── NEG-fee drafts ──` block, currently `list_neg_pending`/`approve_neg_application`/`edit_neg_application`/`reject_neg_application`) with one:
 ```python
-    # ── Pending drafts (NEG + AI-flagged review) ─────────────────────────────
+# ── Pending drafts (NEG + AI-flagged review) ─────────────────────────────
+(
     {
         "name": "list_pending_drafts",
         "description": (
@@ -1683,6 +1779,7 @@ Replace the four tool schemas in `_TOOLS_SCHEMA` (the `# ── NEG-fee drafts �
         ),
         "input_schema": {"type": "object", "properties": {}, "required": []},
     },
+)
 ```
 
 Update `_VERBATIM_RESPONSE_TOOLS` — remove `"list_neg_pending"`, `"approve_neg_application"`, `"edit_neg_application"`, `"reject_neg_application"`, add `"list_pending_drafts"`.
@@ -1789,7 +1886,9 @@ class TestHandleReviewCallback:
     async def test_rejects_unauthorised_chat(self):
         update = _make_callback_update(chat_id=9999, data="review:accept:abc123")
         context = _make_context()
-        with patch("organist_bot.integrations.unified_agent.review_confirm_send_buttons") as mock_fn:
+        with patch(
+            "organist_bot.integrations.unified_agent.review_confirm_send_buttons"
+        ) as mock_fn:
             await handle_review_callback(update, context)
         mock_fn.assert_not_called()
         update.callback_query.answer.assert_called_once()
@@ -2571,36 +2670,93 @@ from organist_bot import gig_classifier
 
 Update `_mock_scraper_with_one_gig` to accept an explicit date:
 ```python
-    def _mock_scraper_with_one_gig(self, fee: str, link: str = "https://e.com/abc", date: str | None = None):
-        scraper = MagicMock()
-        scraper.fetch.return_value = "<html/>"
-        scraper.parse_gig_listings.return_value = [MagicMock()]
-        scraper.extract_basic_details.return_value = {
-            "header": "St Mary's Sunday Service",
-            "organisation": "St Mary's",
-            "locality": "London",
-            "date": date or self._date_on_weekday(6),  # default: Sunday
-            "time": "10:00 AM",
-            "link": link,
-            "fee": fee,
-        }
-        scraper.extract_full_details.return_value = {
-            "phone": "020 1234 5678",
-            "contact": "Jane Smith",
-            "email": "jane@stmarys.org",
-            "address": "1 High St",
-            "postcode": "SW1A 1AA",
-        }
-        return scraper
+def _mock_scraper_with_one_gig(
+    self, fee: str, link: str = "https://e.com/abc", date: str | None = None
+):
+    scraper = MagicMock()
+    scraper.fetch.return_value = "<html/>"
+    scraper.parse_gig_listings.return_value = [MagicMock()]
+    scraper.extract_basic_details.return_value = {
+        "header": "St Mary's Sunday Service",
+        "organisation": "St Mary's",
+        "locality": "London",
+        "date": date or self._date_on_weekday(6),  # default: Sunday
+        "time": "10:00 AM",
+        "link": link,
+        "fee": fee,
+    }
+    scraper.extract_full_details.return_value = {
+        "phone": "020 1234 5678",
+        "contact": "Jane Smith",
+        "email": "jane@stmarys.org",
+        "address": "1 High St",
+        "postcode": "SW1A 1AA",
+    }
+    return scraper
 ```
 
 Update `_run` to patch `main.GmailClient` and default `main.classify_gig` to an auto-send result (harmless for tests whose gig never reaches the classifier — NEG gigs and below-min-fee/expenses-only gigs never call it, since they're pulled out or dropped before the classifier partition runs):
 ```python
-    def _run(self, mock_settings, scraper, tmp_path, monkeypatch):
-        monkeypatch.setattr(application_store, "_PATH", tmp_path / "applications.json")
+def _run(self, mock_settings, scraper, tmp_path, monkeypatch):
+    monkeypatch.setattr(application_store, "_PATH", tmp_path / "applications.json")
+    with (
+        patch("main.alert") as mock_alert,
+        patch("main.settings", mock_settings),
+        patch("organist_bot.notifier.application_store"),
+        patch("main.load_seen_gigs", return_value=set()),
+        patch("main.load_listings_hash", return_value="old_hash"),
+        patch("main.save_listings_hash"),
+        patch("main.save_seen_gigs"),
+        patch("main.filter_store"),
+        patch("main.SMTPTransport"),
+        patch("main.set_run_id"),
+        patch("main.runtime_config") as mock_rc,
+        patch("main.GmailClient") as mock_gmail_cls,
+        patch(
+            "main.classify_gig",
+            return_value=gig_classifier.Classification(
+                decision="auto_send", reason="auto_eligible"
+            ),
+        ),
+    ):
+        mock_rc.get.side_effect = lambda k, d: d
+        mock_gmail_cls.return_value.create_draft.return_value = "fake-draft-id"
+        main_module.main(scraper)
+    return mock_alert
+```
+
+(`pytest` and `gig_classifier` are already imported at the top of the file from the `TestMain` fix earlier in this step — nothing further to add here.)
+
+Rewrite the two tests that assert on the now-removed `draft_body`/three-button shape:
+
+```python
+def test_neg_gig_is_recorded_as_pending_and_alerts_telegram(self, tmp_path, monkeypatch):
+    mock_alert = self._run(
+        self._settings(), self._mock_scraper_with_one_gig(fee="NEG"), tmp_path, monkeypatch
+    )
+    rows = application_store.list_held(status="neg_pending")
+    assert len(rows) == 1
+    assert rows[0]["status"] == "neg_pending"
+    assert rows[0]["draft_id"] == "fake-draft-id"
+    assert rows[0]["negotiable_fee"] == 120
+    gig_id = rows[0]["gig_id"]
+    # A single Telegram message per NEG draft now (the draft itself lives
+    # in Gmail, not in a second Telegram message) — see _send_review_alert.
+    assert mock_alert.send_alert.call_count == 1
+    call = mock_alert.send_alert.call_args_list[0]
+    assert "NEG gig" in call.args[0]
+    assert "£120" in call.args[0]  # "Proposed: £120" line
+    buttons = call.kwargs["reply_markup"]["inline_keyboard"][0]
+    callback_data = {b["callback_data"] for b in buttons}
+    assert callback_data == {f"review:accept:{gig_id}", f"review:decline:{gig_id}"}
+
+
+def test_neg_draft_creates_real_gmail_draft(self, tmp_path, monkeypatch):
+    with patch("main.GmailClient") as mock_gmail_cls:
+        mock_gmail_cls.return_value.create_draft.return_value = "fake-draft-id"
         with (
-            patch("main.alert") as mock_alert,
-            patch("main.settings", mock_settings),
+            patch("main.alert"),
+            patch("main.settings", self._settings()),
             patch("organist_bot.notifier.application_store"),
             patch("main.load_seen_gigs", return_value=set()),
             patch("main.load_listings_hash", return_value="old_hash"),
@@ -2610,97 +2766,45 @@ Update `_run` to patch `main.GmailClient` and default `main.classify_gig` to an 
             patch("main.SMTPTransport"),
             patch("main.set_run_id"),
             patch("main.runtime_config") as mock_rc,
-            patch("main.GmailClient") as mock_gmail_cls,
-            patch(
-                "main.classify_gig",
-                return_value=gig_classifier.Classification(decision="auto_send", reason="auto_eligible"),
-            ),
         ):
+            monkeypatch.setattr(application_store, "_PATH", tmp_path / "applications.json")
             mock_rc.get.side_effect = lambda k, d: d
-            mock_gmail_cls.return_value.create_draft.return_value = "fake-draft-id"
-            main_module.main(scraper)
-        return mock_alert
-```
-
-(`pytest` and `gig_classifier` are already imported at the top of the file from the `TestMain` fix earlier in this step — nothing further to add here.)
-
-Rewrite the two tests that assert on the now-removed `draft_body`/three-button shape:
-
-```python
-    def test_neg_gig_is_recorded_as_pending_and_alerts_telegram(self, tmp_path, monkeypatch):
-        mock_alert = self._run(
-            self._settings(), self._mock_scraper_with_one_gig(fee="NEG"), tmp_path, monkeypatch
-        )
-        rows = application_store.list_held(status="neg_pending")
-        assert len(rows) == 1
-        assert rows[0]["status"] == "neg_pending"
-        assert rows[0]["draft_id"] == "fake-draft-id"
-        assert rows[0]["negotiable_fee"] == 120
-        gig_id = rows[0]["gig_id"]
-        # A single Telegram message per NEG draft now (the draft itself lives
-        # in Gmail, not in a second Telegram message) — see _send_review_alert.
-        assert mock_alert.send_alert.call_count == 1
-        call = mock_alert.send_alert.call_args_list[0]
-        assert "NEG gig" in call.args[0]
-        assert "£120" in call.args[0]  # "Proposed: £120" line
-        buttons = call.kwargs["reply_markup"]["inline_keyboard"][0]
-        callback_data = {b["callback_data"] for b in buttons}
-        assert callback_data == {f"review:accept:{gig_id}", f"review:decline:{gig_id}"}
-
-    def test_neg_draft_creates_real_gmail_draft(self, tmp_path, monkeypatch):
-        with patch("main.GmailClient") as mock_gmail_cls:
-            mock_gmail_cls.return_value.create_draft.return_value = "fake-draft-id"
-            with (
-                patch("main.alert"),
-                patch("main.settings", self._settings()),
-                patch("organist_bot.notifier.application_store"),
-                patch("main.load_seen_gigs", return_value=set()),
-                patch("main.load_listings_hash", return_value="old_hash"),
-                patch("main.save_listings_hash"),
-                patch("main.save_seen_gigs"),
-                patch("main.filter_store"),
-                patch("main.SMTPTransport"),
-                patch("main.set_run_id"),
-                patch("main.runtime_config") as mock_rc,
-            ):
-                monkeypatch.setattr(application_store, "_PATH", tmp_path / "applications.json")
-                mock_rc.get.side_effect = lambda k, d: d
-                main_module.main(self._mock_scraper_with_one_gig(fee="NEG"))
-        create_call = mock_gmail_cls.return_value.create_draft
-        create_call.assert_called_once()
-        assert create_call.call_args.kwargs["recipient"] == "jane@stmarys.org"
-        assert "£120" in create_call.call_args.kwargs["body_html"]
+            main_module.main(self._mock_scraper_with_one_gig(fee="NEG"))
+    create_call = mock_gmail_cls.return_value.create_draft
+    create_call.assert_called_once()
+    assert create_call.call_args.kwargs["recipient"] == "jane@stmarys.org"
+    assert "£120" in create_call.call_args.kwargs["body_html"]
 ```
 
 Delete `test_neg_draft_alert_carries_accept_edit_reject_buttons` entirely (superseded by the button assertion folded into `test_neg_gig_is_recorded_as_pending_and_alerts_telegram` above — a 3-button Accept/Edit/Reject shape no longer exists).
 
 `test_below_min_fee_gig_is_not_drafted` and `test_expenses_only_gig_is_not_drafted` and `test_enable_neg_drafts_false_rejects_neg` need only their `list_neg_pending()` calls renamed to `list_held(status="neg_pending")`:
 ```python
-    def test_below_min_fee_gig_is_not_drafted(self, tmp_path, monkeypatch):
-        self._run(
-            self._settings(), self._mock_scraper_with_one_gig(fee="£50"), tmp_path, monkeypatch
-        )
-        assert application_store.list_held(status="neg_pending") == []
+def test_below_min_fee_gig_is_not_drafted(self, tmp_path, monkeypatch):
+    self._run(self._settings(), self._mock_scraper_with_one_gig(fee="£50"), tmp_path, monkeypatch)
+    assert application_store.list_held(status="neg_pending") == []
 
-    def test_expenses_only_gig_is_not_drafted(self, tmp_path, monkeypatch):
-        mock_alert = self._run(
-            self._settings(),
-            self._mock_scraper_with_one_gig(fee="Expenses only"),
-            tmp_path,
-            monkeypatch,
-        )
-        assert application_store.list_held(status="neg_pending") == []
-        for c in mock_alert.send_alert.call_args_list:
-            assert "NEG gig" not in c.args[0]
 
-    def test_enable_neg_drafts_false_rejects_neg(self, tmp_path, monkeypatch):
-        self._run(
-            self._settings(enable_neg_drafts=False),
-            self._mock_scraper_with_one_gig(fee="NEG"),
-            tmp_path,
-            monkeypatch,
-        )
-        assert application_store.list_held(status="neg_pending") == []
+def test_expenses_only_gig_is_not_drafted(self, tmp_path, monkeypatch):
+    mock_alert = self._run(
+        self._settings(),
+        self._mock_scraper_with_one_gig(fee="Expenses only"),
+        tmp_path,
+        monkeypatch,
+    )
+    assert application_store.list_held(status="neg_pending") == []
+    for c in mock_alert.send_alert.call_args_list:
+        assert "NEG gig" not in c.args[0]
+
+
+def test_enable_neg_drafts_false_rejects_neg(self, tmp_path, monkeypatch):
+    self._run(
+        self._settings(enable_neg_drafts=False),
+        self._mock_scraper_with_one_gig(fee="NEG"),
+        tmp_path,
+        monkeypatch,
+    )
+    assert application_store.list_held(status="neg_pending") == []
 ```
 
 `test_normal_gig_above_min_fee_still_notified` and `test_suspended_fee_filter_bypasses_neg_partition` need their gig's date pinned to a Saturday-or-Sunday (the shared `_run`'s default `main.classify_gig` patch already returns `auto_eligible`, and `_mock_scraper_with_one_gig`'s default date is now Sunday) — their bodies are otherwise unchanged, just rename the NEG assertion the same way:
@@ -2839,7 +2943,9 @@ class TestClassifierPartition:
             self._scraper(fee="£150", date=self._date_on_weekday(5)),  # Saturday
             tmp_path,
             monkeypatch,
-            classify_return=gig_classifier.Classification(decision="auto_send", reason="auto_eligible"),
+            classify_return=gig_classifier.Classification(
+                decision="auto_send", reason="auto_eligible"
+            ),
         )
         mock_classify.assert_called_once()
         assert application_store.list_held(status="review_pending") == []
@@ -2851,7 +2957,9 @@ class TestClassifierPartition:
             self._scraper(fee="£150", date=self._date_on_weekday(6)),  # Sunday
             tmp_path,
             monkeypatch,
-            classify_return=gig_classifier.Classification(decision="hold_for_review", reason="multi_service"),
+            classify_return=gig_classifier.Classification(
+                decision="hold_for_review", reason="multi_service"
+            ),
         )
         rows = application_store.list_held(status="review_pending")
         assert len(rows) == 1
@@ -2861,13 +2969,17 @@ class TestClassifierPartition:
     def test_neg_gig_never_reaches_classifier(self, tmp_path, monkeypatch):
         mock_classify, mock_notifier_cls = self._run(
             self._settings(),
-            self._scraper(fee="NEG", date=self._date_on_weekday(0)),  # Monday — irrelevant, NEG short-circuits
+            self._scraper(
+                fee="NEG", date=self._date_on_weekday(0)
+            ),  # Monday — irrelevant, NEG short-circuits
             tmp_path,
             monkeypatch,
         )
         mock_classify.assert_not_called()
 
-    def test_enable_fee_filter_false_neg_gig_auto_sends_without_classifier(self, tmp_path, monkeypatch):
+    def test_enable_fee_filter_false_neg_gig_auto_sends_without_classifier(
+        self, tmp_path, monkeypatch
+    ):
         """The ENABLE_FEE_FILTER=false edge case (spec §4) — the fee
         partition never runs, so a NEG gig reaches the classifier partition
         directly; is_negotiable(gig.fee) must still route it straight to
@@ -2980,13 +3092,21 @@ class TestReviewDrafts:
         past = (_dt.date.today() - _dt.timedelta(days=5)).strftime("%A, %B %d, %Y")
         monkeypatch.setattr(application_store, "_PATH", tmp_path / "applications.json")
         gig = Gig(
-            header="Evensong", organisation="St Mary's", locality="London",
-            date=past, time="6:00 PM", fee="£100", link="https://e.com/past-evensong",
+            header="Evensong",
+            organisation="St Mary's",
+            locality="London",
+            date=past,
+            time="6:00 PM",
+            fee="£100",
+            link="https://e.com/past-evensong",
             email="jane@stmarys.org",
         )
         application_store.record_held_draft(
-            gig, status="review_pending", draft_id="stale-draft-id",
-            draft_subject="S", hold_reason="weekday",
+            gig,
+            status="review_pending",
+            draft_id="stale-draft-id",
+            draft_subject="S",
+            hold_reason="weekday",
         )
         empty_scraper = MagicMock()
         empty_scraper.fetch.return_value = "<html/>"

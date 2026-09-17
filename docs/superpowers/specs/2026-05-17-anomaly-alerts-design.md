@@ -63,9 +63,7 @@ Alert site: the `events().list()` call inside `CalendarFilter` — the method th
 At the existing `except Exception` handler, after `logger.warning(...)`, add:
 
 ```python
-alert.send_alert(
-    f"⚠️ Google Calendar API error (CalendarFilter query): {e}"
-)
+alert.send_alert(f"⚠️ Google Calendar API error (CalendarFilter query): {e}")
 ```
 
 **Not alerted:** `block_period` and `unblock_period` failures — those are cosmetic (filter correctness is unaffected).
@@ -77,9 +75,7 @@ Alert site: the `emit()` failure path where a batch `spreadsheets().values().app
 At the existing `except Exception` handler, after `logger.warning(...)`, add:
 
 ```python
-alert.send_alert(
-    f"⚠️ Google Sheets API error (batch append failed): {e}"
-)
+alert.send_alert(f"⚠️ Google Sheets API error (batch append failed): {e}")
 ```
 
 #### `organist_bot/filters.py`
@@ -89,9 +85,7 @@ Alert site: `PostcodeFilter.is_valid()` when the `googlemaps` API call raises an
 At the existing `except Exception` handler, after `logger.warning(...)`, add:
 
 ```python
-alert.send_alert(
-    f"⚠️ Google Maps API error (PostcodeFilter): {e}"
-)
+alert.send_alert(f"⚠️ Google Maps API error (PostcodeFilter): {e}")
 ```
 
 ---

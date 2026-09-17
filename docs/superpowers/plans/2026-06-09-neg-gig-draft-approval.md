@@ -614,8 +614,12 @@ def test_record_neg_pending_writes_row():
 
 def test_record_neg_pending_is_idempotent_for_same_link():
     gig = _gig()
-    id1 = application_store.record_neg_pending(gig, draft_subject="S", draft_body="b", negotiable_fee=120)
-    id2 = application_store.record_neg_pending(gig, draft_subject="S2", draft_body="b2", negotiable_fee=130)
+    id1 = application_store.record_neg_pending(
+        gig, draft_subject="S", draft_body="b", negotiable_fee=120
+    )
+    id2 = application_store.record_neg_pending(
+        gig, draft_subject="S2", draft_body="b2", negotiable_fee=130
+    )
     assert id1 == id2
     rows = application_store.list_neg_pending()
     assert len(rows) == 1
@@ -634,9 +638,7 @@ def test_list_neg_pending_returns_only_neg_pending_rows():
 def test_transition_neg_pending_to_applied_sets_applied_at():
     gig = _gig()
     gig_id = application_store.record_neg_pending(gig, "S", "draft body", 120)
-    ok = application_store.transition_neg_pending(
-        gig_id, to="applied", sent_body="final body"
-    )
+    ok = application_store.transition_neg_pending(gig_id, to="applied", sent_body="final body")
     assert ok is True
     rows = application_store._read()
     r = rows[0]
@@ -1011,6 +1013,7 @@ class TestNegDrafts:
         mock_settings = self._settings()
         scraper = self._mock_scraper_with_one_gig(fee="NEG")
         from contextlib import ExitStack
+
         with ExitStack() as stack:
             patches = [stack.enter_context(p) for p in self._patches(mock_settings, tmp_path)]
             mock_alert = patches[0]
@@ -1022,8 +1025,7 @@ class TestNegDrafts:
         assert "£120" in rows[0]["draft_body"]
         # Telegram alert with the gig_id.
         neg_calls = [
-            c for c in mock_alert.send_alert.call_args_list
-            if "NEG draft pending" in c.args[0]
+            c for c in mock_alert.send_alert.call_args_list if "NEG draft pending" in c.args[0]
         ]
         assert len(neg_calls) == 1
         assert rows[0]["gig_id"] in neg_calls[0].args[0]
@@ -1032,6 +1034,7 @@ class TestNegDrafts:
         mock_settings = self._settings()
         scraper = self._mock_scraper_with_one_gig(fee="£50")
         from contextlib import ExitStack
+
         with ExitStack() as stack:
             for p in self._patches(mock_settings, tmp_path):
                 stack.enter_context(p)
@@ -1042,6 +1045,7 @@ class TestNegDrafts:
         mock_settings = self._settings()
         scraper = self._mock_scraper_with_one_gig(fee="Expenses only")
         from contextlib import ExitStack
+
         with ExitStack() as stack:
             patches = [stack.enter_context(p) for p in self._patches(mock_settings, tmp_path)]
             mock_alert = patches[0]
@@ -1054,6 +1058,7 @@ class TestNegDrafts:
         mock_settings = self._settings(enable_neg_drafts=False)
         scraper = self._mock_scraper_with_one_gig(fee="NEG")
         from contextlib import ExitStack
+
         with ExitStack() as stack:
             for p in self._patches(mock_settings, tmp_path):
                 stack.enter_context(p)
@@ -1154,40 +1159,43 @@ After `valid_gigs = filter_chain.apply(gig_list)` (line 260), and BEFORE the "Fi
 After the partition, between the "Filtering complete" log and Phase 3 (around line 270), draft, persist, and alert for each NEG gig:
 
 ```python
-    # ── NEG drafts: render, persist, alert Telegram ────────────────────────
-    # Notifier and SMTPTransport are already imported at the top of main.py.
-    if neg_gigs and not dry_run:
-        _neg_notifier = Notifier(settings, SMTPTransport(password=settings.email_password))
-        _negotiable_fee = runtime_config.get("negotiable_fee", settings.negotiable_fee)
-        _queued_ids: list[str] = []
-        for gig in neg_gigs:
-            if not gig.email:
-                logger.warning(
-                    "NEG draft skipped — no contact email",
-                    extra={"header": gig.header, "link": gig.link},
-                )
-                continue
-            try:
-                subject, body = _neg_notifier.draft_negotiation(gig, negotiable_fee=_negotiable_fee)
-                gig_id = application_store.record_neg_pending(
-                    gig, draft_subject=subject, draft_body=body, negotiable_fee=_negotiable_fee,
-                )
-                _queued_ids.append(gig_id)
-                _send_neg_alert(gig, gig_id, subject, body)
-            except Exception:
-                logger.exception(
-                    "NEG draft failed for gig — skipping",
-                    extra={"link": gig.link},
-                )
-        logger.info(
-            "NEG drafts queued",
-            extra={"count": len(_queued_ids), "gig_ids": _queued_ids},
-        )
-    elif neg_gigs and dry_run:
-        logger.info(
-            "Phase 3 — DRY-RUN: would draft NEG gigs",
-            extra={"count": len(neg_gigs)},
-        )
+# ── NEG drafts: render, persist, alert Telegram ────────────────────────
+# Notifier and SMTPTransport are already imported at the top of main.py.
+if neg_gigs and not dry_run:
+    _neg_notifier = Notifier(settings, SMTPTransport(password=settings.email_password))
+    _negotiable_fee = runtime_config.get("negotiable_fee", settings.negotiable_fee)
+    _queued_ids: list[str] = []
+    for gig in neg_gigs:
+        if not gig.email:
+            logger.warning(
+                "NEG draft skipped — no contact email",
+                extra={"header": gig.header, "link": gig.link},
+            )
+            continue
+        try:
+            subject, body = _neg_notifier.draft_negotiation(gig, negotiable_fee=_negotiable_fee)
+            gig_id = application_store.record_neg_pending(
+                gig,
+                draft_subject=subject,
+                draft_body=body,
+                negotiable_fee=_negotiable_fee,
+            )
+            _queued_ids.append(gig_id)
+            _send_neg_alert(gig, gig_id, subject, body)
+        except Exception:
+            logger.exception(
+                "NEG draft failed for gig — skipping",
+                extra={"link": gig.link},
+            )
+    logger.info(
+        "NEG drafts queued",
+        extra={"count": len(_queued_ids), "gig_ids": _queued_ids},
+    )
+elif neg_gigs and dry_run:
+    logger.info(
+        "Phase 3 — DRY-RUN: would draft NEG gigs",
+        extra={"count": len(neg_gigs)},
+    )
 ```
 
 Define `_send_neg_alert` as a module-level helper in `main.py` (near the top, after the imports):
@@ -1205,9 +1213,7 @@ def _send_neg_alert(gig: Gig, gig_id: str, subject: str, body: str) -> None:
     plain = re.sub(r"\n{3,}", "\n\n", plain)
     org = f" · {gig.organisation}" if gig.organisation else ""
     contact_line = (
-        f"Contact: {gig.contact or '(none)'} <{gig.email}>"
-        if gig.email
-        else "Contact: (none)"
+        f"Contact: {gig.contact or '(none)'} <{gig.email}>" if gig.email else "Contact: (none)"
     )
     msg = (
         f"🟡 NEG draft pending — id: {gig_id}\n\n"
@@ -1216,9 +1222,9 @@ def _send_neg_alert(gig: Gig, gig_id: str, subject: str, body: str) -> None:
         f"Subject: {subject}\n\n"
         f"{plain}\n\n"
         f"Reply:\n"
-        f"  • \"approve {gig_id}\" to send as-is\n"
-        f"  • \"edit {gig_id}: <new body>\" to send a revised version\n"
-        f"  • \"reject {gig_id}\" to skip"
+        f'  • "approve {gig_id}" to send as-is\n'
+        f'  • "edit {gig_id}: <new body>" to send a revised version\n'
+        f'  • "reject {gig_id}" to skip'
     )
     alert.send_alert(msg)
 ```
@@ -1263,13 +1269,23 @@ from organist_bot.integrations.unified_agent import _HANDLERS
 
 def _seed_neg_pending(link="https://e.com/a"):
     from organist_bot.models import Gig
+
     gig = Gig(
-        header="Test", organisation="Org", locality="London",
-        date="Sunday, July 12, 2026", time="10:00 AM", fee="NEG",
-        link=link, contact="Jane", email="jane@example.com",
+        header="Test",
+        organisation="Org",
+        locality="London",
+        date="Sunday, July 12, 2026",
+        time="10:00 AM",
+        fee="NEG",
+        link=link,
+        contact="Jane",
+        email="jane@example.com",
     )
     return application_store.record_neg_pending(
-        gig, draft_subject="Subject", draft_body="<p>Body</p>", negotiable_fee=120,
+        gig,
+        draft_subject="Subject",
+        draft_body="<p>Body</p>",
+        negotiable_fee=120,
     )
 
 
@@ -1300,7 +1316,9 @@ async def test_approve_neg_application_without_confirmed_returns_preview():
 async def test_approve_neg_application_confirmed_sends_and_transitions():
     gig_id = _seed_neg_pending()
     with patch("organist_bot.integrations.unified_agent.send_application_email") as mock_send:
-        out = json.loads(await _HANDLERS["approve_neg_application"]({"gig_id": gig_id, "confirmed": True}, 1))
+        out = json.loads(
+            await _HANDLERS["approve_neg_application"]({"gig_id": gig_id, "confirmed": True}, 1)
+        )
     assert "sent" in out["result"].lower()
     mock_send.assert_called_once()
     r = application_store._read()[0]
@@ -1309,7 +1327,9 @@ async def test_approve_neg_application_confirmed_sends_and_transitions():
 
 @pytest.mark.asyncio
 async def test_approve_unknown_gig_id_returns_error():
-    out = json.loads(await _HANDLERS["approve_neg_application"]({"gig_id": "deadbeefcafe", "confirmed": True}, 1))
+    out = json.loads(
+        await _HANDLERS["approve_neg_application"]({"gig_id": "deadbeefcafe", "confirmed": True}, 1)
+    )
     assert "not found" in out["result"].lower() or "unknown" in out["result"].lower()
 
 
@@ -1319,7 +1339,9 @@ async def test_approve_already_applied_returns_already_sent():
     with patch("organist_bot.integrations.unified_agent.send_application_email"):
         await _HANDLERS["approve_neg_application"]({"gig_id": gig_id, "confirmed": True}, 1)
     # Second call.
-    out = json.loads(await _HANDLERS["approve_neg_application"]({"gig_id": gig_id, "confirmed": True}, 1))
+    out = json.loads(
+        await _HANDLERS["approve_neg_application"]({"gig_id": gig_id, "confirmed": True}, 1)
+    )
     assert "already" in out["result"].lower()
 
 
@@ -1341,7 +1363,9 @@ async def test_edit_neg_application_confirmed_uses_new_body():
 async def test_reject_neg_application_confirmed_skips_send():
     gig_id = _seed_neg_pending()
     with patch("organist_bot.integrations.unified_agent.send_application_email") as mock_send:
-        out = json.loads(await _HANDLERS["reject_neg_application"]({"gig_id": gig_id, "confirmed": True}, 1))
+        out = json.loads(
+            await _HANDLERS["reject_neg_application"]({"gig_id": gig_id, "confirmed": True}, 1)
+        )
     assert "rejected" in out["result"].lower() or "skipped" in out["result"].lower()
     mock_send.assert_not_called()
     r = application_store._read()[0]
@@ -1359,7 +1383,8 @@ Expected: FAIL with `KeyError: 'list_neg_pending'` (handler not registered).
 In `organist_bot/integrations/unified_agent.py`, find the `TOOLS` list (line 99) and add these four schema entries in the same section style as `manage_applications`. Place them after `manage_applications` block, before `get_income_forecast`:
 
 ```python
-    # ── NEG-fee drafts ──────────────────────────────────────────────────────
+# ── NEG-fee drafts ──────────────────────────────────────────────────────
+(
     {
         "name": "list_neg_pending",
         "description": (
@@ -1370,6 +1395,8 @@ In `organist_bot/integrations/unified_agent.py`, find the `TOOLS` list (line 99)
         ),
         "input_schema": {"type": "object", "properties": {}, "required": []},
     },
+)
+(
     {
         "name": "approve_neg_application",
         "description": (
@@ -1387,6 +1414,8 @@ In `organist_bot/integrations/unified_agent.py`, find the `TOOLS` list (line 99)
             "required": ["gig_id"],
         },
     },
+)
+(
     {
         "name": "edit_neg_application",
         "description": (
@@ -1406,6 +1435,8 @@ In `organist_bot/integrations/unified_agent.py`, find the `TOOLS` list (line 99)
             "required": ["gig_id"],
         },
     },
+)
+(
     {
         "name": "reject_neg_application",
         "description": (
@@ -1421,6 +1452,7 @@ In `organist_bot/integrations/unified_agent.py`, find the `TOOLS` list (line 99)
             "required": ["gig_id"],
         },
     },
+)
 ```
 
 - [ ] **Step 4: Register handlers and implement**
@@ -1444,7 +1476,7 @@ async def _handle_list_neg_pending(input_data: dict, chat_id: int) -> str:
     for r in rows:
         preview = (r.get("draft_body") or "")[:120].replace("\n", " ")
         lines.append(
-            f"  • {r['gig_id']}  {r.get('date','?')}  {r.get('header','?')[:50]}"
+            f"  • {r['gig_id']}  {r.get('date', '?')}  {r.get('header', '?')[:50]}"
             f"\n      → £{r.get('negotiable_fee')}  preview: {preview}..."
         )
     return json.dumps({"result": "\n".join(lines)})
@@ -1476,18 +1508,22 @@ async def _handle_approve_neg(input_data: dict, chat_id: int) -> str:
         if existing is None:
             return json.dumps({"result": f"No draft found with id {gig_id}."})
         return json.dumps(
-            {"result": f"Already {existing.get('status')} at {existing.get('decided_at') or existing.get('updated_at')}."}
+            {
+                "result": f"Already {existing.get('status')} at {existing.get('decided_at') or existing.get('updated_at')}."
+            }
         )
 
     if not confirmed:
-        return json.dumps({
-            "result": (
-                f"Will send this draft to {row.get('email')}.\n\n"
-                f"Subject: {row.get('draft_subject')}\n\n"
-                f"{row.get('draft_body')}\n\n"
-                f"Call again with confirmed=true to send."
-            )
-        })
+        return json.dumps(
+            {
+                "result": (
+                    f"Will send this draft to {row.get('email')}.\n\n"
+                    f"Subject: {row.get('draft_subject')}\n\n"
+                    f"{row.get('draft_body')}\n\n"
+                    f"Call again with confirmed=true to send."
+                )
+            }
+        )
 
     try:
         send_application_email(
@@ -1504,7 +1540,9 @@ async def _handle_approve_neg(input_data: dict, chat_id: int) -> str:
 
     ok = application_store.transition_neg_pending(gig_id, to="applied", sent_body=row["draft_body"])
     if not ok:
-        return json.dumps({"result": "Sent, but row state was unexpected — check applications.json."})
+        return json.dumps(
+            {"result": "Sent, but row state was unexpected — check applications.json."}
+        )
     logger.info("NEG application sent", extra={"details": {"gig_id": gig_id, "edited": False}})
     return json.dumps({"result": f"Sent ✅ to {row.get('email')}."})
 
@@ -1529,9 +1567,20 @@ async def _handle_edit_neg(input_data: dict, chat_id: int) -> str:
     if new_fee is not None:
         # Re-render the template with the new fee.
         from organist_bot.models import Gig as _Gig
-        gig_kwargs = {k: row.get(k, "") for k in (
-            "header", "organisation", "locality", "date", "time", "fee", "email", "postcode"
-        )}
+
+        gig_kwargs = {
+            k: row.get(k, "")
+            for k in (
+                "header",
+                "organisation",
+                "locality",
+                "date",
+                "time",
+                "fee",
+                "email",
+                "postcode",
+            )
+        }
         gig_kwargs["link"] = row.get("url", "")
         gig_kwargs["contact"] = row.get("contact") or row.get("header", "")
         notifier = _NEGNotifier(settings, SMTPTransport(password=settings.email_password))
@@ -1539,14 +1588,16 @@ async def _handle_edit_neg(input_data: dict, chat_id: int) -> str:
         new_body = rendered
 
     if not confirmed:
-        return json.dumps({
-            "result": (
-                f"Will send this edited draft to {row.get('email')}.\n\n"
-                f"Subject: {row.get('draft_subject')}\n\n"
-                f"{new_body}\n\n"
-                f"Call again with confirmed=true to send."
-            )
-        })
+        return json.dumps(
+            {
+                "result": (
+                    f"Will send this edited draft to {row.get('email')}.\n\n"
+                    f"Subject: {row.get('draft_subject')}\n\n"
+                    f"{new_body}\n\n"
+                    f"Call again with confirmed=true to send."
+                )
+            }
+        )
 
     try:
         send_application_email(
@@ -1579,7 +1630,11 @@ async def _handle_reject_neg(input_data: dict, chat_id: int) -> str:
         return json.dumps({"result": f"Already {existing.get('status')}."})
 
     if not confirmed:
-        return json.dumps({"result": f"Reject NEG draft for '{row.get('header')}'? Call again with confirmed=true to confirm."})
+        return json.dumps(
+            {
+                "result": f"Reject NEG draft for '{row.get('header')}'? Call again with confirmed=true to confirm."
+            }
+        )
 
     application_store.transition_neg_pending(gig_id, to="rejected")
     logger.info("NEG application rejected", extra={"details": {"gig_id": gig_id}})

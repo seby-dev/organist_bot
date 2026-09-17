@@ -137,6 +137,7 @@ Added to post-pipeline steps (after `reply_monitor.check_replies()`):
 
 ```python
 from organist_bot import invoice_monitor
+
 invoice_monitor.check_invoice_reminders_and_replies()
 ```
 

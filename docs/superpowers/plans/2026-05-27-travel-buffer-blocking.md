@@ -41,6 +41,7 @@ Create `tests/test_travel.py`:
 
 ```python
 """Tests for organist_bot.travel."""
+
 from unittest.mock import MagicMock, patch
 
 import organist_bot.travel as travel_mod
@@ -49,9 +50,7 @@ import organist_bot.travel as travel_mod
 def _make_client(minutes: int | None = 30, status: str = "OK") -> MagicMock:
     client = MagicMock()
     if minutes is None:
-        client.distance_matrix.return_value = {
-            "rows": [{"elements": [{"status": "ZERO_RESULTS"}]}]
-        }
+        client.distance_matrix.return_value = {"rows": [{"elements": [{"status": "ZERO_RESULTS"}]}]}
     else:
         client.distance_matrix.return_value = {
             "rows": [{"elements": [{"status": status, "duration": {"value": minutes * 60}}]}]
@@ -670,6 +669,7 @@ class TestCreateCalendarEventWithBuffers:
             mock_travel.get_travel_minutes.return_value = 35
 
             from organist_bot.reply_monitor import _create_calendar_event
+
             result = _create_calendar_event(record)
 
         assert result is True
@@ -696,10 +696,16 @@ class TestCreateCalendarEventWithBuffers:
             mock_travel.get_travel_minutes.return_value = None
 
             from organist_bot.reply_monitor import _create_calendar_event
+
             _create_calendar_event(record)
 
         call_args = mock_cal.add_travel_buffers.call_args
-        assert call_args.kwargs.get("travel_minutes", call_args.args[3] if len(call_args.args) > 3 else None) == 45
+        assert (
+            call_args.kwargs.get(
+                "travel_minutes", call_args.args[3] if len(call_args.args) > 3 else None
+            )
+            == 45
+        )
 
     def test_skips_buffers_when_time_unparseable(self):
         record = self._make_record(time_str="")
@@ -717,6 +723,7 @@ class TestCreateCalendarEventWithBuffers:
             mock_travel.get_travel_minutes.return_value = 30
 
             from organist_bot.reply_monitor import _create_calendar_event
+
             result = _create_calendar_event(record)
 
         assert result is False
@@ -832,6 +839,7 @@ def _create_calendar_event(record: dict) -> bool:
             start_time = parse_start_time(gig.time)
             if date_str and start_time:
                 import datetime as _dt
+
                 date = _dt.datetime.strptime(date_str, "%Y%m%d").date()
                 start_dt = _dt.datetime.combine(date, start_time)
                 end_dt = start_dt + _dt.timedelta(hours=1)
@@ -865,6 +873,7 @@ def _make_calendar_client():
     if not settings.google_calendar_id or not settings.google_calendar_credentials_file:
         return None
     from organist_bot.integrations.calendar_client import GoogleCalendarClient
+
     return GoogleCalendarClient(
         credentials_file=settings.google_calendar_credentials_file,
         calendar_id=settings.google_calendar_id,
@@ -960,6 +969,7 @@ class TestAddGigTravelBuffers:
             result = await self._call_add_gig({"postcode": "CM1 1AA"})
 
         import json
+
         data = json.loads(result)
         assert "event_123" in data["result"]
         mock_travel.get_travel_minutes.assert_called_once_with("CM1 1AA")
@@ -983,6 +993,7 @@ class TestAddGigTravelBuffers:
             result = await self._call_add_gig({"postcode": "CM1 1AA"})
 
         import json
+
         data = json.loads(result)
         assert "event_123" in data["result"]  # Still succeeded
 
@@ -1102,26 +1113,27 @@ Also update the `upsert_accepted` call to pass postcode:
 Find the block around line 1281 where `original_status == "accepted" and status == "declined"` and add buffer deletion:
 
 ```python
-                if original_status == "accepted" and status == "declined":
-                    org = record.get("organisation") or record.get("header", "")
-                    date = record.get("date", "")
-                    # Delete travel buffer events
-                    cal = _make_calendar_client()
-                    if cal:
-                        for field in ("travel_before_event_id", "travel_after_event_id"):
-                            evt_id = record.get(field)
-                            if evt_id:
-                                try:
-                                    cal.delete_event(evt_id)
-                                except Exception as del_exc:
-                                    logger.warning(
-                                        "manage_applications: failed to delete travel buffer %s: %s",
-                                        evt_id, del_exc,
-                                    )
-                    msg += (
-                        f"\n\nThis was a confirmed booking ({org} on {date}). "
-                        "Do you want to delete the calendar event?"
+if original_status == "accepted" and status == "declined":
+    org = record.get("organisation") or record.get("header", "")
+    date = record.get("date", "")
+    # Delete travel buffer events
+    cal = _make_calendar_client()
+    if cal:
+        for field in ("travel_before_event_id", "travel_after_event_id"):
+            evt_id = record.get(field)
+            if evt_id:
+                try:
+                    cal.delete_event(evt_id)
+                except Exception as del_exc:
+                    logger.warning(
+                        "manage_applications: failed to delete travel buffer %s: %s",
+                        evt_id,
+                        del_exc,
                     )
+    msg += (
+        f"\n\nThis was a confirmed booking ({org} on {date}). "
+        "Do you want to delete the calendar event?"
+    )
 ```
 
 - [ ] **Step 7: Run all tests**

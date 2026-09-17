@@ -219,22 +219,23 @@ Add to `tests/test_runtime_config_store.py`, inside `TestRuntimeConfigStore` (af
 existing `test_all_returns_current_overrides` method):
 
 ```python
-    def test_get_returns_string_override_when_set(self, tmp_path, monkeypatch):
-        from organist_bot.runtime_config_store import RuntimeConfigStore
+def test_get_returns_string_override_when_set(self, tmp_path, monkeypatch):
+    from organist_bot.runtime_config_store import RuntimeConfigStore
 
-        monkeypatch.chdir(tmp_path)
-        store = RuntimeConfigStore()
-        store.set("llm_provider", "openai")
-        assert store.get("llm_provider", "anthropic") == "openai"
+    monkeypatch.chdir(tmp_path)
+    store = RuntimeConfigStore()
+    store.set("llm_provider", "openai")
+    assert store.get("llm_provider", "anthropic") == "openai"
 
-    def test_string_and_int_values_coexist(self, tmp_path, monkeypatch):
-        from organist_bot.runtime_config_store import RuntimeConfigStore
 
-        monkeypatch.chdir(tmp_path)
-        store = RuntimeConfigStore()
-        store.set("min_fee", 150)
-        store.set("llm_provider", "gemini")
-        assert store.all() == {"min_fee": 150, "llm_provider": "gemini"}
+def test_string_and_int_values_coexist(self, tmp_path, monkeypatch):
+    from organist_bot.runtime_config_store import RuntimeConfigStore
+
+    monkeypatch.chdir(tmp_path)
+    store = RuntimeConfigStore()
+    store.set("min_fee", 150)
+    store.set("llm_provider", "gemini")
+    assert store.all() == {"min_fee": 150, "llm_provider": "gemini"}
 ```
 
 - [ ] **Step 2: Run them to verify they fail**
@@ -544,8 +545,6 @@ _PROVIDER_API_KEY_FIELD = {
 
 def _default_model_string() -> str:
     return _PROVIDER_MODELS[_DEFAULT_PROVIDER][_DEFAULT_MODEL_KEY]
-
-
 ```
 
 - [ ] **Step 2: Write the failing tests for the tool**
@@ -595,9 +594,7 @@ class TestManageLlmProvider:
 
         assert runtime_config.get("llm_provider", "anthropic") == "anthropic"
 
-    async def test_set_without_model_lists_options_and_does_not_switch(
-        self, tmp_path, monkeypatch
-    ):
+    async def test_set_without_model_lists_options_and_does_not_switch(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         monkeypatch.setattr(unified_agent.settings, "openai_api_key", "sk-test")
         result = await _execute_tool(
@@ -692,7 +689,8 @@ Insert a new entry between those two lines (i.e. right after `manage_config`'s c
 `},`, right before the `# ── Application tracking ──` comment):
 
 ```python
-    # ── LLM provider ─────────────────────────────────────────────────────────
+# ── LLM provider ─────────────────────────────────────────────────────────
+(
     {
         "name": "manage_llm_provider",
         "description": (
@@ -726,6 +724,7 @@ Insert a new entry between those two lines (i.e. right after `manage_config`'s c
             "required": ["action"],
         },
     },
+)
 ```
 
 - [ ] **Step 5: Add `manage_llm_provider` to `_VERBATIM_RESPONSE_TOOLS`**
@@ -1022,7 +1021,6 @@ async def process_message(
     _trim_history(chat_id)
     _persist_chat(chat_id)
     return responses
-
 ```
 
 Note what's deliberately unchanged: `_execute_tool`, the `_VERBATIM_RESPONSE_TOOLS`/
@@ -1069,8 +1067,6 @@ def _fake_litellm_response(
     # during spec review (see Global Constraints in the plan/spec).
     message = SimpleNamespace(content=content, tool_calls=tool_calls, model_dump=lambda: dumped)
     return SimpleNamespace(choices=[SimpleNamespace(message=message)])
-
-
 ```
 
 This needs `from types import SimpleNamespace` at module scope. The file currently
@@ -1120,9 +1116,7 @@ async def test_process_message_reports_on_step_progress(tmp_path, monkeypatch):
     unified_agent._hydrated.discard(cid)
 
     tool_use_response = _fake_litellm_response(
-        tool_calls=[
-            _fake_tool_call("tool_1", "add_gig", {"url": "https://example.com/gig/1"})
-        ]
+        tool_calls=[_fake_tool_call("tool_1", "add_gig", {"url": "https://example.com/gig/1"})]
     )
     end_turn_response = _fake_litellm_response(content="Added the gig.")
 

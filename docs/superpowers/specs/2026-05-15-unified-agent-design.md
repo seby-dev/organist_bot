@@ -62,6 +62,7 @@ Replace the per-call `async with async_playwright()` context manager with a modu
 _pw_instance = None
 _browser = None
 
+
 async def _get_browser():
     global _pw_instance, _browser
     if _browser is None or not _browser.is_connected():

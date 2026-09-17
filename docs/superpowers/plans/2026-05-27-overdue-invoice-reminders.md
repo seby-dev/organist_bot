@@ -179,6 +179,7 @@ At the top of `invoice_generator.py`, after the imports, add:
 def _now_iso() -> str:
     """Return current UTC time as ISO-8601 string ending in Z."""
     import datetime as _dt
+
     return _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 ```
 
@@ -269,13 +270,17 @@ class TestFetchInvoiceReplies:
         creds_file.write_text('{"installed": {}}')
         token_file = tmp_path / "token.json"
         from organist_bot.integrations.gmail_client import GmailClient
+
         return GmailClient(str(creds_file), str(token_file))
 
     def test_returns_inbox_replies_from_client_email(self, tmp_path):
         client = self._make_client(tmp_path)
         expected = _make_message_dict(
-            "msg1", "client@example.com", "me@example.com",
-            "Thank you, payment has been sent.", "incoming"
+            "msg1",
+            "client@example.com",
+            "me@example.com",
+            "Thank you, payment has been sent.",
+            "incoming",
         )
         with (
             patch.object(client, "_build_service"),
@@ -456,9 +461,9 @@ def _make_invoice(
 
 
 def _recent_emailed_at() -> str:
-    return (
-        datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=2)
-    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=2)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
 
 
 class TestOverdueReminder:
@@ -515,9 +520,7 @@ class TestOverdueReminder:
         mock_alert.assert_not_called()
 
     def test_does_not_send_when_already_paid(self):
-        invoices = {
-            "INV-2026-001": _make_invoice(paid_at="2026-06-05T10:00:00Z")
-        }
+        invoices = {"INV-2026-001": _make_invoice(paid_at="2026-06-05T10:00:00Z")}
         with (
             patch("organist_bot.invoice_monitor.load_invoices", return_value=invoices),
             patch("organist_bot.invoice_monitor._make_gmail_client", return_value=None),
@@ -575,9 +578,7 @@ class TestReplyMonitoring:
         with (
             patch("organist_bot.invoice_monitor.load_invoices", return_value=invoices),
             patch("organist_bot.invoice_monitor._make_gmail_client", return_value=mock_gmail),
-            patch(
-                "organist_bot.invoice_monitor._classify_payment_reply", return_value="paid"
-            ),
+            patch("organist_bot.invoice_monitor._classify_payment_reply", return_value="paid"),
             patch("organist_bot.invoice_monitor.mark_invoice_paid") as mock_paid,
             patch("organist_bot.invoice_monitor.save_invoice_field"),
             patch("organist_bot.invoice_monitor.alert.send_alert") as mock_alert,
@@ -589,9 +590,7 @@ class TestReplyMonitoring:
         assert "paid" in mock_alert.call_args.args[0].lower()
 
     def test_skips_already_seen_message_ids(self):
-        invoices = {
-            "INV-2026-001": _make_invoice(checked_reply_ids=["msg1"])
-        }
+        invoices = {"INV-2026-001": _make_invoice(checked_reply_ids=["msg1"])}
         reply = {
             "message_id": "msg1",
             "sender": "client@example.com",
@@ -628,9 +627,7 @@ class TestReplyMonitoring:
         with (
             patch("organist_bot.invoice_monitor.load_invoices", return_value=invoices),
             patch("organist_bot.invoice_monitor._make_gmail_client", return_value=mock_gmail),
-            patch(
-                "organist_bot.invoice_monitor._classify_payment_reply", return_value="unclear"
-            ),
+            patch("organist_bot.invoice_monitor._classify_payment_reply", return_value="unclear"),
             patch("organist_bot.invoice_monitor.mark_invoice_paid") as mock_paid,
             patch("organist_bot.invoice_monitor.save_invoice_field"),
             patch("organist_bot.invoice_monitor.alert.send_alert"),
@@ -658,9 +655,7 @@ class TestReplyMonitoring:
         with (
             patch("organist_bot.invoice_monitor.load_invoices", return_value=invoices),
             patch("organist_bot.invoice_monitor._make_gmail_client", return_value=mock_gmail),
-            patch(
-                "organist_bot.invoice_monitor._classify_payment_reply", return_value="unclear"
-            ),
+            patch("organist_bot.invoice_monitor._classify_payment_reply", return_value="unclear"),
             patch("organist_bot.invoice_monitor.mark_invoice_paid"),
             patch("organist_bot.invoice_monitor.save_invoice_field", side_effect=capture_save),
             patch("organist_bot.invoice_monitor.alert.send_alert"),
@@ -763,6 +758,7 @@ def _make_gmail_client():
         return None
     try:
         from organist_bot.integrations.gmail_client import GmailClient
+
         return GmailClient(settings.gmail_credentials_file, settings.gmail_token_file)
     except Exception as exc:
         logger.warning("invoice_monitor: could not build Gmail client: %s", exc)
@@ -779,10 +775,7 @@ def check_invoice_reminders_and_replies() -> None:
     now = datetime.datetime.now(datetime.timezone.utc)
     gmail = _make_gmail_client()
 
-    candidates = [
-        inv for inv in invoices.values()
-        if inv.get("emailed") and not inv.get("paid_at")
-    ]
+    candidates = [inv for inv in invoices.values() if inv.get("emailed") and not inv.get("paid_at")]
 
     for inv in candidates:
         inv_num = inv["invoice_number"]
@@ -867,9 +860,7 @@ def _process_invoice(
         )
         save_invoice_field(inv_num, "reminder_sent", True)
     except Exception as exc:
-        logger.warning(
-            "invoice_monitor: failed to send overdue reminder for %s: %s", inv_num, exc
-        )
+        logger.warning("invoice_monitor: failed to send overdue reminder for %s: %s", inv_num, exc)
         # Do NOT set reminder_sent=True — retry on next tick
 ```
 
@@ -947,20 +938,20 @@ class TestMarkInvoicePaidTool:
                 "mark_invoice_paid", {"invoice_number": "INV-2026-001"}, chat_id=1
             )
         import json
+
         data = json.loads(result)
         assert "INV-2026-001" in data["result"]
         assert "paid" in data["result"].lower()
         mock_paid.assert_called_once_with("INV-2026-001")
 
     async def test_returns_error_for_unknown_invoice(self):
-        with patch(
-            "organist_bot.integrations.unified_agent.mark_invoice_paid", return_value=False
-        ):
+        with patch("organist_bot.integrations.unified_agent.mark_invoice_paid", return_value=False):
             agent = UnifiedAgent()
             result = await agent._execute_tool(
                 "mark_invoice_paid", {"invoice_number": "INV-9999-999"}, chat_id=1
             )
         import json
+
         data = json.loads(result)
         assert "error" in data
 
@@ -968,6 +959,7 @@ class TestMarkInvoicePaidTool:
 class TestListInvoicesPaymentStatus:
     async def test_shows_paid_status(self):
         import datetime
+
         invoices = {
             "INV-2026-001": {
                 "invoice_number": "INV-2026-001",
@@ -985,6 +977,7 @@ class TestListInvoicesPaymentStatus:
             agent = UnifiedAgent()
             result = await agent._execute_tool("list_invoices", {}, chat_id=1)
         import json
+
         data = json.loads(result)
         assert "paid" in data["result"].lower()
 
@@ -1009,6 +1002,7 @@ class TestListInvoicesPaymentStatus:
             agent = UnifiedAgent()
             result = await agent._execute_tool("list_invoices", {}, chat_id=1)
         import json
+
         data = json.loads(result)
         assert "overdue" in data["result"].lower()
 ```
@@ -1040,20 +1034,22 @@ from organist_bot.integrations.invoice_generator import (
 Add after the `list_invoices` tool definition:
 
 ```python
-        {
-            "name": "mark_invoice_paid",
-            "description": "Mark an invoice as paid. Use when the user says an invoice has been paid or confirms payment.",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "invoice_number": {
-                        "type": "string",
-                        "description": "The invoice number, e.g. INV-2026-001",
-                    }
-                },
-                "required": ["invoice_number"],
+(
+    {
+        "name": "mark_invoice_paid",
+        "description": "Mark an invoice as paid. Use when the user says an invoice has been paid or confirms payment.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "invoice_number": {
+                    "type": "string",
+                    "description": "The invoice number, e.g. INV-2026-001",
+                }
             },
+            "required": ["invoice_number"],
         },
+    },
+)
 ```
 
 - [ ] **Step 5: Add system prompt bullet for `mark_invoice_paid`**
@@ -1061,7 +1057,7 @@ Add after the `list_invoices` tool definition:
 In the system prompt string, after the invoice section, add:
 
 ```python
-"- \"Mark INV-2026-001 as paid\" / \"invoice has been paid\" → mark_invoice_paid.\n"
+'- "Mark INV-2026-001 as paid" / "invoice has been paid" → mark_invoice_paid.\n'
 ```
 
 - [ ] **Step 6: Add the `mark_invoice_paid` handler in `_execute_tool`**
@@ -1082,39 +1078,40 @@ Add before the `list_invoices` handler:
 Find the `list_invoices` handler (around line 965). Replace the section that builds the invoice line for each record with:
 
 ```python
-    if name == "list_invoices":
-        invoices = load_invoices()
-        if not invoices:
-            return json.dumps({"result": "No invoices found."})
+if name == "list_invoices":
+    invoices = load_invoices()
+    if not invoices:
+        return json.dumps({"result": "No invoices found."})
 
-        import datetime as _dt
-        now = _dt.datetime.now(_dt.timezone.utc)
+    import datetime as _dt
 
-        def _payment_status(r: dict) -> str:
-            if r.get("paid_at"):
-                return "✅ paid"
-            emailed_at_str = r.get("emailed_at")
-            if not r.get("emailed") or not emailed_at_str:
-                return "not sent"
-            try:
-                emailed_at = _dt.datetime.fromisoformat(emailed_at_str.replace("Z", "+00:00"))
-                days = (now - emailed_at).days
-                if days >= 5:
-                    return f"⏰ overdue ({days}d)"
-                return f"emailed {days}d ago"
-            except ValueError:
-                return "emailed"
+    now = _dt.datetime.now(_dt.timezone.utc)
 
-        records = list(invoices.values())
-        records.sort(key=lambda r: r.get("created_at", ""), reverse=True)
-        lines = ["📄 Invoices (most recent first)", ""]
-        for r in records[:20]:
-            status = _payment_status(r)
-            lines.append(
-                f"{r['invoice_number']}  {r.get('client_name', '?'):<20}"
-                f"  £{r.get('total', 0):.2f}  {r.get('date', '?')}  {status}"
-            )
-        return json.dumps({"result": "\n".join(lines)})
+    def _payment_status(r: dict) -> str:
+        if r.get("paid_at"):
+            return "✅ paid"
+        emailed_at_str = r.get("emailed_at")
+        if not r.get("emailed") or not emailed_at_str:
+            return "not sent"
+        try:
+            emailed_at = _dt.datetime.fromisoformat(emailed_at_str.replace("Z", "+00:00"))
+            days = (now - emailed_at).days
+            if days >= 5:
+                return f"⏰ overdue ({days}d)"
+            return f"emailed {days}d ago"
+        except ValueError:
+            return "emailed"
+
+    records = list(invoices.values())
+    records.sort(key=lambda r: r.get("created_at", ""), reverse=True)
+    lines = ["📄 Invoices (most recent first)", ""]
+    for r in records[:20]:
+        status = _payment_status(r)
+        lines.append(
+            f"{r['invoice_number']}  {r.get('client_name', '?'):<20}"
+            f"  £{r.get('total', 0):.2f}  {r.get('date', '?')}  {status}"
+        )
+    return json.dumps({"result": "\n".join(lines)})
 ```
 
 - [ ] **Step 8: Run all unified agent tests**

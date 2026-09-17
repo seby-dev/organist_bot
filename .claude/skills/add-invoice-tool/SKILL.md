@@ -14,20 +14,22 @@ The invoice agent (`organist_bot/integrations/invoice_agent.py`) is a Claude too
 ### 1. Add JSON schema to `TOOLS` list
 
 ```python
-{
-    "name": "my_tool",
-    "description": "What this tool does and when Claude should call it.",
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "param_name": {
-                "type": "string",           # or "integer", "number", "array", "boolean"
-                "description": "What this param is, e.g. 'Client key, e.g. holy-cross'",
+(
+    {
+        "name": "my_tool",
+        "description": "What this tool does and when Claude should call it.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "param_name": {
+                    "type": "string",  # or "integer", "number", "array", "boolean"
+                    "description": "What this param is, e.g. 'Client key, e.g. holy-cross'",
+                },
             },
+            "required": ["param_name"],  # omit optional params
         },
-        "required": ["param_name"],         # omit optional params
     },
-},
+)
 ```
 
 The `description` field is what Claude reads to decide whether to call the tool. Be explicit about preconditions, e.g. "Use list_clients first to find the correct key."

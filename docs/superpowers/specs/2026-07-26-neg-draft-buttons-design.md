@@ -36,8 +36,8 @@ the chat.
 ### New per-chat state (`unified_agent.py`)
 
 ```python
-_active_neg_draft: dict[int, str] = {}       # chat_id -> gig_id
-_pending_neg_instruction: dict[int, str] = {} # chat_id -> raw free text, picker-only
+_active_neg_draft: dict[int, str] = {}  # chat_id -> gig_id
+_pending_neg_instruction: dict[int, str] = {}  # chat_id -> raw free text, picker-only
 ```
 
 `_active_neg_draft` follows the exact pattern of `_last_invoice` /

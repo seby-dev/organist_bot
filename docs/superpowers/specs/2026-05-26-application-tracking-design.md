@@ -56,8 +56,10 @@ Mirrors `filter_store.py` — a module-level JSON store backed by `data/applicat
 def record_application(gig: Gig) -> bool:
     """Write a new 'applied' record. Returns False if URL already exists (idempotent)."""
 
+
 def update_status(url: str, status: str) -> bool:
     """Update status and updated_at for the record with the given URL. Returns False if not found."""
+
 
 def upsert_accepted(url: str | None, header: str, organisation: str, date: str, fee: str) -> None:
     """Create or update a record to 'accepted'.
@@ -65,8 +67,10 @@ def upsert_accepted(url: str | None, header: str, organisation: str, date: str, 
     Otherwise creates a new accepted record (url may be None for manual entries).
     """
 
+
 def expire_past_applied() -> int:
     """Mark all 'applied' records whose date < today as 'no_response'. Returns count changed."""
+
 
 def list_applications(days: int = 30) -> list[dict]:
     """Return all records with applied_at within the last N days, newest first."""

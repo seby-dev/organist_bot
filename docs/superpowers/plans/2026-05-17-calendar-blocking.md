@@ -239,9 +239,7 @@ def block_period(self, period: str) -> str | None:
             "end": {"date": end_exclusive.isoformat()},
             "extendedProperties": {"private": {"organist_bot_block": "1"}},
         }
-        created = (
-            self._service.events().insert(calendarId=self.calendar_id, body=event).execute()
-        )
+        created = self._service.events().insert(calendarId=self.calendar_id, body=event).execute()
         event_id = created["id"]
         logger.info("Calendar block created", extra={"period": period, "event_id": event_id})
         return event_id
@@ -378,9 +376,7 @@ def unblock_period(self, period: str) -> bool:
         )
         events = result.get("items", [])
         for ev in events:
-            self._service.events().delete(
-                calendarId=self.calendar_id, eventId=ev["id"]
-            ).execute()
+            self._service.events().delete(calendarId=self.calendar_id, eventId=ev["id"]).execute()
         if events:
             logger.info(
                 "Calendar blocks removed",
@@ -430,55 +426,55 @@ git commit -m "feat: add unblock_period to GoogleCalendarClient"
 Add these three tests to the `TestFilterTools` class in `tests/test_unified_agent.py`. Also add `from organist_bot.integrations.unified_agent import ... sync_calendar_blocks` to the imports at the top (leave `sync_calendar_blocks` for Task 6 — only add `_make_calendar_client` here if needed, but since we patch it by string path that's not required).
 
 ```python
-    @pytest.mark.asyncio
-    async def test_manage_unavailable_add_blocks_calendar(self):
-        mock_cal = MagicMock()
-        with (
-            patch("organist_bot.integrations.unified_agent.filter_store") as mock_fs,
-            patch(
-                "organist_bot.integrations.unified_agent._make_calendar_client",
-                return_value=mock_cal,
-            ),
-        ):
-            mock_fs.add_period.return_value = True
-            await _execute_tool(
-                "manage_unavailable", {"action": "add", "period": "2026-12"}, CHAT_ID
-            )
-        mock_cal.block_period.assert_called_once_with("2026-12")
+@pytest.mark.asyncio
+async def test_manage_unavailable_add_blocks_calendar(self):
+    mock_cal = MagicMock()
+    with (
+        patch("organist_bot.integrations.unified_agent.filter_store") as mock_fs,
+        patch(
+            "organist_bot.integrations.unified_agent._make_calendar_client",
+            return_value=mock_cal,
+        ),
+    ):
+        mock_fs.add_period.return_value = True
+        await _execute_tool("manage_unavailable", {"action": "add", "period": "2026-12"}, CHAT_ID)
+    mock_cal.block_period.assert_called_once_with("2026-12")
 
-    @pytest.mark.asyncio
-    async def test_manage_unavailable_add_calendar_failure_does_not_raise(self):
-        mock_cal = MagicMock()
-        mock_cal.block_period.side_effect = Exception("API down")
-        with (
-            patch("organist_bot.integrations.unified_agent.filter_store") as mock_fs,
-            patch(
-                "organist_bot.integrations.unified_agent._make_calendar_client",
-                return_value=mock_cal,
-            ),
-        ):
-            mock_fs.add_period.return_value = True
-            result = await _execute_tool(
-                "manage_unavailable", {"action": "add", "period": "2026-12"}, CHAT_ID
-            )
-        data = json.loads(result)
-        assert "result" in data
 
-    @pytest.mark.asyncio
-    async def test_manage_unavailable_add_skips_calendar_when_none(self):
-        with (
-            patch("organist_bot.integrations.unified_agent.filter_store") as mock_fs,
-            patch(
-                "organist_bot.integrations.unified_agent._make_calendar_client",
-                return_value=None,
-            ),
-        ):
-            mock_fs.add_period.return_value = True
-            result = await _execute_tool(
-                "manage_unavailable", {"action": "add", "period": "2026-12"}, CHAT_ID
-            )
-        data = json.loads(result)
-        assert "result" in data
+@pytest.mark.asyncio
+async def test_manage_unavailable_add_calendar_failure_does_not_raise(self):
+    mock_cal = MagicMock()
+    mock_cal.block_period.side_effect = Exception("API down")
+    with (
+        patch("organist_bot.integrations.unified_agent.filter_store") as mock_fs,
+        patch(
+            "organist_bot.integrations.unified_agent._make_calendar_client",
+            return_value=mock_cal,
+        ),
+    ):
+        mock_fs.add_period.return_value = True
+        result = await _execute_tool(
+            "manage_unavailable", {"action": "add", "period": "2026-12"}, CHAT_ID
+        )
+    data = json.loads(result)
+    assert "result" in data
+
+
+@pytest.mark.asyncio
+async def test_manage_unavailable_add_skips_calendar_when_none(self):
+    with (
+        patch("organist_bot.integrations.unified_agent.filter_store") as mock_fs,
+        patch(
+            "organist_bot.integrations.unified_agent._make_calendar_client",
+            return_value=None,
+        ),
+    ):
+        mock_fs.add_period.return_value = True
+        result = await _execute_tool(
+            "manage_unavailable", {"action": "add", "period": "2026-12"}, CHAT_ID
+        )
+    data = json.loads(result)
+    assert "result" in data
 ```
 
 - [ ] **Step 2: Run to verify they fail**
@@ -568,39 +564,40 @@ git commit -m "feat: block calendar when marking unavailable period"
 Add these two tests to the `TestFilterTools` class in `tests/test_unified_agent.py`:
 
 ```python
-    @pytest.mark.asyncio
-    async def test_manage_unavailable_remove_unblocks_calendar(self):
-        mock_cal = MagicMock()
-        with (
-            patch("organist_bot.integrations.unified_agent.filter_store") as mock_fs,
-            patch(
-                "organist_bot.integrations.unified_agent._make_calendar_client",
-                return_value=mock_cal,
-            ),
-        ):
-            mock_fs.remove_period.return_value = True
-            await _execute_tool(
-                "manage_unavailable", {"action": "remove", "period": "2026-12"}, CHAT_ID
-            )
-        mock_cal.unblock_period.assert_called_once_with("2026-12")
+@pytest.mark.asyncio
+async def test_manage_unavailable_remove_unblocks_calendar(self):
+    mock_cal = MagicMock()
+    with (
+        patch("organist_bot.integrations.unified_agent.filter_store") as mock_fs,
+        patch(
+            "organist_bot.integrations.unified_agent._make_calendar_client",
+            return_value=mock_cal,
+        ),
+    ):
+        mock_fs.remove_period.return_value = True
+        await _execute_tool(
+            "manage_unavailable", {"action": "remove", "period": "2026-12"}, CHAT_ID
+        )
+    mock_cal.unblock_period.assert_called_once_with("2026-12")
 
-    @pytest.mark.asyncio
-    async def test_manage_unavailable_remove_calendar_failure_does_not_raise(self):
-        mock_cal = MagicMock()
-        mock_cal.unblock_period.side_effect = Exception("API down")
-        with (
-            patch("organist_bot.integrations.unified_agent.filter_store") as mock_fs,
-            patch(
-                "organist_bot.integrations.unified_agent._make_calendar_client",
-                return_value=mock_cal,
-            ),
-        ):
-            mock_fs.remove_period.return_value = True
-            result = await _execute_tool(
-                "manage_unavailable", {"action": "remove", "period": "2026-12"}, CHAT_ID
-            )
-        data = json.loads(result)
-        assert "result" in data
+
+@pytest.mark.asyncio
+async def test_manage_unavailable_remove_calendar_failure_does_not_raise(self):
+    mock_cal = MagicMock()
+    mock_cal.unblock_period.side_effect = Exception("API down")
+    with (
+        patch("organist_bot.integrations.unified_agent.filter_store") as mock_fs,
+        patch(
+            "organist_bot.integrations.unified_agent._make_calendar_client",
+            return_value=mock_cal,
+        ),
+    ):
+        mock_fs.remove_period.return_value = True
+        result = await _execute_tool(
+            "manage_unavailable", {"action": "remove", "period": "2026-12"}, CHAT_ID
+        )
+    data = json.loads(result)
+    assert "result" in data
 ```
 
 - [ ] **Step 2: Run to verify they fail**
@@ -618,35 +615,27 @@ Expected: both FAIL.
 Find this block (just after the `add` block from Task 4):
 
 ```python
-        if action == "remove":
-            removed = filter_store.remove_period("unavailable_periods", period)
-            msg = (
-                f"Removed '{period}' from unavailable periods."
-                if removed
-                else f"'{period}' not found."
-            )
-            return json.dumps({"result": msg})
+if action == "remove":
+    removed = filter_store.remove_period("unavailable_periods", period)
+    msg = f"Removed '{period}' from unavailable periods." if removed else f"'{period}' not found."
+    return json.dumps({"result": msg})
 ```
 
 Replace with:
 
 ```python
-        if action == "remove":
-            removed = filter_store.remove_period("unavailable_periods", period)
-            msg = (
-                f"Removed '{period}' from unavailable periods."
-                if removed
-                else f"'{period}' not found."
+if action == "remove":
+    removed = filter_store.remove_period("unavailable_periods", period)
+    msg = f"Removed '{period}' from unavailable periods." if removed else f"'{period}' not found."
+    cal = _make_calendar_client()
+    if cal:
+        try:
+            cal.unblock_period(period)
+        except Exception:
+            logger.warning(
+                "manage_unavailable: failed to unblock calendar for %r", period, exc_info=True
             )
-            cal = _make_calendar_client()
-            if cal:
-                try:
-                    cal.unblock_period(period)
-                except Exception:
-                    logger.warning(
-                        "manage_unavailable: failed to unblock calendar for %r", period, exc_info=True
-                    )
-            return json.dumps({"result": msg})
+    return json.dumps({"result": msg})
 ```
 
 - [ ] **Step 4: Run tests to verify they pass**

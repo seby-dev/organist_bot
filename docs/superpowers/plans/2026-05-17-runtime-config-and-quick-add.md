@@ -42,14 +42,17 @@ import json, pytest
 from pathlib import Path
 from organist_bot.runtime_config_store import RuntimeConfigStore
 
+
 def test_get_returns_default_when_file_missing(tmp_path):
     store = RuntimeConfigStore(data_file=tmp_path / "rc.json")
     assert store.get("min_fee", 100) == 100
+
 
 def test_set_persists_and_get_returns_override(tmp_path):
     store = RuntimeConfigStore(data_file=tmp_path / "rc.json")
     store.set("min_fee", 150)
     assert store.get("min_fee", 100) == 150
+
 
 def test_reset_removes_key(tmp_path):
     store = RuntimeConfigStore(data_file=tmp_path / "rc.json")
@@ -57,9 +60,11 @@ def test_reset_removes_key(tmp_path):
     assert store.reset("min_fee") is True
     assert store.get("min_fee", 100) == 100
 
+
 def test_reset_returns_false_when_key_absent(tmp_path):
     store = RuntimeConfigStore(data_file=tmp_path / "rc.json")
     assert store.reset("min_fee") is False
+
 
 def test_all_returns_all_overrides(tmp_path):
     store = RuntimeConfigStore(data_file=tmp_path / "rc.json")
@@ -67,15 +72,18 @@ def test_all_returns_all_overrides(tmp_path):
     store.set("poll_minutes", 5)
     assert store.all() == {"min_fee": 150, "poll_minutes": 5}
 
+
 def test_all_returns_empty_when_no_overrides(tmp_path):
     store = RuntimeConfigStore(data_file=tmp_path / "rc.json")
     assert store.all() == {}
+
 
 def test_malformed_json_treated_as_empty(tmp_path):
     f = tmp_path / "rc.json"
     f.write_text("not json")
     store = RuntimeConfigStore(data_file=f)
     assert store.get("min_fee", 100) == 100
+
 
 def test_keys_are_independent(tmp_path):
     store = RuntimeConfigStore(data_file=tmp_path / "rc.json")
@@ -226,6 +234,7 @@ import datetime
 from unittest.mock import patch
 from organist_bot.integrations.unified_agent import _resolve_period
 
+
 class TestResolvePeriod:
     def _today(self, year, month, day):
         return datetime.date(year, month, day)
@@ -313,7 +322,9 @@ class TestManageConfig:
         result = await _execute_tool(
             "manage_config", {"action": "set", "key": "poll_minutes", "value": 999}, CHAT_ID
         )
-        assert "invalid" in result.lower() or "range" in result.lower() or "must be" in result.lower()
+        assert (
+            "invalid" in result.lower() or "range" in result.lower() or "must be" in result.lower()
+        )
 
     @pytest.mark.asyncio
     async def test_reset_existing_key(self):

@@ -65,6 +65,7 @@ The `require_pr_reviewers.sh` PreToolUse gate blocks `gh pr create` until CodeRa
 from pathlib import Path
 from organist_bot import atomic_store
 
+
 def test_file_lock_is_reentrant_across_sequential_calls(tmp_path: Path):
     p = tmp_path / "x.json"
     with atomic_store.file_lock(p):
@@ -86,6 +87,7 @@ Atomic, lockable JSON/text persistence shared by the file-backed stores.
 Generalizes the tempfile + os.replace pattern from application_store and adds
 cross-process advisory locking (fcntl.flock) plus loud failure on corruption.
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -195,20 +197,24 @@ import json
 import pytest
 from organist_bot import atomic_store
 
+
 def test_write_json_roundtrip(tmp_path):
     p = tmp_path / "d.json"
     atomic_store.write_json(p, {"a": 1})
     assert atomic_store.read_json(p, {}) == {"a": 1}
 
+
 def test_failed_replace_leaves_original_intact(tmp_path, monkeypatch):
     p = tmp_path / "d.json"
     atomic_store.write_json(p, {"ok": True})
-    monkeypatch.setattr(atomic_store.os, "replace",
-                        lambda *a, **k: (_ for _ in ()).throw(OSError("boom")))
+    monkeypatch.setattr(
+        atomic_store.os, "replace", lambda *a, **k: (_ for _ in ()).throw(OSError("boom"))
+    )
     with pytest.raises(OSError):
         atomic_store.write_json(p, {"ok": False})
-    assert atomic_store.read_json(p, {}) == {"ok": True}            # unchanged
-    assert list(p.parent.glob("tmp*")) == []                       # temp cleaned up
+    assert atomic_store.read_json(p, {}) == {"ok": True}  # unchanged
+    assert list(p.parent.glob("tmp*")) == []  # temp cleaned up
+
 
 def test_corrupt_file_returns_default_and_alerts(tmp_path, monkeypatch):
     p = tmp_path / "d.json"
@@ -240,8 +246,10 @@ from organist_bot import atomic_store
 
 _PATH = Path("data/runtime_config.json")
 
+
 def _read() -> dict[str, int]:
     return dict(atomic_store.read_json(_PATH, {}))
+
 
 def _write(data: dict[str, int]) -> None:
     atomic_store.write_json(_PATH, data)
@@ -274,9 +282,11 @@ git commit -m "refactor: runtime_config_store uses atomic_store"
 ```python
 from organist_bot import atomic_store
 
+
 def _read() -> dict[str, list[str]]:
     raw = atomic_store.read_json(_PATH, {})
     return {k: list(raw.get(k, [])) for k in _KEYS}
+
 
 def _write(data: dict[str, list[str]]) -> None:
     atomic_store.write_json(_PATH, data)
@@ -288,7 +298,7 @@ Wrap each read-modify-write mutator (`add_blacklist_email`, `remove_blacklist_em
 def add_period(key: str, period: str) -> bool:
     with atomic_store.file_lock(_PATH):
         if key == "unavailable_periods":
-            _purge_past_periods_locked()      # extract a no-lock inner used by both
+            _purge_past_periods_locked()  # extract a no-lock inner used by both
         data = {k: list(atomic_store.read_json(_PATH, {}).get(k, [])) for k in _KEYS}
         if period in data[key]:
             return False
@@ -316,15 +326,21 @@ git commit -m "refactor: filter_store uses atomic_store with locked mutators"
 ```python
 from organist_bot import atomic_store
 
+
 def save_seen_gigs(seen: set[str], filepath: str = "data/seen_gigs.csv") -> None:
     path = Path(filepath)
     try:
-        payload = "".join(f"{link}\r\n" for link in sorted(seen))   # csv.writer default lineterminator
+        payload = "".join(
+            f"{link}\r\n" for link in sorted(seen)
+        )  # csv.writer default lineterminator
         atomic_store.write_text_atomic(path, payload)
         logger.info("Saved seen gigs", extra={"count": len(seen), "filepath": str(path.resolve())})
     except Exception:
-        logger.exception("Failed to save seen gigs", extra={"filepath": str(path), "count": len(seen)})
+        logger.exception(
+            "Failed to save seen gigs", extra={"filepath": str(path), "count": len(seen)}
+        )
         raise
+
 
 def save_listings_hash(hash_str: str, filepath: str = "data/listings_hash.txt") -> None:
     path = Path(filepath)
@@ -436,12 +452,14 @@ git commit -m "fix: mark all detail-evaluated gigs seen to stop re-fetching Phas
 from __future__ import annotations
 from dataclasses import dataclass, field
 
+
 @dataclass
 class ChatState:
     history: list = field(default_factory=list)
     last_invoice: dict | None = None
     last_gig_listing: list | None = None
     last_application_listing: list | None = None
+
 
 @dataclass
 class ToolContext:
@@ -454,18 +472,22 @@ class ToolContext:
 from __future__ import annotations
 from dataclasses import dataclass
 
+
 @dataclass
 class TextResult:
     text: str
 
+
 @dataclass
-class VerbatimResult:           # sent to the user without further LLM phrasing
+class VerbatimResult:  # sent to the user without further LLM phrasing
     text: str
+
 
 @dataclass
 class PDFResult:
     path: str
     caption: str = ""
+
 
 ToolResult = TextResult | VerbatimResult | PDFResult
 ```
@@ -481,17 +503,21 @@ Handler = Callable[[dict, ToolContext], Awaitable[ToolResult]]
 TOOL_REGISTRY: dict[str, Handler] = {}
 TOOL_SCHEMAS: list[dict] = []
 
+
 def register(schema: dict):
     def deco(fn: Handler) -> Handler:
         TOOL_REGISTRY[schema["name"]] = fn
         TOOL_SCHEMAS.append(schema)
         return fn
+
     return deco
+
 
 async def dispatch(name: str, input_data: dict, ctx: ToolContext) -> ToolResult:
     handler = TOOL_REGISTRY.get(name)
     if handler is None:
         from .results import TextResult
+
         return TextResult(text=f"Unknown tool: {name}")
     return await handler(input_data, ctx)
 ```
@@ -510,6 +536,7 @@ git commit -m "feat: agent tool registry, ToolContext, and typed results scaffol
 ```python
 def test_chat_state_roundtrips(tmp_path, monkeypatch):
     from organist_bot.integrations import agent_state
+
     monkeypatch.setattr(agent_state, "_PATH", tmp_path / "agent_state.json")
     agent_state.save(123, last_invoice={"number": "INV-1"})
     loaded = agent_state.load(123)
@@ -569,17 +596,22 @@ For each domain in order — **gig, client, invoice, filter, analytics, config**
 ```python
 def test_classify_reply_unexpected_label_is_unclear(monkeypatch):
     import organist_bot.reply_monitor as rm
-    fake = _fake_anthropic(text="maybe")           # returns a TextBlock with "maybe"
+
+    fake = _fake_anthropic(text="maybe")  # returns a TextBlock with "maybe"
     monkeypatch.setattr(rm, "anthropic", fake.module)
     assert rm._classify_reply("subject", "body") == "unclear"
 
+
 def test_classify_reply_api_exception_is_unclear(monkeypatch):
     import organist_bot.reply_monitor as rm
+
     monkeypatch.setattr(rm, "anthropic", _raising_anthropic())
     assert rm._classify_reply("subject", "body") == "unclear"
 
+
 def test_classify_reply_accepted(monkeypatch):
     import organist_bot.reply_monitor as rm
+
     monkeypatch.setattr(rm, "anthropic", _fake_anthropic(text="accepted").module)
     assert rm._classify_reply("subject", "body") == "accepted"
 ```
@@ -622,15 +654,18 @@ NOTE: the current `_run` drain block logs a warning but does **not** call `alert
 def test_jsonformatter_includes_core_and_excludes_stdlib_extras():
     import json, logging
     from organist_bot.logging_config import JSONFormatter
+
     rec = logging.LogRecord("n", logging.INFO, __file__, 1, "msg", None, None)
     rec.custom = "x"
     out = json.loads(JSONFormatter().format(rec))
     assert out["message"] == "msg" and out["level"] == "INFO"
     assert out["custom"] == "x"
-    assert "args" not in out and "msecs" not in out      # _STDLIB_FIELDS excluded
+    assert "args" not in out and "msecs" not in out  # _STDLIB_FIELDS excluded
+
 
 def test_runidfilter_injects_run_id():
     from organist_bot.logging_config import RunIdFilter, set_run_id
+
     set_run_id("abc123")
     rec = logging.LogRecord("n", logging.INFO, __file__, 1, "m", None, None)
     assert RunIdFilter().filter(rec) and rec.run_id == "abc123"

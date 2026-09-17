@@ -332,8 +332,7 @@ async def _call_openai_responses_api(
 
     if response.status != "completed" or response.error is not None:
         raise ResponsesApiError(
-            f"OpenAI Responses API returned status={response.status!r}, "
-            f"error={response.error!r}"
+            f"OpenAI Responses API returned status={response.status!r}, error={response.error!r}"
         )
 
     responses_session["previous_response_id"] = response.id

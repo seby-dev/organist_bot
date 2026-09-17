@@ -59,13 +59,13 @@ A small module-level registry, one canonical LiteLLM `model=` string per entry:
 ```python
 _PROVIDER_MODELS: dict[str, dict[str, str]] = {
     "anthropic": {
-        "sonnet": "anthropic/claude-sonnet-4-6",   # today's existing default — unchanged
-        "opus": "anthropic/claude-opus-4-6",         # confirmed real ID, same "4-6" generation as sonnet
+        "sonnet": "anthropic/claude-sonnet-4-6",  # today's existing default — unchanged
+        "opus": "anthropic/claude-opus-4-6",  # confirmed real ID, same "4-6" generation as sonnet
         "haiku": "anthropic/claude-haiku-4-5-20251001",  # matches reply_monitor.py's existing string
     },
     "openai": {
-        "gpt-6-astra": "openai/gpt-6-astra",         # flagship — confirmed via OpenAI's own model docs (2026-09-04)
-        "gpt-5.6-luna": "openai/gpt-5.6-luna",        # cost-efficient tier — confirmed via OpenAI's own model docs
+        "gpt-6-astra": "openai/gpt-6-astra",  # flagship — confirmed via OpenAI's own model docs (2026-09-04)
+        "gpt-5.6-luna": "openai/gpt-5.6-luna",  # cost-efficient tier — confirmed via OpenAI's own model docs
     },
     "gemini": {
         "gemini-pro": "gemini/gemini-3.1-pro-preview",  # confirmed — Google publishes a dedicated docs page for this exact ID
@@ -189,11 +189,15 @@ Current (Anthropic-specific):
 
 ```python
 import anthropic
+
 client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
 ...
 response = await client.messages.create(
-    model="claude-sonnet-4-6", max_tokens=4096,
-    system=SYSTEM_PROMPT, tools=TOOLS, messages=_histories[chat_id],
+    model="claude-sonnet-4-6",
+    max_tokens=4096,
+    system=SYSTEM_PROMPT,
+    tools=TOOLS,
+    messages=_histories[chat_id],
 )
 _histories[chat_id].append({"role": "assistant", "content": response.content})
 if response.stop_reason == "end_turn":
@@ -203,7 +207,8 @@ if response.stop_reason == "end_turn":
     break
 ...
 for block in response.content:
-    if block.type != "tool_use": continue
+    if block.type != "tool_use":
+        continue
     ...
     tool_results.append({"type": "tool_result", "tool_use_id": block.id, "content": result})
 ```
@@ -225,7 +230,9 @@ model = runtime_config.get("llm_model", _PROVIDER_MODELS[_DEFAULT_PROVIDER][_DEF
 api_key = getattr(settings, _PROVIDER_API_KEY_FIELD[provider])
 ...
 response = await litellm.acompletion(
-    model=model, max_tokens=4096, api_key=api_key,
+    model=model,
+    max_tokens=4096,
+    api_key=api_key,
     messages=[{"role": "system", "content": SYSTEM_PROMPT}, *_histories[chat_id]],
     tools=TOOLS,  # now OpenAI function-calling shape — see item 7
 )

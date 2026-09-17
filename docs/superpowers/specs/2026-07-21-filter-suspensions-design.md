@@ -122,7 +122,15 @@ New tool `manage_filter_suspensions`:
             "action": {"type": "string", "enum": ["list", "add", "remove"]},
             "filter": {
                 "type": "string",
-                "enum": ["fee", "sunday_time", "blacklist", "postcode", "calendar", "availability", "all"],
+                "enum": [
+                    "fee",
+                    "sunday_time",
+                    "blacklist",
+                    "postcode",
+                    "calendar",
+                    "availability",
+                    "all",
+                ],
             },
             "period": {"type": "string"},
         },

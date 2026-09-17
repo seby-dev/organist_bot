@@ -172,9 +172,7 @@ def _read() -> dict[str, int]:
     try:
         return dict(json.loads(_PATH.read_text()))
     except Exception:
-        logger.exception(
-            "runtime_config_store: failed to read %s — using empty config", _PATH
-        )
+        logger.exception("runtime_config_store: failed to read %s — using empty config", _PATH)
         return {}
 
 
@@ -416,7 +414,7 @@ class TestResolvePeriod:
         start = datetime.date.fromisoformat(start_str)
         end = datetime.date.fromisoformat(end_str)
         assert start.weekday() == 0  # Monday
-        assert end.weekday() == 6    # Sunday
+        assert end.weekday() == 6  # Sunday
         assert (end - start).days == 6
 
     def test_this_weekend_is_sat_and_sun(self):
@@ -429,14 +427,16 @@ class TestResolvePeriod:
         if today.weekday() == 6:
             assert result == today.isoformat()
         elif today.weekday() == 5:
-            assert result == f"{today.isoformat()}:{(today + datetime.timedelta(days=1)).isoformat()}"
+            assert (
+                result == f"{today.isoformat()}:{(today + datetime.timedelta(days=1)).isoformat()}"
+            )
         else:
             assert ":" in result
             start, end = result.split(":")
             start_d = datetime.date.fromisoformat(start)
             end_d = datetime.date.fromisoformat(end)
-            assert start_d.weekday() == 5   # Saturday
-            assert end_d.weekday() == 6     # Sunday
+            assert start_d.weekday() == 5  # Saturday
+            assert end_d.weekday() == 6  # Sunday
 
     def test_this_weekday(self):
         import datetime
@@ -444,7 +444,7 @@ class TestResolvePeriod:
 
         result = _resolve_period("this Sunday")
         d = datetime.date.fromisoformat(result)
-        assert d.weekday() == 6       # Sunday
+        assert d.weekday() == 6  # Sunday
         assert d > datetime.date.today()  # always in the future
 
     def test_next_weekday(self):
@@ -474,9 +474,7 @@ class TestManageConfig:
 
         mock_store = MagicMock()
         mock_store.all.return_value = {"min_fee": 150}
-        with patch(
-            "organist_bot.integrations.unified_agent.runtime_config", mock_store
-        ):
+        with patch("organist_bot.integrations.unified_agent.runtime_config", mock_store):
             result = await _execute_tool("manage_config", {"action": "get"}, CHAT_ID)
         data = json.loads(result)
         assert "result" in data
@@ -488,9 +486,7 @@ class TestManageConfig:
     async def test_set_valid_value(self):
         """set action with a valid value calls runtime_config.set."""
         mock_store = MagicMock()
-        with patch(
-            "organist_bot.integrations.unified_agent.runtime_config", mock_store
-        ):
+        with patch("organist_bot.integrations.unified_agent.runtime_config", mock_store):
             result = await _execute_tool(
                 "manage_config", {"action": "set", "key": "min_fee", "value": 150}, CHAT_ID
             )
@@ -503,9 +499,7 @@ class TestManageConfig:
     async def test_set_invalid_range_returns_error(self):
         """set action with out-of-range value returns an error without writing."""
         mock_store = MagicMock()
-        with patch(
-            "organist_bot.integrations.unified_agent.runtime_config", mock_store
-        ):
+        with patch("organist_bot.integrations.unified_agent.runtime_config", mock_store):
             result = await _execute_tool(
                 "manage_config",
                 {"action": "set", "key": "poll_minutes", "value": 999},
@@ -514,7 +508,8 @@ class TestManageConfig:
         mock_store.set.assert_not_called()
         data = json.loads(result)
         assert "error" in data or (
-            "result" in data and ("invalid" in data["result"].lower() or "range" in data["result"].lower())
+            "result" in data
+            and ("invalid" in data["result"].lower() or "range" in data["result"].lower())
         )
 
     @pytest.mark.asyncio
@@ -522,9 +517,7 @@ class TestManageConfig:
         """reset action calls runtime_config.reset with the correct key."""
         mock_store = MagicMock()
         mock_store.reset.return_value = True
-        with patch(
-            "organist_bot.integrations.unified_agent.runtime_config", mock_store
-        ):
+        with patch("organist_bot.integrations.unified_agent.runtime_config", mock_store):
             result = await _execute_tool(
                 "manage_config", {"action": "reset", "key": "min_fee"}, CHAT_ID
             )
@@ -537,9 +530,7 @@ class TestManageConfig:
         """reset on a key that has no override returns a suitable message."""
         mock_store = MagicMock()
         mock_store.reset.return_value = False
-        with patch(
-            "organist_bot.integrations.unified_agent.runtime_config", mock_store
-        ):
+        with patch("organist_bot.integrations.unified_agent.runtime_config", mock_store):
             result = await _execute_tool(
                 "manage_config", {"action": "reset", "key": "min_fee"}, CHAT_ID
             )
@@ -610,12 +601,17 @@ def _resolve_period(text: str) -> str:
         return f"{sat.isoformat()}:{sun.isoformat()}"
 
     _WEEKDAYS = {
-        "monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
-        "friday": 4, "saturday": 5, "sunday": 6,
+        "monday": 0,
+        "tuesday": 1,
+        "wednesday": 2,
+        "thursday": 3,
+        "friday": 4,
+        "saturday": 5,
+        "sunday": 6,
     }
     for prefix in ("this ", "next "):
         if t.startswith(prefix):
-            day_name = t[len(prefix):]
+            day_name = t[len(prefix) :]
             if day_name in _WEEKDAYS:
                 target = _WEEKDAYS[day_name]
                 days_ahead = (target - today.weekday()) % 7
@@ -671,7 +667,8 @@ from organist_bot.runtime_config_store import runtime_config
 Append to the `TOOLS` list (before the closing `]`):
 
 ```python
-    # ── Runtime config ──────────────────────────────────────────────────────
+# ── Runtime config ──────────────────────────────────────────────────────
+(
     {
         "name": "manage_config",
         "description": (
@@ -704,6 +701,7 @@ Append to the `TOOLS` list (before the closing `]`):
             "required": ["action"],
         },
     },
+)
 ```
 
 - [ ] **Step 7: Add the `manage_config` branch in `_execute_tool`**
@@ -711,68 +709,60 @@ Append to the `TOOLS` list (before the closing `]`):
 Add immediately before the final `return json.dumps({"error": f"Tool not implemented: {name}"})` line:
 
 ```python
-    # ── manage_config ────────────────────────────────────────────────────────
-    if name == "manage_config":
-        action = input_data["action"]
+# ── manage_config ────────────────────────────────────────────────────────
+if name == "manage_config":
+    action = input_data["action"]
 
-        _RANGES: dict[str, tuple[int, int]] = {
-            "min_fee": (0, 100_000),
-            "max_travel_minutes": (1, 300),
-            "poll_minutes": (1, 60),
-        }
-        _DEFAULTS = {
-            "min_fee": settings.min_fee,
-            "max_travel_minutes": settings.max_travel_minutes,
-            "poll_minutes": settings.poll_minutes,
-        }
+    _RANGES: dict[str, tuple[int, int]] = {
+        "min_fee": (0, 100_000),
+        "max_travel_minutes": (1, 300),
+        "poll_minutes": (1, 60),
+    }
+    _DEFAULTS = {
+        "min_fee": settings.min_fee,
+        "max_travel_minutes": settings.max_travel_minutes,
+        "poll_minutes": settings.poll_minutes,
+    }
 
-        if action == "get":
-            overrides = runtime_config.all()
-            lines = []
-            for key, default in _DEFAULTS.items():
-                if key in overrides:
-                    lines.append(
-                        f"{key:<20} {overrides[key]}  (override, default: {default})"
-                    )
-                else:
-                    lines.append(f"{key:<20} {default}  (default)")
-            return json.dumps({"result": "\n".join(lines)})
+    if action == "get":
+        overrides = runtime_config.all()
+        lines = []
+        for key, default in _DEFAULTS.items():
+            if key in overrides:
+                lines.append(f"{key:<20} {overrides[key]}  (override, default: {default})")
+            else:
+                lines.append(f"{key:<20} {default}  (default)")
+        return json.dumps({"result": "\n".join(lines)})
 
-        if action == "set":
-            key = input_data.get("key", "")
-            value = input_data.get("value")
-            if key not in _RANGES:
-                return json.dumps(
-                    {"result": f"Unknown key '{key}'. Valid keys: {', '.join(_RANGES)}."}
-                )
-            if value is None:
-                return json.dumps({"result": "value is required for set."})
-            lo, hi = _RANGES[key]
-            if not (lo <= int(value) <= hi):
-                return json.dumps(
-                    {"result": f"Invalid value {value} for {key}. Must be between {lo} and {hi}."}
-                )
-            runtime_config.set(key, int(value))
+    if action == "set":
+        key = input_data.get("key", "")
+        value = input_data.get("value")
+        if key not in _RANGES:
+            return json.dumps({"result": f"Unknown key '{key}'. Valid keys: {', '.join(_RANGES)}."})
+        if value is None:
+            return json.dumps({"result": "value is required for set."})
+        lo, hi = _RANGES[key]
+        if not (lo <= int(value) <= hi):
             return json.dumps(
-                {"result": f"{key} set to {value}. Takes effect on the next polling tick."}
+                {"result": f"Invalid value {value} for {key}. Must be between {lo} and {hi}."}
             )
+        runtime_config.set(key, int(value))
+        return json.dumps(
+            {"result": f"{key} set to {value}. Takes effect on the next polling tick."}
+        )
 
-        if action == "reset":
-            key = input_data.get("key", "")
-            if key not in _DEFAULTS:
-                return json.dumps(
-                    {"result": f"Unknown key '{key}'. Valid keys: {', '.join(_DEFAULTS)}."}
-                )
-            existed = runtime_config.reset(key)
-            if existed:
-                return json.dumps(
-                    {"result": f"{key} reset to default ({_DEFAULTS[key]})."}
-                )
+    if action == "reset":
+        key = input_data.get("key", "")
+        if key not in _DEFAULTS:
             return json.dumps(
-                {"result": f"{key} was already using the default ({_DEFAULTS[key]})."}
+                {"result": f"Unknown key '{key}'. Valid keys: {', '.join(_DEFAULTS)}."}
             )
+        existed = runtime_config.reset(key)
+        if existed:
+            return json.dumps({"result": f"{key} reset to default ({_DEFAULTS[key]})."})
+        return json.dumps({"result": f"{key} was already using the default ({_DEFAULTS[key]})."})
 
-        return json.dumps({"error": f"Unknown action: {action}"})
+    return json.dumps({"error": f"Unknown action: {action}"})
 ```
 
 - [ ] **Step 8: Add `manage_config` to `_VERBATIM_RESPONSE_TOOLS`**

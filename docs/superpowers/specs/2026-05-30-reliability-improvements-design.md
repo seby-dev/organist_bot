@@ -80,7 +80,7 @@ After Phase 2, persist **every detail-fetched gig** (`gig_list`), not just `vali
 
 ```python
 newly_seen = {g.link for g in gig_list if g.link}
-save_seen_gigs(seen_gigs_set | newly_seen)   # via PR1's atomic writer
+save_seen_gigs(seen_gigs_set | newly_seen)  # via PR1's atomic writer
 ```
 
 Move the save out of the `if valid_gigs:` branch so it runs whenever `gig_list` is non-empty (still skipped in `dry_run`). `link=None` gigs are excluded from the seen-set (they cannot be deduped by URL anyway — see note).
@@ -121,7 +121,7 @@ async def dispatch(name, input_data, ctx) -> ToolResult
 @dataclass
 class ToolContext:
     chat_id: int
-    state: ChatState           # history, last_invoice, last_gig_listing, last_application_listing
+    state: ChatState  # history, last_invoice, last_gig_listing, last_application_listing
 ```
 
 **Typed results** — handlers return `ToolResult` (`TextResult | PDFResult | VerbatimResult`) so the message loop dispatches on the *type*, deleting the name-set heuristics.

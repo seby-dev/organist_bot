@@ -32,6 +32,7 @@ Today, `organist_bot/filters.py::parse_min_fee` uses the regex `r"neg|negotiable
 ```python
 _NEG_REGEX = re.compile(r"\b(neg|negotiable)\b", re.IGNORECASE)
 
+
 def is_negotiable(fee_str: str | None) -> bool:
     if not fee_str:
         return False

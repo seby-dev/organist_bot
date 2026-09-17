@@ -159,6 +159,7 @@ CHECKS = [
     ([str(VENV_BIN / "pytest"), "--tb=short", "-q"], "pytest"),
 ]
 
+
 def _run_checks() -> str | None:
     """None if everything passes; otherwise a short failure summary."""
     for cmd, label in CHECKS:
@@ -184,6 +185,7 @@ def _send_alert(message: str) -> None:
     try:
         from dotenv import dotenv_values
         import requests
+
         env = dotenv_values(REPO / ".env")
         token, chat_id = env.get("TELEGRAM_BOT_TOKEN"), env.get("TELEGRAM_CHAT_ID")
         if token and chat_id:

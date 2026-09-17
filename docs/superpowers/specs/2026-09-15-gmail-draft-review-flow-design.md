@@ -76,16 +76,20 @@ Add four methods to the existing `GmailClient`, alongside the current
 read-only ones:
 
 ```python
-def create_draft(self, *, sender: str, recipient: str, cc: list[str] | None,
-                  subject: str, body_html: str) -> str:
+def create_draft(
+    self, *, sender: str, recipient: str, cc: list[str] | None, subject: str, body_html: str
+) -> str:
     """Builds the MIME message (mirrors send_application_email's MIMEText
     construction) and calls drafts().create. Returns the new draft id."""
+
 
 def send_draft(self, draft_id: str) -> None:
     """drafts().send — sends exactly what's currently in the draft."""
 
+
 def delete_draft(self, draft_id: str) -> None:
     """drafts().delete."""
+
 
 def has_compose_access(self) -> bool:
     """A light drafts().list(maxResults=1) call, True on success, False on
@@ -127,14 +131,25 @@ Replace the NEG-specific fields with a shape both statuses share:
 
 ```python
 {
-    "gig_id": ..., "url": ..., "header": ..., "organisation": ..., "contact": ...,
-    "date": ..., "time": ..., "fee": ..., "email": ..., "postcode": ...,
+    "gig_id": ...,
+    "url": ...,
+    "header": ...,
+    "organisation": ...,
+    "contact": ...,
+    "date": ...,
+    "time": ...,
+    "fee": ...,
+    "email": ...,
+    "postcode": ...,
     "status": "neg_pending" | "review_pending",
     "draft_id": "<gmail draft id>",
-    "draft_subject": "...",          # kept, for the listing tool + logs
-    "negotiable_fee": int | None,    # only meaningful for neg_pending
+    "draft_subject": "...",  # kept, for the listing tool + logs
+    "negotiable_fee": int | None,  # only meaningful for neg_pending
     "hold_reason": "fee_negotiation" | "multi_service" | "other_service_type" | "weekday",
-    "created_at": ..., "updated_at": ..., "decided_at": None, "decision": None,
+    "created_at": ...,
+    "updated_at": ...,
+    "decided_at": None,
+    "decision": None,
 }
 ```
 
@@ -166,6 +181,7 @@ fail-toward-safe default on any error:
 class Classification:
     decision: Literal["auto_send", "hold_for_review"]
     reason: str  # "multi_service" | "other_service_type" | "auto_eligible"
+
 
 def classify_gig(gig: Gig) -> Classification:
     """Reads gig.header, gig.musical_requirements, gig.time, gig.fee. Only
@@ -292,13 +308,18 @@ if review_gigs and not dry_run:
         try:
             subject, body = _draft_notifier.draft_application(gig)  # new Notifier method, see below
             draft_id = gmail_client.create_draft(
-                sender=settings.email_sender, recipient=gig.email,
+                sender=settings.email_sender,
+                recipient=gig.email,
                 cc=[settings.cc_email] if settings.cc_email else None,
-                subject=subject, body_html=body,
+                subject=subject,
+                body_html=body,
             )
             gig_id, created = application_store.record_held_draft(
-                gig, status="review_pending", draft_id=draft_id,
-                draft_subject=subject, hold_reason=hold_reason,
+                gig,
+                status="review_pending",
+                draft_id=draft_id,
+                draft_subject=subject,
+                hold_reason=hold_reason,
             )
             if not created:
                 # A row for this URL already existed (any status) — the
@@ -365,10 +386,14 @@ def _send_review_alert(gig: Gig, gig_id: str, status: str, hold_reason: str) -> 
     label = "🟡 NEG gig" if status == "neg_pending" else "🔵 Review needed"
     reason_line = f"Reason: {hold_reason}\n" if status == "review_pending" else ""
     ...
-    buttons = {"inline_keyboard": [[
-        {"text": "✅ Accept", "callback_data": f"review:accept:{gig_id}"},
-        {"text": "❌ Decline", "callback_data": f"review:decline:{gig_id}"},
-    ]]}
+    buttons = {
+        "inline_keyboard": [
+            [
+                {"text": "✅ Accept", "callback_data": f"review:accept:{gig_id}"},
+                {"text": "❌ Decline", "callback_data": f"review:decline:{gig_id}"},
+            ]
+        ]
+    }
     alert.send_alert(details_msg, reply_markup=buttons)
 ```
 

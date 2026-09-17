@@ -374,9 +374,7 @@ def load_active() -> list[tuple[str, datetime.date, datetime.date]]:
     for entry in list_suspensions():
         parsed = _parse_period_token(entry.get("period", ""))
         if parsed is None:
-            logger.warning(
-                "load_active: could not parse period %r — skipping", entry.get("period")
-            )
+            logger.warning("load_active: could not parse period %r — skipping", entry.get("period"))
             continue
         start, end = parsed
         snapshot.append((entry.get("filter", ""), start, end))
@@ -590,75 +588,76 @@ git commit -m "feat: add SuspendableFilter wrapper for date-ranged filter suspen
 Add to `tests/test_main.py`, inside `class TestMain` (after `test_calendar_filter_in_prefilter_skips_detail_page_fetch`, i.e. after line 386):
 
 ```python
-    def test_suspended_blacklist_filter_lets_gig_through(self):
-        """A blacklist suspension covering the gig's date must let a
-        blacklisted email through the Phase 2 chain."""
-        mock_settings = self._make_minimal_settings()
-        mock_settings.enable_blacklist_filter = True
+def test_suspended_blacklist_filter_lets_gig_through(self):
+    """A blacklist suspension covering the gig's date must let a
+    blacklisted email through the Phase 2 chain."""
+    mock_settings = self._make_minimal_settings()
+    mock_settings.enable_blacklist_filter = True
 
-        basic = dict(
-            header="Test Gig",
-            organisation="Church",
-            locality="London",
-            date="Sunday, March 1, 2026",
-            time="10:00 AM",
-            fee="£120",
-            link="https://organistsonline.org/required/test",
-        )
-        full = {"email": "blacklisted@example.com"}
+    basic = dict(
+        header="Test Gig",
+        organisation="Church",
+        locality="London",
+        date="Sunday, March 1, 2026",
+        time="10:00 AM",
+        fee="£120",
+        link="https://organistsonline.org/required/test",
+    )
+    full = {"email": "blacklisted@example.com"}
 
-        mock_scraper = MagicMock()
-        mock_scraper.fetch.return_value = "<html></html>"
-        mock_scraper.parse_gig_listings.return_value = [MagicMock()]
-        mock_scraper.extract_basic_details.return_value = basic
-        mock_scraper.extract_full_details.return_value = full
+    mock_scraper = MagicMock()
+    mock_scraper.fetch.return_value = "<html></html>"
+    mock_scraper.parse_gig_listings.return_value = [MagicMock()]
+    mock_scraper.extract_basic_details.return_value = basic
+    mock_scraper.extract_full_details.return_value = full
 
-        with (
-            patch("main.settings", mock_settings),
-            patch("main.Notifier") as MockNotifier,
-            patch("main.SMTPTransport"),
-            patch("main.load_seen_gigs", return_value=set()),
-            patch("main.save_seen_gigs"),
-            patch("main.load_listings_hash", return_value=None),
-            patch("main.save_listings_hash"),
-            patch("main.set_run_id"),
-            patch("main.filter_store") as mock_filter_store,
-            patch("main.filter_suspension_store") as mock_fss,
-        ):
-            mock_filter_store.blacklist_emails.return_value = ["blacklisted@example.com"]
-            mock_fss.load_active.return_value = [
-                ("blacklist", _dt.date(2026, 1, 1), _dt.date(2026, 12, 31))
-            ]
-            mock_fss.purge_past_suspensions.return_value = 0
-            notifier_inst = MockNotifier.return_value
-            main_module.main(mock_scraper)
+    with (
+        patch("main.settings", mock_settings),
+        patch("main.Notifier") as MockNotifier,
+        patch("main.SMTPTransport"),
+        patch("main.load_seen_gigs", return_value=set()),
+        patch("main.save_seen_gigs"),
+        patch("main.load_listings_hash", return_value=None),
+        patch("main.save_listings_hash"),
+        patch("main.set_run_id"),
+        patch("main.filter_store") as mock_filter_store,
+        patch("main.filter_suspension_store") as mock_fss,
+    ):
+        mock_filter_store.blacklist_emails.return_value = ["blacklisted@example.com"]
+        mock_fss.load_active.return_value = [
+            ("blacklist", _dt.date(2026, 1, 1), _dt.date(2026, 12, 31))
+        ]
+        mock_fss.purge_past_suspensions.return_value = 0
+        notifier_inst = MockNotifier.return_value
+        main_module.main(mock_scraper)
 
-        notifier_inst.send_summary.assert_called_once()
-        assert len(notifier_inst.send_summary.call_args[0][0]) == 1
+    notifier_inst.send_summary.assert_called_once()
+    assert len(notifier_inst.send_summary.call_args[0][0]) == 1
 
-    def test_purge_past_suspensions_called_each_tick(self):
-        """purge_past_suspensions() must run once per tick, alongside expire_past_applied()."""
-        mock_settings = self._make_minimal_settings()
-        mock_scraper = MagicMock()
-        mock_scraper.fetch.return_value = "<html></html>"
-        mock_scraper.parse_gig_listings.return_value = []
 
-        with (
-            patch("main.settings", mock_settings),
-            patch("main.Notifier"),
-            patch("main.SMTPTransport"),
-            patch("main.load_seen_gigs", return_value=set()),
-            patch("main.save_seen_gigs"),
-            patch("main.load_listings_hash", return_value=None),
-            patch("main.save_listings_hash"),
-            patch("main.set_run_id"),
-            patch("main.filter_suspension_store") as mock_fss,
-        ):
-            mock_fss.load_active.return_value = []
-            mock_fss.purge_past_suspensions.return_value = 0
-            main_module.main(mock_scraper)
+def test_purge_past_suspensions_called_each_tick(self):
+    """purge_past_suspensions() must run once per tick, alongside expire_past_applied()."""
+    mock_settings = self._make_minimal_settings()
+    mock_scraper = MagicMock()
+    mock_scraper.fetch.return_value = "<html></html>"
+    mock_scraper.parse_gig_listings.return_value = []
 
-        mock_fss.purge_past_suspensions.assert_called_once()
+    with (
+        patch("main.settings", mock_settings),
+        patch("main.Notifier"),
+        patch("main.SMTPTransport"),
+        patch("main.load_seen_gigs", return_value=set()),
+        patch("main.save_seen_gigs"),
+        patch("main.load_listings_hash", return_value=None),
+        patch("main.save_listings_hash"),
+        patch("main.set_run_id"),
+        patch("main.filter_suspension_store") as mock_fss,
+    ):
+        mock_fss.load_active.return_value = []
+        mock_fss.purge_past_suspensions.return_value = 0
+        main_module.main(mock_scraper)
+
+    mock_fss.purge_past_suspensions.assert_called_once()
 ```
 
 Add to `class TestNegDrafts` (after `test_normal_gig_above_min_fee_still_notified`, i.e. after line 833):
@@ -733,49 +732,47 @@ from organist_bot.filters import (
 Load the snapshot once per tick and wrap `_fee_filter`/`_sunday_time_filter`/availability filters at construction time (replace the block at ~lines 176-195):
 
 ```python
-    # Suspensions snapshot: loaded once per tick, not per gig — same performance
-    # pattern already used for blacklist/availability filter construction below.
-    suspension_snapshot = filter_suspension_store.load_active()
+# Suspensions snapshot: loaded once per tick, not per gig — same performance
+# pattern already used for blacklist/availability filter construction below.
+suspension_snapshot = filter_suspension_store.load_active()
 
-    _fee_filter = (
-        FeeFilter(min_fee=runtime_config.get("min_fee", settings.min_fee))
-        if settings.enable_fee_filter
-        else None
-    )
-    if _fee_filter is not None:
-        # Wrapped here (not just when added to a chain) so the NEG-drafts fee
-        # partition below — which calls _fee_filter(gig) directly — also
-        # respects fee suspensions.
-        _fee_filter = SuspendableFilter("fee", _fee_filter, suspension_snapshot)
-    # When NEG drafting is enabled we remove FeeFilter from BOTH chains so NEG
-    # gigs survive past pre_filter (needed for the detail-page fetch that gets
-    # us the contact email) and past filter_chain. The explicit partition gate
-    # below Phase 2 then sorts them into normal / NEG / drop.
-    _include_fee_in_chains = _fee_filter is not None and not settings.enable_neg_drafts
+_fee_filter = (
+    FeeFilter(min_fee=runtime_config.get("min_fee", settings.min_fee))
+    if settings.enable_fee_filter
+    else None
+)
+if _fee_filter is not None:
+    # Wrapped here (not just when added to a chain) so the NEG-drafts fee
+    # partition below — which calls _fee_filter(gig) directly — also
+    # respects fee suspensions.
+    _fee_filter = SuspendableFilter("fee", _fee_filter, suspension_snapshot)
+# When NEG drafting is enabled we remove FeeFilter from BOTH chains so NEG
+# gigs survive past pre_filter (needed for the detail-page fetch that gets
+# us the contact email) and past filter_chain. The explicit partition gate
+# below Phase 2 then sorts them into normal / NEG / drop.
+_include_fee_in_chains = _fee_filter is not None and not settings.enable_neg_drafts
 
-    _sunday_time_filter = SundayTimeFilter() if settings.enable_sunday_time_filter else None
-    if _sunday_time_filter is not None:
-        _sunday_time_filter = SuspendableFilter(
-            "sunday_time", _sunday_time_filter, suspension_snapshot
+_sunday_time_filter = SundayTimeFilter() if settings.enable_sunday_time_filter else None
+if _sunday_time_filter is not None:
+    _sunday_time_filter = SuspendableFilter("sunday_time", _sunday_time_filter, suspension_snapshot)
+_avail_filters: list = []
+if settings.enable_availability_filter:
+    unavail = filter_store.unavailable_periods()
+    avail_only = filter_store.available_only_periods()
+    if unavail:
+        _avail_filters.append(
+            SuspendableFilter(
+                "availability", AvailabilityFilter(unavail, mode="block"), suspension_snapshot
+            )
         )
-    _avail_filters: list = []
-    if settings.enable_availability_filter:
-        unavail = filter_store.unavailable_periods()
-        avail_only = filter_store.available_only_periods()
-        if unavail:
-            _avail_filters.append(
-                SuspendableFilter(
-                    "availability", AvailabilityFilter(unavail, mode="block"), suspension_snapshot
-                )
+    if avail_only:
+        _avail_filters.append(
+            SuspendableFilter(
+                "availability",
+                AvailabilityFilter(avail_only, mode="only"),
+                suspension_snapshot,
             )
-        if avail_only:
-            _avail_filters.append(
-                SuspendableFilter(
-                    "availability",
-                    AvailabilityFilter(avail_only, mode="only"),
-                    suspension_snapshot,
-                )
-            )
+        )
 ```
 
 Wrap `CalendarFilter` where it's added to `pre_filter` (~line 218):
@@ -817,21 +814,19 @@ Wrap `PostcodeFilter` where it's added to `filter_chain` (~lines 320-327):
 Add the purge call in the post-pipeline section, alongside the existing `expire_past_applied()` call (~after line 471):
 
 ```python
-    try:
-        expired = application_store.expire_past_applied()
-        if expired > 0:
-            logger.info("Expired past applications as no_response", extra={"count": expired})
-    except Exception:
-        logger.warning("application_store: expire_past_applied failed", exc_info=True)
+try:
+    expired = application_store.expire_past_applied()
+    if expired > 0:
+        logger.info("Expired past applications as no_response", extra={"count": expired})
+except Exception:
+    logger.warning("application_store: expire_past_applied failed", exc_info=True)
 
-    try:
-        removed_suspensions = filter_suspension_store.purge_past_suspensions()
-        if removed_suspensions > 0:
-            logger.info(
-                "Purged expired filter suspensions", extra={"count": removed_suspensions}
-            )
-    except Exception:
-        logger.warning("filter_suspension_store: purge_past_suspensions failed", exc_info=True)
+try:
+    removed_suspensions = filter_suspension_store.purge_past_suspensions()
+    if removed_suspensions > 0:
+        logger.info("Purged expired filter suspensions", extra={"count": removed_suspensions})
+except Exception:
+    logger.warning("filter_suspension_store: purge_past_suspensions failed", exc_info=True)
 ```
 
 - [ ] **Step 4: Run tests to verify they pass**
@@ -873,141 +868,123 @@ git commit -m "feat: wire filter suspensions into the scraper pipeline"
 Add to `tests/test_unified_agent.py`, inside `class TestFilterTools` (after `test_manage_unavailable_remove_calendar_failure_does_not_raise`, i.e. after line 927):
 
 ```python
-    @pytest.mark.asyncio
-    async def test_manage_filter_suspensions_list_empty(self):
-        with patch(
-            "organist_bot.integrations.unified_agent.filter_suspension_store"
-        ) as mock_fss:
-            mock_fss.list_suspensions.return_value = []
-            result = await _execute_tool(
-                "manage_filter_suspensions", {"action": "list"}, CHAT_ID
-            )
-        assert "no filter suspensions" in result.lower()
+@pytest.mark.asyncio
+async def test_manage_filter_suspensions_list_empty(self):
+    with patch("organist_bot.integrations.unified_agent.filter_suspension_store") as mock_fss:
+        mock_fss.list_suspensions.return_value = []
+        result = await _execute_tool("manage_filter_suspensions", {"action": "list"}, CHAT_ID)
+    assert "no filter suspensions" in result.lower()
 
-    @pytest.mark.asyncio
-    async def test_manage_filter_suspensions_list_shows_filter_and_period(self):
-        with patch(
-            "organist_bot.integrations.unified_agent.filter_suspension_store"
-        ) as mock_fss:
-            mock_fss.list_suspensions.return_value = [{"filter": "postcode", "period": "2026-12"}]
-            result = await _execute_tool(
-                "manage_filter_suspensions", {"action": "list"}, CHAT_ID
-            )
-        assert "postcode" in result
-        assert "01 Dec 2026" in result
 
-    @pytest.mark.asyncio
-    async def test_manage_filter_suspensions_list_shows_open_ended_from(self):
-        with patch(
-            "organist_bot.integrations.unified_agent.filter_suspension_store"
-        ) as mock_fss:
-            mock_fss.list_suspensions.return_value = [{"filter": "fee", "period": "2026-08-01:"}]
-            result = await _execute_tool(
-                "manage_filter_suspensions", {"action": "list"}, CHAT_ID
-            )
-        assert "from" in result.lower()
-        assert "onward" in result.lower()
+@pytest.mark.asyncio
+async def test_manage_filter_suspensions_list_shows_filter_and_period(self):
+    with patch("organist_bot.integrations.unified_agent.filter_suspension_store") as mock_fss:
+        mock_fss.list_suspensions.return_value = [{"filter": "postcode", "period": "2026-12"}]
+        result = await _execute_tool("manage_filter_suspensions", {"action": "list"}, CHAT_ID)
+    assert "postcode" in result
+    assert "01 Dec 2026" in result
 
-    @pytest.mark.asyncio
-    async def test_manage_filter_suspensions_list_shows_open_ended_until(self):
-        with patch(
-            "organist_bot.integrations.unified_agent.filter_suspension_store"
-        ) as mock_fss:
-            mock_fss.list_suspensions.return_value = [{"filter": "all", "period": ":2026-01-05"}]
-            result = await _execute_tool(
-                "manage_filter_suspensions", {"action": "list"}, CHAT_ID
-            )
-        assert "through" in result.lower()
 
-    @pytest.mark.asyncio
-    async def test_manage_filter_suspensions_add_success(self):
-        with patch(
-            "organist_bot.integrations.unified_agent.filter_suspension_store"
-        ) as mock_fss:
-            mock_fss.add_suspension.return_value = True
-            result = await _execute_tool(
-                "manage_filter_suspensions",
-                {"action": "add", "filter": "postcode", "period": "2026-12"},
-                CHAT_ID,
-            )
-        mock_fss.add_suspension.assert_called_once_with("postcode", "2026-12")
-        data = json.loads(result)
-        assert "suspended" in data["result"].lower()
+@pytest.mark.asyncio
+async def test_manage_filter_suspensions_list_shows_open_ended_from(self):
+    with patch("organist_bot.integrations.unified_agent.filter_suspension_store") as mock_fss:
+        mock_fss.list_suspensions.return_value = [{"filter": "fee", "period": "2026-08-01:"}]
+        result = await _execute_tool("manage_filter_suspensions", {"action": "list"}, CHAT_ID)
+    assert "from" in result.lower()
+    assert "onward" in result.lower()
 
-    @pytest.mark.asyncio
-    async def test_manage_filter_suspensions_add_duplicate(self):
-        with patch(
-            "organist_bot.integrations.unified_agent.filter_suspension_store"
-        ) as mock_fss:
-            mock_fss.add_suspension.return_value = False
-            result = await _execute_tool(
-                "manage_filter_suspensions",
-                {"action": "add", "filter": "postcode", "period": "2026-12"},
-                CHAT_ID,
-            )
-        data = json.loads(result)
-        assert "already" in data["result"].lower()
 
-    @pytest.mark.asyncio
-    async def test_manage_filter_suspensions_add_invalid_returns_error(self):
-        with patch(
-            "organist_bot.integrations.unified_agent.filter_suspension_store"
-        ) as mock_fss:
-            mock_fss.add_suspension.side_effect = ValueError("Could not parse period 'nonsense'")
-            result = await _execute_tool(
-                "manage_filter_suspensions",
-                {"action": "add", "filter": "fee", "period": "nonsense"},
-                CHAT_ID,
-            )
-        data = json.loads(result)
-        assert "error" in data
+@pytest.mark.asyncio
+async def test_manage_filter_suspensions_list_shows_open_ended_until(self):
+    with patch("organist_bot.integrations.unified_agent.filter_suspension_store") as mock_fss:
+        mock_fss.list_suspensions.return_value = [{"filter": "all", "period": ":2026-01-05"}]
+        result = await _execute_tool("manage_filter_suspensions", {"action": "list"}, CHAT_ID)
+    assert "through" in result.lower()
 
-    @pytest.mark.asyncio
-    async def test_manage_filter_suspensions_add_resolves_relative_period(self):
-        with patch(
-            "organist_bot.integrations.unified_agent.filter_suspension_store"
-        ) as mock_fss:
-            mock_fss.add_suspension.return_value = True
-            await _execute_tool(
-                "manage_filter_suspensions",
-                {"action": "add", "filter": "fee", "period": "next month"},
-                CHAT_ID,
-            )
-        called_period = mock_fss.add_suspension.call_args[0][1]
-        assert called_period != "next month"  # resolved to a real token
 
-    @pytest.mark.asyncio
-    async def test_manage_filter_suspensions_remove_success(self):
-        with patch(
-            "organist_bot.integrations.unified_agent.filter_suspension_store"
-        ) as mock_fss:
-            mock_fss.remove_suspension.return_value = True
-            result = await _execute_tool(
-                "manage_filter_suspensions",
-                {"action": "remove", "filter": "postcode", "period": "2026-12"},
-                CHAT_ID,
-            )
-        mock_fss.remove_suspension.assert_called_once_with("postcode", "2026-12")
-        data = json.loads(result)
-        assert "resumed" in data["result"].lower()
+@pytest.mark.asyncio
+async def test_manage_filter_suspensions_add_success(self):
+    with patch("organist_bot.integrations.unified_agent.filter_suspension_store") as mock_fss:
+        mock_fss.add_suspension.return_value = True
+        result = await _execute_tool(
+            "manage_filter_suspensions",
+            {"action": "add", "filter": "postcode", "period": "2026-12"},
+            CHAT_ID,
+        )
+    mock_fss.add_suspension.assert_called_once_with("postcode", "2026-12")
+    data = json.loads(result)
+    assert "suspended" in data["result"].lower()
 
-    @pytest.mark.asyncio
-    async def test_manage_filter_suspensions_remove_not_found(self):
-        with patch(
-            "organist_bot.integrations.unified_agent.filter_suspension_store"
-        ) as mock_fss:
-            mock_fss.remove_suspension.return_value = False
-            result = await _execute_tool(
-                "manage_filter_suspensions",
-                {"action": "remove", "filter": "postcode", "period": "2026-12"},
-                CHAT_ID,
-            )
-        data = json.loads(result)
-        assert "no matching" in data["result"].lower()
 
-    def test_seen_not_in_manage_filter_suspensions_enum(self):
-        tool_def = next(t for t in TOOLS if t["name"] == "manage_filter_suspensions")
-        assert "seen" not in tool_def["input_schema"]["properties"]["filter"]["enum"]
+@pytest.mark.asyncio
+async def test_manage_filter_suspensions_add_duplicate(self):
+    with patch("organist_bot.integrations.unified_agent.filter_suspension_store") as mock_fss:
+        mock_fss.add_suspension.return_value = False
+        result = await _execute_tool(
+            "manage_filter_suspensions",
+            {"action": "add", "filter": "postcode", "period": "2026-12"},
+            CHAT_ID,
+        )
+    data = json.loads(result)
+    assert "already" in data["result"].lower()
+
+
+@pytest.mark.asyncio
+async def test_manage_filter_suspensions_add_invalid_returns_error(self):
+    with patch("organist_bot.integrations.unified_agent.filter_suspension_store") as mock_fss:
+        mock_fss.add_suspension.side_effect = ValueError("Could not parse period 'nonsense'")
+        result = await _execute_tool(
+            "manage_filter_suspensions",
+            {"action": "add", "filter": "fee", "period": "nonsense"},
+            CHAT_ID,
+        )
+    data = json.loads(result)
+    assert "error" in data
+
+
+@pytest.mark.asyncio
+async def test_manage_filter_suspensions_add_resolves_relative_period(self):
+    with patch("organist_bot.integrations.unified_agent.filter_suspension_store") as mock_fss:
+        mock_fss.add_suspension.return_value = True
+        await _execute_tool(
+            "manage_filter_suspensions",
+            {"action": "add", "filter": "fee", "period": "next month"},
+            CHAT_ID,
+        )
+    called_period = mock_fss.add_suspension.call_args[0][1]
+    assert called_period != "next month"  # resolved to a real token
+
+
+@pytest.mark.asyncio
+async def test_manage_filter_suspensions_remove_success(self):
+    with patch("organist_bot.integrations.unified_agent.filter_suspension_store") as mock_fss:
+        mock_fss.remove_suspension.return_value = True
+        result = await _execute_tool(
+            "manage_filter_suspensions",
+            {"action": "remove", "filter": "postcode", "period": "2026-12"},
+            CHAT_ID,
+        )
+    mock_fss.remove_suspension.assert_called_once_with("postcode", "2026-12")
+    data = json.loads(result)
+    assert "resumed" in data["result"].lower()
+
+
+@pytest.mark.asyncio
+async def test_manage_filter_suspensions_remove_not_found(self):
+    with patch("organist_bot.integrations.unified_agent.filter_suspension_store") as mock_fss:
+        mock_fss.remove_suspension.return_value = False
+        result = await _execute_tool(
+            "manage_filter_suspensions",
+            {"action": "remove", "filter": "postcode", "period": "2026-12"},
+            CHAT_ID,
+        )
+    data = json.loads(result)
+    assert "no matching" in data["result"].lower()
+
+
+def test_seen_not_in_manage_filter_suspensions_enum(self):
+    tool_def = next(t for t in TOOLS if t["name"] == "manage_filter_suspensions")
+    assert "seen" not in tool_def["input_schema"]["properties"]["filter"]["enum"]
 ```
 
 Update the import block at the top of `tests/test_unified_agent.py` to include `TOOLS`:
@@ -1049,6 +1026,7 @@ Add to the `SYSTEM_PROMPT` string, inside the existing `## Filter management` se
 Add the tool definition to the `TOOLS` list, immediately after the `manage_available` entry (~after line 427, before the `# ── Meta ──` comment):
 
 ```python
+(
     {
         "name": "manage_filter_suspensions",
         "description": (
@@ -1083,6 +1061,7 @@ Add the tool definition to the `TOOLS` list, immediately after the `manage_avail
             "required": ["action"],
         },
     },
+)
 ```
 
 Add the formatting helpers and handler in `unified_agent.py`, immediately after `_format_periods_list` and before `_handle_manage_unavailable` (~after line 1370):

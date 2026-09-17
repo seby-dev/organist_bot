@@ -129,6 +129,7 @@ def get_events_on_date(self, date_str: str) -> list[dict]:
         alert.send_alert(f"⚠️ Google Calendar API error (CalendarFilter query): {exc}")
         return []
 
+
 def has_event_on_date(self, date_str: str) -> bool:
     """Return True if there is at least one event on the given date (YYYYMMDD).
 
@@ -148,9 +149,7 @@ mock_cal_client.has_event_on_date.return_value = True  # date is booked
 Replace it with (an "Unavailable" block — silent reject, no alert):
 
 ```python
-mock_cal_client.get_events_on_date.return_value = [
-    {"id": "b1", "summary": "Unavailable"}
-]
+mock_cal_client.get_events_on_date.return_value = [{"id": "b1", "summary": "Unavailable"}]
 ```
 
 - [ ] **Step 5: Run all tests to confirm everything passes**

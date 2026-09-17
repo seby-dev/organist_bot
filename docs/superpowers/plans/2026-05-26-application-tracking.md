@@ -211,9 +211,9 @@ class TestListApplications:
         store.record_application(gig)
         # Back-date applied_at to 60 days ago so it falls outside a 30-day window
         data = json.loads(store._PATH.read_text())
-        old_ts = (
-            datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=60)
-        ).strftime("%Y-%m-%dT%H:%M:%SZ")
+        old_ts = (datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=60)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
         data[0]["applied_at"] = old_ts
         store._PATH.write_text(json.dumps(data, indent=2) + "\n")
 
@@ -393,9 +393,7 @@ def list_applications(days: int = 30) -> list[dict]:
     result = []
     for r in records:
         try:
-            applied_at = datetime.datetime.fromisoformat(
-                r["applied_at"].replace("Z", "+00:00")
-            )
+            applied_at = datetime.datetime.fromisoformat(r["applied_at"].replace("Z", "+00:00"))
         except Exception:
             continue
         if applied_at >= cutoff:
@@ -445,9 +443,7 @@ class TestApplyToGigRecordsApplication:
         transport = FakeTransport()
         notifier = Notifier(settings, transport)
         gig = _make_gig(email="test@church.com")
-        with patch(
-            "organist_bot.notifier.application_store"
-        ) as mock_store:
+        with patch("organist_bot.notifier.application_store") as mock_store:
             mock_store.record_application.return_value = True
             notifier.apply_to_gig(gig)
         mock_store.record_application.assert_called_once_with(gig)
@@ -617,14 +613,12 @@ import organist_bot.application_store as application_store
 Then in `_run`, after the `if valid_gigs: ... else: logger.info("No new gigs...")` block and **before** the `# ── Run summary` comment, add:
 
 ```python
-    try:
-        expired = application_store.expire_past_applied()
-        if expired > 0:
-            logger.info(
-                "Expired past applications as no_response", extra={"count": expired}
-            )
-    except Exception:
-        logger.warning("application_store: expire_past_applied failed", exc_info=True)
+try:
+    expired = application_store.expire_past_applied()
+    if expired > 0:
+        logger.info("Expired past applications as no_response", extra={"count": expired})
+except Exception:
+    logger.warning("application_store: expire_past_applied failed", exc_info=True)
 ```
 
 The relevant section of `_run` after the change should look like:
@@ -702,12 +696,8 @@ class TestAddGigApplicationStore:
             "url": "https://organistsonline.org/gig/1",
         }
         with (
-            patch(
-                "organist_bot.integrations.unified_agent._make_calendar_client"
-            ) as mock_factory,
-            patch(
-                "organist_bot.integrations.unified_agent.application_store"
-            ) as mock_store,
+            patch("organist_bot.integrations.unified_agent._make_calendar_client") as mock_factory,
+            patch("organist_bot.integrations.unified_agent.application_store") as mock_store,
         ):
             mock_cal = MagicMock()
             mock_cal.add_gig.return_value = "evt_abc"
@@ -730,12 +720,8 @@ class TestAddGigApplicationStore:
             "url": "https://organistsonline.org/gig/99",
         }
         with (
-            patch(
-                "organist_bot.integrations.unified_agent._make_calendar_client"
-            ) as mock_factory,
-            patch(
-                "organist_bot.integrations.unified_agent.application_store"
-            ) as mock_store,
+            patch("organist_bot.integrations.unified_agent._make_calendar_client") as mock_factory,
+            patch("organist_bot.integrations.unified_agent.application_store") as mock_store,
         ):
             mock_cal = MagicMock()
             mock_cal.add_gig.return_value = "evt_abc"
@@ -754,12 +740,8 @@ class TestAddGigApplicationStore:
         """When no url is provided (manual entry), upsert_accepted is called with url=None."""
         input_data = {**_GIG_INPUT_BASE, "confirmed": True}  # no "url" key
         with (
-            patch(
-                "organist_bot.integrations.unified_agent._make_calendar_client"
-            ) as mock_factory,
-            patch(
-                "organist_bot.integrations.unified_agent.application_store"
-            ) as mock_store,
+            patch("organist_bot.integrations.unified_agent._make_calendar_client") as mock_factory,
+            patch("organist_bot.integrations.unified_agent.application_store") as mock_store,
         ):
             mock_cal = MagicMock()
             mock_cal.add_gig.return_value = "evt_abc"
@@ -951,13 +933,9 @@ class TestManageApplications:
             _make_app_record(url="u2", status="applied"),
             _make_app_record(url="u3", status="no_response"),
         ]
-        with patch(
-            "organist_bot.integrations.unified_agent.application_store"
-        ) as mock_store:
+        with patch("organist_bot.integrations.unified_agent.application_store") as mock_store:
             mock_store.list_applications.return_value = records
-            result = await _execute_tool(
-                "manage_applications", {"action": "summary"}, CHAT_ID
-            )
+            result = await _execute_tool("manage_applications", {"action": "summary"}, CHAT_ID)
         assert "Accepted" in result
         assert "Pending" in result
         assert "No response" in result
@@ -965,13 +943,9 @@ class TestManageApplications:
     @pytest.mark.asyncio
     async def test_list_returns_numbered_entries_with_emoji(self):
         records = [_make_app_record(status="accepted")]
-        with patch(
-            "organist_bot.integrations.unified_agent.application_store"
-        ) as mock_store:
+        with patch("organist_bot.integrations.unified_agent.application_store") as mock_store:
             mock_store.list_applications.return_value = records
-            result = await _execute_tool(
-                "manage_applications", {"action": "list"}, CHAT_ID
-            )
+            result = await _execute_tool("manage_applications", {"action": "list"}, CHAT_ID)
         assert "Sunday Service" in result
         assert "St Mary's" in result
         assert "✅" in result
@@ -979,22 +953,16 @@ class TestManageApplications:
 
     @pytest.mark.asyncio
     async def test_list_empty_returns_no_applications_message(self):
-        with patch(
-            "organist_bot.integrations.unified_agent.application_store"
-        ) as mock_store:
+        with patch("organist_bot.integrations.unified_agent.application_store") as mock_store:
             mock_store.list_applications.return_value = []
-            result = await _execute_tool(
-                "manage_applications", {"action": "list"}, CHAT_ID
-            )
+            result = await _execute_tool("manage_applications", {"action": "list"}, CHAT_ID)
         data = json.loads(result)
         assert "result" in data
 
     @pytest.mark.asyncio
     async def test_update_changes_status_via_cached_listing(self):
         records = [_make_app_record(status="applied")]
-        with patch(
-            "organist_bot.integrations.unified_agent.application_store"
-        ) as mock_store:
+        with patch("organist_bot.integrations.unified_agent.application_store") as mock_store:
             mock_store.list_applications.return_value = records
             mock_store.update_status.return_value = True
             # populate the listing cache first
@@ -1015,9 +983,7 @@ class TestManageApplications:
         from organist_bot.integrations.unified_agent import _last_application_listing
 
         _last_application_listing.pop(CHAT_ID, None)
-        with patch(
-            "organist_bot.integrations.unified_agent.application_store"
-        ) as mock_store:
+        with patch("organist_bot.integrations.unified_agent.application_store") as mock_store:
             mock_store.list_applications.return_value = []
             result = await _execute_tool(
                 "manage_applications",
@@ -1053,7 +1019,8 @@ Expected: failures — `manage_applications` handler and `_last_application_list
 **3b.** In the `TOOLS` list, after the `manage_config` tool entry and **before** the closing `]`, add:
 
 ```python
-    # ── Application tracking ────────────────────────────────────────────────
+# ── Application tracking ────────────────────────────────────────────────
+(
     {
         "name": "manage_applications",
         "description": (
@@ -1088,6 +1055,7 @@ Expected: failures — `manage_applications` handler and `_last_application_list
             "required": ["action"],
         },
     },
+)
 ```
 
 **3c.** In the per-chat state section (around line 416–418), add:
@@ -1099,7 +1067,12 @@ _last_application_listing: dict[int, list[dict]] = {}
 **3d.** In `_VERBATIM_RESPONSE_TOOLS` (line 421), add `"manage_applications"`:
 
 ```python
-_VERBATIM_RESPONSE_TOOLS = {"list_upcoming_gigs", "get_gig_stats", "manage_config", "manage_applications"}
+_VERBATIM_RESPONSE_TOOLS = {
+    "list_upcoming_gigs",
+    "get_gig_stats",
+    "manage_config",
+    "manage_applications",
+}
 ```
 
 **3e.** Add a module-level helper `_fmt_application_date` near the other helpers (after `_resolve_period`):
@@ -1120,74 +1093,71 @@ def _fmt_application_date(date_str: str) -> str:
 **3f.** In `_execute_tool`, after the `manage_available` block (around line 970) and **before** the `clear_conversation` block, add:
 
 ```python
-    # ── manage_applications ──────────────────────────────────────────────────
-    if name == "manage_applications":
-        action = input_data.get("action", "summary")
-        days = input_data.get("days", 30)
-        records = application_store.list_applications(days)
+# ── manage_applications ──────────────────────────────────────────────────
+if name == "manage_applications":
+    action = input_data.get("action", "summary")
+    days = input_data.get("days", 30)
+    records = application_store.list_applications(days)
 
-        if action == "summary":
-            counts = {
-                "accepted": sum(1 for r in records if r["status"] == "accepted"),
-                "applied": sum(1 for r in records if r["status"] == "applied"),
-                "no_response": sum(1 for r in records if r["status"] == "no_response"),
-                "declined": sum(1 for r in records if r["status"] == "declined"),
-            }
-            total = len(records)
-            lines = [
-                f"📋 Applications — last {days} days",
-                "",
-                f"Applied:      {total}",
-                f"Accepted:     {counts['accepted']}",
-                f"No response:  {counts['no_response']}",
-                f"Declined:     {counts['declined']}",
-                f"Pending:      {counts['applied']}",
-            ]
-            return json.dumps({"result": "\n".join(lines)})
+    if action == "summary":
+        counts = {
+            "accepted": sum(1 for r in records if r["status"] == "accepted"),
+            "applied": sum(1 for r in records if r["status"] == "applied"),
+            "no_response": sum(1 for r in records if r["status"] == "no_response"),
+            "declined": sum(1 for r in records if r["status"] == "declined"),
+        }
+        total = len(records)
+        lines = [
+            f"📋 Applications — last {days} days",
+            "",
+            f"Applied:      {total}",
+            f"Accepted:     {counts['accepted']}",
+            f"No response:  {counts['no_response']}",
+            f"Declined:     {counts['declined']}",
+            f"Pending:      {counts['applied']}",
+        ]
+        return json.dumps({"result": "\n".join(lines)})
 
-        if action == "list":
-            if not records:
-                return json.dumps(
-                    {"result": f"No applications in the last {days} days."}
-                )
-            _last_application_listing[chat_id] = records
-            _status_emoji = {
-                "accepted": "✅",
-                "applied": "⏳",
-                "no_response": "🔕",
-                "declined": "❌",
-            }
-            lines = [f"📋 Applications — last {days} days", ""]
-            for i, r in enumerate(records, start=1):
-                emoji = _status_emoji.get(r["status"], "❓")
-                org_part = f" — {r['organisation']}" if r.get("organisation") else ""
-                date_part = _fmt_application_date(r.get("date", ""))
-                fee_part = f"  {r['fee']}" if r.get("fee") else ""
-                lines.append(f"{i}. {emoji} {r['header']}{org_part}  ({date_part}){fee_part}")
-            return json.dumps({"result": "\n".join(lines)})
+    if action == "list":
+        if not records:
+            return json.dumps({"result": f"No applications in the last {days} days."})
+        _last_application_listing[chat_id] = records
+        _status_emoji = {
+            "accepted": "✅",
+            "applied": "⏳",
+            "no_response": "🔕",
+            "declined": "❌",
+        }
+        lines = [f"📋 Applications — last {days} days", ""]
+        for i, r in enumerate(records, start=1):
+            emoji = _status_emoji.get(r["status"], "❓")
+            org_part = f" — {r['organisation']}" if r.get("organisation") else ""
+            date_part = _fmt_application_date(r.get("date", ""))
+            fee_part = f"  {r['fee']}" if r.get("fee") else ""
+            lines.append(f"{i}. {emoji} {r['header']}{org_part}  ({date_part}){fee_part}")
+        return json.dumps({"result": "\n".join(lines)})
 
-        if action == "update":
-            n = input_data.get("number")
-            status = input_data.get("status")
-            listing = _last_application_listing.get(chat_id)
-            if not listing:
-                return json.dumps(
-                    {"error": "No application listing cached. Ask to list applications first."}
-                )
-            if n is None or n < 1 or n > len(listing):
-                return json.dumps({"error": f"No application number {n}."})
-            record = listing[n - 1]
-            url = record.get("url", "")
-            if not url:
-                return json.dumps({"error": "Cannot update a manual entry with no URL."})
-            ok = application_store.update_status(url, status)
-            if ok:
-                listing[n - 1]["status"] = status
-                return json.dumps({"result": f"Updated application {n} to '{status}'."})
-            return json.dumps({"error": "Application not found in store."})
+    if action == "update":
+        n = input_data.get("number")
+        status = input_data.get("status")
+        listing = _last_application_listing.get(chat_id)
+        if not listing:
+            return json.dumps(
+                {"error": "No application listing cached. Ask to list applications first."}
+            )
+        if n is None or n < 1 or n > len(listing):
+            return json.dumps({"error": f"No application number {n}."})
+        record = listing[n - 1]
+        url = record.get("url", "")
+        if not url:
+            return json.dumps({"error": "Cannot update a manual entry with no URL."})
+        ok = application_store.update_status(url, status)
+        if ok:
+            listing[n - 1]["status"] = status
+            return json.dumps({"result": f"Updated application {n} to '{status}'."})
+        return json.dumps({"error": "Application not found in store."})
 
-        return json.dumps({"error": f"Unknown action: {action}"})
-
+    return json.dumps({"error": f"Unknown action: {action}"})
 ```
 
 **3g.** In `reset_conversation` (at the end of the file), add the `_last_application_listing` cleanup:

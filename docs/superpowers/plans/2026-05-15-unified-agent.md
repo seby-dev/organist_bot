@@ -47,6 +47,7 @@ Then add this test to `tests/test_telegram_integration.py` temporarily, or direc
 
 ```python
 """Test that generate_invoice reuses the browser singleton."""
+
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -69,11 +70,17 @@ async def test_browser_launched_once_across_two_calls():
 
     with (
         patch("organist_bot.integrations.invoice_generator.async_playwright") as mock_ap,
-        patch("organist_bot.integrations.invoice_generator.load_clients", return_value={
-            "test-client": {"name": "Test", "address": "1 Road", "email": "t@t.com", "cc": []}
-        }),
+        patch(
+            "organist_bot.integrations.invoice_generator.load_clients",
+            return_value={
+                "test-client": {"name": "Test", "address": "1 Road", "email": "t@t.com", "cc": []}
+            },
+        ),
         patch("organist_bot.integrations.invoice_generator.save_invoice"),
-        patch("organist_bot.integrations.invoice_generator.get_next_invoice_number", return_value="INV-2026-001"),
+        patch(
+            "organist_bot.integrations.invoice_generator.get_next_invoice_number",
+            return_value="INV-2026-001",
+        ),
         patch("organist_bot.integrations.invoice_generator.OUTPUT_DIR") as mock_dir,
     ):
         mock_dir.mkdir = MagicMock()
@@ -89,10 +96,12 @@ async def test_browser_launched_once_across_two_calls():
 
         # Reset the singleton before test
         import organist_bot.integrations.invoice_generator as ig
+
         ig._browser = None
         ig._pw_instance = None
 
         from organist_bot.integrations.invoice_generator import generate_invoice
+
         items = [{"description": "Service", "quantity": 1, "unit_price": 100}]
         await generate_invoice("test-client", items)
         await generate_invoice("test-client", items)
@@ -289,7 +298,10 @@ TOOLS: list[dict] = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "number": {"type": "integer", "description": "1-based position from the last gig listing."}
+                "number": {
+                    "type": "integer",
+                    "description": "1-based position from the last gig listing.",
+                }
             },
             "required": ["number"],
         },
@@ -319,7 +331,10 @@ TOOLS: list[dict] = [
             "properties": {
                 "key": {"type": "string"},
                 "name": {"type": "string"},
-                "address": {"type": "string", "description": "Full address (use <br> for line breaks)"},
+                "address": {
+                    "type": "string",
+                    "description": "Full address (use <br> for line breaks)",
+                },
                 "email": {"type": "string"},
                 "cc": {"type": "array", "items": {"type": "string"}},
             },
@@ -525,13 +540,18 @@ Create `tests/test_unified_agent.py`:
 
 ```python
 """Tests for unified_agent._execute_tool."""
+
 import datetime
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from organist_bot.integrations.unified_agent import _execute_tool, reset_conversation, _last_gig_listing
+from organist_bot.integrations.unified_agent import (
+    _execute_tool,
+    reset_conversation,
+    _last_gig_listing,
+)
 
 CHAT_ID = 42
 
@@ -548,11 +568,19 @@ _GIG_INPUT_BASE = {
 
 # ── add_gig (confirmed=false) ─────────────────────────────────────────────────
 
+
 class TestAddGigPreview:
     @pytest.mark.asyncio
     async def test_returns_summary_with_all_fields(self):
         result = await _execute_tool("add_gig", _GIG_INPUT_BASE, CHAT_ID)
-        for value in ["Sunday Service", "St Mary's", "Oxford", "Sunday 1st June 2025", "10:30am", "£150"]:
+        for value in [
+            "Sunday Service",
+            "St Mary's",
+            "Oxford",
+            "Sunday 1st June 2025",
+            "10:30am",
+            "£150",
+        ]:
             assert value in result
 
     @pytest.mark.asyncio
@@ -568,6 +596,7 @@ class TestAddGigPreview:
 
 
 # ── add_gig (confirmed=true) ──────────────────────────────────────────────────
+
 
 class TestAddGigConfirmed:
     @pytest.mark.asyncio
@@ -585,7 +614,9 @@ class TestAddGigConfirmed:
     @pytest.mark.asyncio
     async def test_no_calendar_config_returns_error(self):
         input_data = {**_GIG_INPUT_BASE, "confirmed": True}
-        with patch("organist_bot.integrations.unified_agent._make_calendar_client", return_value=None):
+        with patch(
+            "organist_bot.integrations.unified_agent._make_calendar_client", return_value=None
+        ):
             result = await _execute_tool("add_gig", input_data, CHAT_ID)
         assert "error" in json.loads(result)
 
@@ -603,6 +634,7 @@ class TestAddGigConfirmed:
 
 
 # ── add_gig auto-unavailable ──────────────────────────────────────────────────
+
 
 class TestAddGigAutoUnavailable:
     @pytest.mark.asyncio
@@ -648,6 +680,7 @@ class TestAddGigAutoUnavailable:
 
 # ── list_upcoming_gigs ────────────────────────────────────────────────────────
 
+
 def _make_event(n: int) -> dict:
     return {
         "id": f"evt{n}",
@@ -682,7 +715,9 @@ class TestListUpcomingGigs:
 
     @pytest.mark.asyncio
     async def test_no_calendar_returns_error(self):
-        with patch("organist_bot.integrations.unified_agent._make_calendar_client", return_value=None):
+        with patch(
+            "organist_bot.integrations.unified_agent._make_calendar_client", return_value=None
+        ):
             result = await _execute_tool("list_upcoming_gigs", {}, CHAT_ID)
         assert "error" in result.lower() or "not configured" in result.lower()
 
@@ -697,6 +732,7 @@ class TestListUpcomingGigs:
 
 
 # ── delete_gig ────────────────────────────────────────────────────────────────
+
 
 class TestDeleteGig:
     @pytest.fixture(autouse=True)
@@ -743,7 +779,9 @@ class TestDeleteGig:
 
     @pytest.mark.asyncio
     async def test_no_calendar_config_returns_error(self):
-        with patch("organist_bot.integrations.unified_agent._make_calendar_client", return_value=None):
+        with patch(
+            "organist_bot.integrations.unified_agent._make_calendar_client", return_value=None
+        ):
             result = await _execute_tool("delete_gig", {"number": 1}, CHAT_ID)
         data = json.loads(result)
         assert "error" in data
@@ -842,7 +880,10 @@ async def _execute_tool(name: str, input_data: dict, chat_id: int) -> str:
                     date_str = datetime.datetime.strptime(yyyymmdd, "%Y%m%d").strftime("%Y-%m-%d")
                     filter_store.add_period("unavailable_periods", date_str)
                 except Exception:
-                    logger.warning("Failed to add gig date to unavailable periods", extra={"date": fields["date"]})
+                    logger.warning(
+                        "Failed to add gig date to unavailable periods",
+                        extra={"date": fields["date"]},
+                    )
             return json.dumps({"result": f"Added to calendar. Event ID: {event_id}"})
         except Exception as exc:
             return json.dumps({"error": str(exc)})
@@ -872,7 +913,9 @@ async def _execute_tool(name: str, input_data: dict, chat_id: int) -> str:
         if not listing:
             return json.dumps({"error": "No gig listing cached. Ask me to list your gigs first."})
         if n < 1 or n > len(listing):
-            return json.dumps({"error": f"No gig number {n}. There are {len(listing)} gigs in the last listing."})
+            return json.dumps(
+                {"error": f"No gig number {n}. There are {len(listing)} gigs in the last listing."}
+            )
         cal = _make_calendar_client()
         if cal is None:
             return json.dumps({"error": "Google Calendar not configured."})
@@ -883,7 +926,9 @@ async def _execute_tool(name: str, input_data: dict, chat_id: int) -> str:
             return json.dumps({"error": str(exc)})
         filter_store.remove_period("unavailable_periods", event["date_str"])
         _last_gig_listing[chat_id] = [e for i, e in enumerate(listing) if i != n - 1]
-        return json.dumps({"result": f"Deleted {event['summary']}. Date removed from unavailable if present."})
+        return json.dumps(
+            {"result": f"Deleted {event['summary']}. Date removed from unavailable if present."}
+        )
 
     return json.dumps({"error": f"Tool not implemented: {name}"})
 ```
@@ -917,10 +962,18 @@ Append to `tests/test_unified_agent.py`:
 ```python
 # ── Invoice client tools ──────────────────────────────────────────────────────
 
+
 class TestInvoiceClientTools:
     @pytest.mark.asyncio
     async def test_list_clients_returns_all(self):
-        clients = {"holy-cross": {"name": "The Secretary", "address": "1 Road", "email": "a@b.com", "cc": []}}
+        clients = {
+            "holy-cross": {
+                "name": "The Secretary",
+                "address": "1 Road",
+                "email": "a@b.com",
+                "cc": [],
+            }
+        }
         with patch("organist_bot.integrations.unified_agent.load_clients", return_value=clients):
             result = await _execute_tool("list_clients", {}, CHAT_ID)
         assert "holy-cross" in result
@@ -933,7 +986,14 @@ class TestInvoiceClientTools:
 
     @pytest.mark.asyncio
     async def test_get_client_found(self):
-        clients = {"st-marys": {"name": "St Mary's", "address": "1 Church St", "email": "c@d.com", "cc": []}}
+        clients = {
+            "st-marys": {
+                "name": "St Mary's",
+                "address": "1 Church St",
+                "email": "c@d.com",
+                "cc": [],
+            }
+        }
         with patch("organist_bot.integrations.unified_agent.load_clients", return_value=clients):
             result = await _execute_tool("get_client", {"client_key": "st-marys"}, CHAT_ID)
         assert "St Mary's" in result
@@ -953,19 +1013,28 @@ class TestInvoiceClientTools:
                 {"key": "new-key", "name": "New Client", "address": "2 Road"},
                 CHAT_ID,
             )
-        mock_add.assert_called_once_with(key="new-key", name="New Client", address="2 Road", email="", cc=[])
+        mock_add.assert_called_once_with(
+            key="new-key", name="New Client", address="2 Road", email="", cc=[]
+        )
         assert "added" in result.lower()
 
     @pytest.mark.asyncio
     async def test_edit_client_calls_edit_client(self):
         with patch("organist_bot.integrations.unified_agent.edit_client") as mock_edit:
-            result = await _execute_tool("edit_client", {"key": "st-marys", "email": "new@email.com"}, CHAT_ID)
-        mock_edit.assert_called_once_with(key="st-marys", name=None, address=None, email="new@email.com", cc=None)
+            result = await _execute_tool(
+                "edit_client", {"key": "st-marys", "email": "new@email.com"}, CHAT_ID
+            )
+        mock_edit.assert_called_once_with(
+            key="st-marys", name=None, address=None, email="new@email.com", cc=None
+        )
         assert "updated" in result.lower()
 
     @pytest.mark.asyncio
     async def test_edit_client_not_found(self):
-        with patch("organist_bot.integrations.unified_agent.edit_client", side_effect=ValueError("not found")):
+        with patch(
+            "organist_bot.integrations.unified_agent.edit_client",
+            side_effect=ValueError("not found"),
+        ):
             result = await _execute_tool("edit_client", {"key": "missing"}, CHAT_ID)
         data = json.loads(result)
         assert "error" in data
@@ -979,7 +1048,10 @@ class TestInvoiceClientTools:
 
     @pytest.mark.asyncio
     async def test_delete_client_not_found(self):
-        with patch("organist_bot.integrations.unified_agent.delete_client", side_effect=ValueError("not found")):
+        with patch(
+            "organist_bot.integrations.unified_agent.delete_client",
+            side_effect=ValueError("not found"),
+        ):
             result = await _execute_tool("delete_client", {"key": "missing"}, CHAT_ID)
         data = json.loads(result)
         assert "error" in data
@@ -997,49 +1069,51 @@ EMAIL_SENDER=ci@test.com EMAIL_PASSWORD=x CC_EMAIL=ci@test.com \
 Add these cases to `_execute_tool` (before the final `return json.dumps({"error": ...})`):
 
 ```python
-    # ── list_clients ────────────────────────────────────────────────────────
-    if name == "list_clients":
-        clients = load_clients()
-        if not clients:
-            return json.dumps({"result": "No clients found. Add one with a natural language request."})
-        return json.dumps(clients, indent=2)
+# ── list_clients ────────────────────────────────────────────────────────
+if name == "list_clients":
+    clients = load_clients()
+    if not clients:
+        return json.dumps({"result": "No clients found. Add one with a natural language request."})
+    return json.dumps(clients, indent=2)
 
-    if name == "get_client":
-        clients = load_clients()
-        key = input_data["client_key"]
-        if key not in clients:
-            return json.dumps({"error": f"Client '{key}' not found. Available: {', '.join(clients.keys())}"})
-        return json.dumps({key: clients[key]}, indent=2)
-
-    if name == "add_client":
-        add_client(
-            key=input_data["key"],
-            name=input_data["name"],
-            address=input_data["address"],
-            email=input_data.get("email", ""),
-            cc=input_data.get("cc", []),
+if name == "get_client":
+    clients = load_clients()
+    key = input_data["client_key"]
+    if key not in clients:
+        return json.dumps(
+            {"error": f"Client '{key}' not found. Available: {', '.join(clients.keys())}"}
         )
-        return json.dumps({"result": f"Client '{input_data['key']}' added successfully."})
+    return json.dumps({key: clients[key]}, indent=2)
 
-    if name == "edit_client":
-        try:
-            edit_client(
-                key=input_data["key"],
-                name=input_data.get("name"),
-                address=input_data.get("address"),
-                email=input_data.get("email"),
-                cc=input_data.get("cc"),
-            )
-            return json.dumps({"result": f"Client '{input_data['key']}' updated successfully."})
-        except ValueError as e:
-            return json.dumps({"error": str(e)})
+if name == "add_client":
+    add_client(
+        key=input_data["key"],
+        name=input_data["name"],
+        address=input_data["address"],
+        email=input_data.get("email", ""),
+        cc=input_data.get("cc", []),
+    )
+    return json.dumps({"result": f"Client '{input_data['key']}' added successfully."})
 
-    if name == "delete_client":
-        try:
-            delete_client(input_data["key"])
-            return json.dumps({"result": f"Client '{input_data['key']}' deleted."})
-        except ValueError as e:
-            return json.dumps({"error": str(e)})
+if name == "edit_client":
+    try:
+        edit_client(
+            key=input_data["key"],
+            name=input_data.get("name"),
+            address=input_data.get("address"),
+            email=input_data.get("email"),
+            cc=input_data.get("cc"),
+        )
+        return json.dumps({"result": f"Client '{input_data['key']}' updated successfully."})
+    except ValueError as e:
+        return json.dumps({"error": str(e)})
+
+if name == "delete_client":
+    try:
+        delete_client(input_data["key"])
+        return json.dumps({"result": f"Client '{input_data['key']}' deleted."})
+    except ValueError as e:
+        return json.dumps({"error": str(e)})
 ```
 
 - [ ] **Step 4: Run tests — expect PASS**
@@ -1071,10 +1145,12 @@ Append to `tests/test_unified_agent.py`:
 ```python
 # ── Invoice generation & email tools ─────────────────────────────────────────
 
+
 class TestInvoiceGenerationTools:
     @pytest.fixture(autouse=True)
     def reset_state(self):
         from organist_bot.integrations.unified_agent import _last_invoice
+
         _last_invoice.pop(CHAT_ID, None)
         yield
         _last_invoice.pop(CHAT_ID, None)
@@ -1082,20 +1158,36 @@ class TestInvoiceGenerationTools:
     @pytest.mark.asyncio
     async def test_generate_invoice_stores_in_last_invoice(self):
         fake_result = {
-            "pdf_path": "/tmp/inv.pdf", "client_key": "a", "client_name": "A",
-            "client_email": "a@a.com", "client_cc": [], "invoice_number": "INV-2026-001",
-            "year": 2026, "date": "1 Jan 2026", "items": [], "total": 100.0,
-            "currency": "£", "emailed": False, "created_at": "2026-01-01T00:00:00",
+            "pdf_path": "/tmp/inv.pdf",
+            "client_key": "a",
+            "client_name": "A",
+            "client_email": "a@a.com",
+            "client_cc": [],
+            "invoice_number": "INV-2026-001",
+            "year": 2026,
+            "date": "1 Jan 2026",
+            "items": [],
+            "total": 100.0,
+            "currency": "£",
+            "emailed": False,
+            "created_at": "2026-01-01T00:00:00",
         }
-        with patch("organist_bot.integrations.unified_agent.generate_invoice", new=AsyncMock(return_value=fake_result)):
+        with patch(
+            "organist_bot.integrations.unified_agent.generate_invoice",
+            new=AsyncMock(return_value=fake_result),
+        ):
             result = await _execute_tool(
                 "generate_invoice",
-                {"client_key": "a", "items": [{"description": "S", "quantity": 1, "unit_price": 100}]},
+                {
+                    "client_key": "a",
+                    "items": [{"description": "S", "quantity": 1, "unit_price": 100}],
+                },
                 CHAT_ID,
             )
         data = json.loads(result)
         assert data["invoice_number"] == "INV-2026-001"
         from organist_bot.integrations.unified_agent import _last_invoice
+
         assert _last_invoice[CHAT_ID]["invoice_number"] == "INV-2026-001"
 
     @pytest.mark.asyncio
@@ -1107,12 +1199,18 @@ class TestInvoiceGenerationTools:
     @pytest.mark.asyncio
     async def test_send_invoice_email_sends_and_marks_emailed(self):
         from organist_bot.integrations.unified_agent import _last_invoice
+
         _last_invoice[CHAT_ID] = {
-            "invoice_number": "INV-2026-001", "client_email": "a@a.com",
-            "client_cc": [], "pdf_path": "/tmp/inv.pdf",
+            "invoice_number": "INV-2026-001",
+            "client_email": "a@a.com",
+            "client_cc": [],
+            "pdf_path": "/tmp/inv.pdf",
         }
         with (
-            patch("organist_bot.integrations.unified_agent.send_invoice_email", return_value={"success": True}) as mock_send,
+            patch(
+                "organist_bot.integrations.unified_agent.send_invoice_email",
+                return_value={"success": True},
+            ) as mock_send,
             patch("organist_bot.integrations.unified_agent.mark_invoice_emailed") as mock_mark,
         ):
             result = await _execute_tool("send_invoice_email", {}, CHAT_ID)
@@ -1124,9 +1222,14 @@ class TestInvoiceGenerationTools:
     async def test_list_invoices_returns_summary(self):
         invoices = {
             "INV-2026-001": {
-                "invoice_number": "INV-2026-001", "client_key": "a", "client_name": "A",
-                "total": 100.0, "date": "1 Jan 2026", "currency": "£",
-                "emailed": False, "created_at": "2026-01-01T00:00:00",
+                "invoice_number": "INV-2026-001",
+                "client_key": "a",
+                "client_name": "A",
+                "total": 100.0,
+                "date": "1 Jan 2026",
+                "currency": "£",
+                "emailed": False,
+                "created_at": "2026-01-01T00:00:00",
             }
         }
         with patch("organist_bot.integrations.unified_agent.load_invoices", return_value=invoices):
@@ -1174,6 +1277,7 @@ Append to `tests/test_unified_agent.py`:
 ```python
 # ── Filter management tools ───────────────────────────────────────────────────
 
+
 class TestFilterTools:
     @pytest.mark.asyncio
     async def test_manage_blacklist_list(self):
@@ -1186,7 +1290,9 @@ class TestFilterTools:
     async def test_manage_blacklist_add(self):
         with patch("organist_bot.integrations.unified_agent.filter_store") as mock_fs:
             mock_fs.add_blacklist_email.return_value = True
-            result = await _execute_tool("manage_blacklist", {"action": "add", "email": "x@y.com"}, CHAT_ID)
+            result = await _execute_tool(
+                "manage_blacklist", {"action": "add", "email": "x@y.com"}, CHAT_ID
+            )
         mock_fs.add_blacklist_email.assert_called_once_with("x@y.com")
         assert "added" in result.lower()
 
@@ -1194,7 +1300,9 @@ class TestFilterTools:
     async def test_manage_blacklist_remove(self):
         with patch("organist_bot.integrations.unified_agent.filter_store") as mock_fs:
             mock_fs.remove_blacklist_email.return_value = True
-            result = await _execute_tool("manage_blacklist", {"action": "remove", "email": "x@y.com"}, CHAT_ID)
+            result = await _execute_tool(
+                "manage_blacklist", {"action": "remove", "email": "x@y.com"}, CHAT_ID
+            )
         mock_fs.remove_blacklist_email.assert_called_once_with("x@y.com")
         assert "removed" in result.lower()
 
@@ -1202,7 +1310,9 @@ class TestFilterTools:
     async def test_manage_unavailable_add(self):
         with patch("organist_bot.integrations.unified_agent.filter_store") as mock_fs:
             mock_fs.add_period.return_value = True
-            result = await _execute_tool("manage_unavailable", {"action": "add", "period": "2026-12"}, CHAT_ID)
+            result = await _execute_tool(
+                "manage_unavailable", {"action": "add", "period": "2026-12"}, CHAT_ID
+            )
         mock_fs.add_period.assert_called_once_with("unavailable_periods", "2026-12")
         assert "unavailable" in result.lower()
 
@@ -1210,7 +1320,9 @@ class TestFilterTools:
     async def test_manage_unavailable_remove(self):
         with patch("organist_bot.integrations.unified_agent.filter_store") as mock_fs:
             mock_fs.remove_period.return_value = True
-            result = await _execute_tool("manage_unavailable", {"action": "remove", "period": "2026-12"}, CHAT_ID)
+            result = await _execute_tool(
+                "manage_unavailable", {"action": "remove", "period": "2026-12"}, CHAT_ID
+            )
         mock_fs.remove_period.assert_called_once_with("unavailable_periods", "2026-12")
 
     @pytest.mark.asyncio
@@ -1224,16 +1336,24 @@ class TestFilterTools:
     async def test_manage_available_add(self):
         with patch("organist_bot.integrations.unified_agent.filter_store") as mock_fs:
             mock_fs.add_period.return_value = True
-            result = await _execute_tool("manage_available", {"action": "add", "period": "2026-08"}, CHAT_ID)
+            result = await _execute_tool(
+                "manage_available", {"action": "add", "period": "2026-08"}, CHAT_ID
+            )
         mock_fs.add_period.assert_called_once_with("available_only_periods", "2026-08")
 
 
 # ── clear_conversation ────────────────────────────────────────────────────────
 
+
 class TestClearConversation:
     @pytest.mark.asyncio
     async def test_clears_all_three_dicts(self):
-        from organist_bot.integrations.unified_agent import _histories, _last_invoice, _last_gig_listing
+        from organist_bot.integrations.unified_agent import (
+            _histories,
+            _last_invoice,
+            _last_gig_listing,
+        )
+
         _histories[CHAT_ID] = [{"role": "user", "content": "hello"}]
         _last_invoice[CHAT_ID] = {"invoice_number": "INV-2026-001"}
         _last_gig_listing[CHAT_ID] = [{"id": "evt1"}]
@@ -1258,61 +1378,93 @@ EMAIL_SENDER=ci@test.com EMAIL_PASSWORD=x CC_EMAIL=ci@test.com \
 Add these cases:
 
 ```python
-    # ── manage_blacklist ────────────────────────────────────────────────────
-    if name == "manage_blacklist":
-        action = input_data["action"]
-        if action == "list":
-            emails = filter_store.blacklist_emails()
-            return json.dumps({"blacklist": emails}) if emails else json.dumps({"result": "Blacklist is empty."})
-        email = input_data.get("email", "")
-        if action == "add":
-            added = filter_store.add_blacklist_email(email)
-            msg = f"Added '{email}' to blacklist." if added else f"'{email}' is already in the blacklist."
-            return json.dumps({"result": msg})
-        if action == "remove":
-            removed = filter_store.remove_blacklist_email(email)
-            msg = f"Removed '{email}' from blacklist." if removed else f"'{email}' not found in blacklist."
-            return json.dumps({"result": msg})
-        return json.dumps({"error": f"Unknown action: {action}"})
+# ── manage_blacklist ────────────────────────────────────────────────────
+if name == "manage_blacklist":
+    action = input_data["action"]
+    if action == "list":
+        emails = filter_store.blacklist_emails()
+        return (
+            json.dumps({"blacklist": emails})
+            if emails
+            else json.dumps({"result": "Blacklist is empty."})
+        )
+    email = input_data.get("email", "")
+    if action == "add":
+        added = filter_store.add_blacklist_email(email)
+        msg = (
+            f"Added '{email}' to blacklist." if added else f"'{email}' is already in the blacklist."
+        )
+        return json.dumps({"result": msg})
+    if action == "remove":
+        removed = filter_store.remove_blacklist_email(email)
+        msg = (
+            f"Removed '{email}' from blacklist."
+            if removed
+            else f"'{email}' not found in blacklist."
+        )
+        return json.dumps({"result": msg})
+    return json.dumps({"error": f"Unknown action: {action}"})
 
-    # ── manage_unavailable ──────────────────────────────────────────────────
-    if name == "manage_unavailable":
-        action = input_data["action"]
-        if action == "list":
-            periods = filter_store.unavailable_periods()
-            return json.dumps({"unavailable_periods": periods}) if periods else json.dumps({"result": "No unavailable periods set."})
-        period = input_data.get("period", "")
-        if action == "add":
-            added = filter_store.add_period("unavailable_periods", period)
-            msg = f"Marked '{period}' as unavailable." if added else f"'{period}' already in unavailable list."
-            return json.dumps({"result": msg})
-        if action == "remove":
-            removed = filter_store.remove_period("unavailable_periods", period)
-            msg = f"Removed '{period}' from unavailable periods." if removed else f"'{period}' not found."
-            return json.dumps({"result": msg})
-        return json.dumps({"error": f"Unknown action: {action}"})
+# ── manage_unavailable ──────────────────────────────────────────────────
+if name == "manage_unavailable":
+    action = input_data["action"]
+    if action == "list":
+        periods = filter_store.unavailable_periods()
+        return (
+            json.dumps({"unavailable_periods": periods})
+            if periods
+            else json.dumps({"result": "No unavailable periods set."})
+        )
+    period = input_data.get("period", "")
+    if action == "add":
+        added = filter_store.add_period("unavailable_periods", period)
+        msg = (
+            f"Marked '{period}' as unavailable."
+            if added
+            else f"'{period}' already in unavailable list."
+        )
+        return json.dumps({"result": msg})
+    if action == "remove":
+        removed = filter_store.remove_period("unavailable_periods", period)
+        msg = (
+            f"Removed '{period}' from unavailable periods." if removed else f"'{period}' not found."
+        )
+        return json.dumps({"result": msg})
+    return json.dumps({"error": f"Unknown action: {action}"})
 
-    # ── manage_available ────────────────────────────────────────────────────
-    if name == "manage_available":
-        action = input_data["action"]
-        if action == "list":
-            periods = filter_store.available_only_periods()
-            return json.dumps({"available_only_periods": periods}) if periods else json.dumps({"result": "No available-only periods set."})
-        period = input_data.get("period", "")
-        if action == "add":
-            added = filter_store.add_period("available_only_periods", period)
-            msg = f"Added '{period}' to available-only periods." if added else f"'{period}' already present."
-            return json.dumps({"result": msg})
-        if action == "remove":
-            removed = filter_store.remove_period("available_only_periods", period)
-            msg = f"Removed '{period}' from available-only periods." if removed else f"'{period}' not found."
-            return json.dumps({"result": msg})
-        return json.dumps({"error": f"Unknown action: {action}"})
+# ── manage_available ────────────────────────────────────────────────────
+if name == "manage_available":
+    action = input_data["action"]
+    if action == "list":
+        periods = filter_store.available_only_periods()
+        return (
+            json.dumps({"available_only_periods": periods})
+            if periods
+            else json.dumps({"result": "No available-only periods set."})
+        )
+    period = input_data.get("period", "")
+    if action == "add":
+        added = filter_store.add_period("available_only_periods", period)
+        msg = (
+            f"Added '{period}' to available-only periods."
+            if added
+            else f"'{period}' already present."
+        )
+        return json.dumps({"result": msg})
+    if action == "remove":
+        removed = filter_store.remove_period("available_only_periods", period)
+        msg = (
+            f"Removed '{period}' from available-only periods."
+            if removed
+            else f"'{period}' not found."
+        )
+        return json.dumps({"result": msg})
+    return json.dumps({"error": f"Unknown action: {action}"})
 
-    # ── clear_conversation ──────────────────────────────────────────────────
-    if name == "clear_conversation":
-        reset_conversation(chat_id)
-        return json.dumps({"result": "Conversation cleared."})
+# ── clear_conversation ──────────────────────────────────────────────────
+if name == "clear_conversation":
+    reset_conversation(chat_id)
+    return json.dumps({"result": "Conversation cleared."})
 ```
 
 - [ ] **Step 4: Implement `process_message` loop**
@@ -1363,7 +1515,9 @@ async def process_message(chat_id: int, text: str) -> list[AgentResponse]:
             if block.name in _PDF_RESPONSE_TOOLS and chat_id in _last_invoice:
                 pdf_path = str(_last_invoice[chat_id]["pdf_path"])
                 inv_num = _last_invoice[chat_id].get("invoice_number", "")
-                responses.append(AgentResponse(file_path=pdf_path, file_caption=f"Invoice {inv_num}"))
+                responses.append(
+                    AgentResponse(file_path=pdf_path, file_caption=f"Invoice {inv_num}")
+                )
 
         _histories[chat_id].append({"role": "user", "content": tool_results})
 
@@ -1398,6 +1552,7 @@ Overwrite `tests/test_telegram_integration.py`:
 
 ```python
 """Tests for the simplified unified Telegram bot dispatcher."""
+
 import os
 import tempfile
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -1417,6 +1572,7 @@ def _make_update(chat_id: int = 7973955362, text: str = "") -> MagicMock:
 
 
 # ── _is_authorised ────────────────────────────────────────────────────────────
+
 
 class TestIsAuthorised:
     def test_authorised_chat_id(self):
@@ -1439,6 +1595,7 @@ class TestIsAuthorised:
 
 
 # ── handle_message ────────────────────────────────────────────────────────────
+
 
 class TestHandleMessage:
     @pytest.fixture(autouse=True)
@@ -1463,7 +1620,9 @@ class TestHandleMessage:
             new=AsyncMock(return_value=responses),
         ):
             await handle_message(update, MagicMock())
-        update.message.reply_text.assert_called_once_with("You have 3 clients.", parse_mode="Markdown")
+        update.message.reply_text.assert_called_once_with(
+            "You have 3 clients.", parse_mode="Markdown"
+        )
 
     @pytest.mark.asyncio
     async def test_sends_file_response(self):
@@ -1519,7 +1678,9 @@ class TestHandleMessage:
             ):
                 await handle_message(update, context)
             context.bot.send_document.assert_called_once()
-            update.message.reply_text.assert_called_once_with("Invoice generated!", parse_mode="Markdown")
+            update.message.reply_text.assert_called_once_with(
+                "Invoice generated!", parse_mode="Markdown"
+            )
         finally:
             os.unlink(tmp_path)
 ```
@@ -1567,7 +1728,7 @@ _HELP = (
     "• Generate and send invoices\n"
     "• Manage clients\n"
     "• Update blacklist or availability\n\n"
-    "To start over, say \"reset\" or \"forget everything\"."
+    'To start over, say "reset" or "forget everything".'
 )
 
 

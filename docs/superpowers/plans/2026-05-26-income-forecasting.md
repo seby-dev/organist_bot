@@ -37,6 +37,7 @@ from pathlib import Path
 import json, pytest
 # (existing imports already present)
 
+
 class TestGetIncome:
     def _write_records(self, tmp_path, records):
         p = tmp_path / "applications.json"
@@ -45,8 +46,12 @@ class TestGetIncome:
 
     def _make_accepted(self, date, fee, url="http://example.com/1"):
         return {
-            "url": url, "header": "Test", "organisation": "St John",
-            "date": date, "fee": fee, "email": "",
+            "url": url,
+            "header": "Test",
+            "organisation": "St John",
+            "date": date,
+            "fee": fee,
+            "email": "",
             "status": "accepted",
             "applied_at": "2026-06-01T10:00:00Z",
             "updated_at": "2026-06-01T10:00:00Z",
@@ -54,6 +59,7 @@ class TestGetIncome:
 
     def test_sums_accepted_fees_in_range(self, tmp_path, monkeypatch):
         import organist_bot.application_store as store
+
         monkeypatch.setattr(store, "_PATH", tmp_path / "applications.json")
         records = [
             self._make_accepted("2026-06-10", "£140.00", "http://a.com/1"),
@@ -67,11 +73,24 @@ class TestGetIncome:
 
     def test_excludes_non_accepted_statuses(self, tmp_path, monkeypatch):
         import organist_bot.application_store as store
+
         monkeypatch.setattr(store, "_PATH", tmp_path / "applications.json")
         records = [
-            {**self._make_accepted("2026-06-10", "£100.00"), "status": "applied", "url": "http://a.com/1"},
-            {**self._make_accepted("2026-06-10", "£100.00"), "status": "rejected", "url": "http://a.com/2"},
-            {**self._make_accepted("2026-06-10", "£100.00"), "status": "declined", "url": "http://a.com/3"},
+            {
+                **self._make_accepted("2026-06-10", "£100.00"),
+                "status": "applied",
+                "url": "http://a.com/1",
+            },
+            {
+                **self._make_accepted("2026-06-10", "£100.00"),
+                "status": "rejected",
+                "url": "http://a.com/2",
+            },
+            {
+                **self._make_accepted("2026-06-10", "£100.00"),
+                "status": "declined",
+                "url": "http://a.com/3",
+            },
         ]
         (tmp_path / "applications.json").write_text(json.dumps(records))
         result = store.get_income("2026-06-01", "2026-06-30")
@@ -80,6 +99,7 @@ class TestGetIncome:
 
     def test_excludes_records_outside_date_range(self, tmp_path, monkeypatch):
         import organist_bot.application_store as store
+
         monkeypatch.setattr(store, "_PATH", tmp_path / "applications.json")
         records = [
             self._make_accepted("2026-05-31", "£100.00", "http://a.com/1"),  # before
@@ -93,6 +113,7 @@ class TestGetIncome:
 
     def test_empty_fee_counted_as_no_fee(self, tmp_path, monkeypatch):
         import organist_bot.application_store as store
+
         monkeypatch.setattr(store, "_PATH", tmp_path / "applications.json")
         records = [self._make_accepted("2026-06-10", "")]
         (tmp_path / "applications.json").write_text(json.dumps(records))
@@ -103,6 +124,7 @@ class TestGetIncome:
 
     def test_parses_pound_and_dollar(self, tmp_path, monkeypatch):
         import organist_bot.application_store as store
+
         monkeypatch.setattr(store, "_PATH", tmp_path / "applications.json")
         records = [
             self._make_accepted("2026-06-10", "£140.00", "http://a.com/1"),
@@ -114,6 +136,7 @@ class TestGetIncome:
 
     def test_fails_open_on_corrupt_json(self, tmp_path, monkeypatch):
         import organist_bot.application_store as store
+
         monkeypatch.setattr(store, "_PATH", tmp_path / "applications.json")
         (tmp_path / "applications.json").write_text("not json")
         result = store.get_income("2026-06-01", "2026-06-30")
@@ -170,7 +193,11 @@ def get_income(from_date: str, to_date: str) -> dict:
                 gig_date = datetime.date.fromisoformat(date_str)
             except ValueError:
                 continue
-            if datetime.date.fromisoformat(from_date) <= gig_date <= datetime.date.fromisoformat(to_date):
+            if (
+                datetime.date.fromisoformat(from_date)
+                <= gig_date
+                <= datetime.date.fromisoformat(to_date)
+            ):
                 matched.append(r)
         matched.sort(key=lambda r: r.get("date", ""))
         total = 0.0
@@ -239,7 +266,10 @@ class TestGetIncomeForecast:
                 {"organisation": "St Leonard's", "date": "2026-06-22", "fee": "£150.00"},
             ],
         }
-        with patch("organist_bot.integrations.unified_agent.application_store.get_income", return_value=summary):
+        with patch(
+            "organist_bot.integrations.unified_agent.application_store.get_income",
+            return_value=summary,
+        ):
             result = await _execute_tool(
                 "get_income_forecast",
                 {"from_date": "2026-06-01", "to_date": "2026-06-30"},
@@ -253,7 +283,10 @@ class TestGetIncomeForecast:
     @pytest.mark.asyncio
     async def test_no_gigs_message(self):
         summary = {"total": 0.0, "count": 0, "no_fee_count": 0, "records": []}
-        with patch("organist_bot.integrations.unified_agent.application_store.get_income", return_value=summary):
+        with patch(
+            "organist_bot.integrations.unified_agent.application_store.get_income",
+            return_value=summary,
+        ):
             result = await _execute_tool(
                 "get_income_forecast",
                 {"from_date": "2026-06-01", "to_date": "2026-06-30"},
@@ -272,7 +305,10 @@ class TestGetIncomeForecast:
                 {"organisation": "All Saints", "date": "2026-06-15", "fee": ""},
             ],
         }
-        with patch("organist_bot.integrations.unified_agent.application_store.get_income", return_value=summary):
+        with patch(
+            "organist_bot.integrations.unified_agent.application_store.get_income",
+            return_value=summary,
+        ):
             result = await _execute_tool(
                 "get_income_forecast",
                 {"from_date": "2026-06-01", "to_date": "2026-06-30"},
@@ -280,19 +316,34 @@ class TestGetIncomeForecast:
             )
         assert "no fee" in result.lower() or "(no fee)" in result.lower()
 
+
 class TestManageApplicationsSummaryIncome:
     @pytest.mark.asyncio
     async def test_summary_includes_income_line(self):
         records = [
             {
-                "url": "http://a.com/1", "header": "Service", "organisation": "St John",
-                "date": "2026-06-10", "fee": "£140.00", "email": "", "status": "accepted",
-                "applied_at": "2026-06-01T10:00:00Z", "updated_at": "2026-06-01T10:00:00Z",
+                "url": "http://a.com/1",
+                "header": "Service",
+                "organisation": "St John",
+                "date": "2026-06-10",
+                "fee": "£140.00",
+                "email": "",
+                "status": "accepted",
+                "applied_at": "2026-06-01T10:00:00Z",
+                "updated_at": "2026-06-01T10:00:00Z",
             }
         ]
         income = {"total": 140.0, "count": 1, "no_fee_count": 0, "records": records}
-        with patch("organist_bot.integrations.unified_agent.application_store.list_applications", return_value=records), \
-             patch("organist_bot.integrations.unified_agent.application_store.get_income", return_value=income):
+        with (
+            patch(
+                "organist_bot.integrations.unified_agent.application_store.list_applications",
+                return_value=records,
+            ),
+            patch(
+                "organist_bot.integrations.unified_agent.application_store.get_income",
+                return_value=income,
+            ),
+        ):
             result = await _execute_tool("manage_applications", {"action": "summary"}, CHAT_ID)
         assert "Income" in result
         assert "£140.00" in result
@@ -310,24 +361,32 @@ Expected: FAILED (tool not defined)
 - [ ] **Step 3: Add `get_income_forecast` tool schema to `TOOLS` list in `unified_agent.py`**
 
 ```python
-{
-    "name": "get_income_forecast",
-    "description": (
-        "Show total income from accepted gigs for any period. "
-        "Convert natural language to ISO dates before calling: "
-        "'June' → from_date='2026-06-01', to_date='2026-06-30'; "
-        "'this year' → from_date='2026-01-01', to_date='2026-12-31'; "
-        "'last 3 months' → compute relative to today."
-    ),
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "from_date": {"type": "string", "description": "Start date ISO format YYYY-MM-DD (inclusive)"},
-            "to_date": {"type": "string", "description": "End date ISO format YYYY-MM-DD (inclusive)"},
+(
+    {
+        "name": "get_income_forecast",
+        "description": (
+            "Show total income from accepted gigs for any period. "
+            "Convert natural language to ISO dates before calling: "
+            "'June' → from_date='2026-06-01', to_date='2026-06-30'; "
+            "'this year' → from_date='2026-01-01', to_date='2026-12-31'; "
+            "'last 3 months' → compute relative to today."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "from_date": {
+                    "type": "string",
+                    "description": "Start date ISO format YYYY-MM-DD (inclusive)",
+                },
+                "to_date": {
+                    "type": "string",
+                    "description": "End date ISO format YYYY-MM-DD (inclusive)",
+                },
+            },
+            "required": ["from_date", "to_date"],
         },
-        "required": ["from_date", "to_date"],
     },
-},
+)
 ```
 
 - [ ] **Step 4: Add `get_income_forecast` handler in `_execute_tool`**
@@ -383,8 +442,11 @@ if name == "get_income_forecast":
 
 ```python
 _VERBATIM_RESPONSE_TOOLS = {
-    "list_upcoming_gigs", "get_gig_stats", "manage_config",
-    "manage_applications", "get_income_forecast",
+    "list_upcoming_gigs",
+    "get_gig_stats",
+    "manage_config",
+    "manage_applications",
+    "get_income_forecast",
 }
 ```
 

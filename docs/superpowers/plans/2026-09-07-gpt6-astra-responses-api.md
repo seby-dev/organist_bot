@@ -134,8 +134,6 @@ TOOLS: list[dict] = [_to_function_tool(t) for t in _TOOLS_SCHEMA]
 Add immediately after the `TOOLS: list[dict] = ...` line:
 
 ```python
-
-
 def _to_responses_tool(tool: dict) -> dict:
     """Flat function-tool shape required by the Responses API (no nested
     "function" key, unlike Chat Completions' TOOLS)."""
@@ -194,8 +192,6 @@ Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>"
 Add this test helper and test class in `tests/test_unified_agent.py`, directly below the `test_gpt_6_astra_is_in_responses_api_models` function added in Task 1:
 
 ```python
-
-
 def _fake_responses_function_call(call_id: str, name: str, arguments: dict) -> SimpleNamespace:
     """A Responses API output item of type "function_call" -- mirrors the real
     field names (call_id, name, arguments, type) confirmed against the
@@ -222,9 +218,7 @@ def _fake_responses_api_response(
     error: object = None,
     usage: SimpleNamespace | None = None,
 ) -> SimpleNamespace:
-    return SimpleNamespace(
-        id=response_id, output=output, status=status, error=error, usage=usage
-    )
+    return SimpleNamespace(id=response_id, output=output, status=status, error=error, usage=usage)
 
 
 class TestChatMessageFromResponsesOutput:
@@ -322,8 +316,6 @@ def _truncate_reason(exc: Exception) -> str:
 Insert this new block immediately after it, before `async def _call_llm_with_failover(`:
 
 ```python
-
-
 def _item_get(item, key, default=None):
     """Accessor tolerant of both a pydantic response-item object (attribute
     access) and a plain dict -- litellm's Responses API objects are pydantic
@@ -444,13 +436,9 @@ Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>"
 Add below `TestChatResponseFromResponsesApi` in `tests/test_unified_agent.py`:
 
 ```python
-
-
 class TestResponsesInputFromMessages:
     def test_user_text_becomes_user_message_item(self):
-        items = unified_agent._responses_input_from_messages(
-            [{"role": "user", "content": "hello"}]
-        )
+        items = unified_agent._responses_input_from_messages([{"role": "user", "content": "hello"}])
         assert items == [{"type": "message", "role": "user", "content": "hello"}]
 
     def test_assistant_text_only_becomes_assistant_message_item(self):
@@ -477,9 +465,7 @@ class TestResponsesInputFromMessages:
             },
         ]
         items = unified_agent._responses_input_from_messages(messages)
-        assert items == [
-            {"type": "message", "role": "assistant", "content": "Let me check that."}
-        ]
+        assert items == [{"type": "message", "role": "assistant", "content": "Let me check that."}]
 
     def test_dangling_unresolved_tool_calls_message_is_tolerated(self):
         """Simulates a crash mid-turn on a previous call leaving an assistant
@@ -510,7 +496,11 @@ class TestResponsesToolOutputsFromMessages:
 
     def test_multiple_tool_results_all_translated(self):
         new_messages = [
-            {"role": "assistant", "content": None, "tool_calls": [{"id": "call_1"}, {"id": "call_2"}]},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{"id": "call_1"}, {"id": "call_2"}],
+            },
             {"role": "tool", "tool_call_id": "call_1", "name": "a", "content": "1"},
             {"role": "tool", "tool_call_id": "call_2", "name": "b", "content": "2"},
         ]
@@ -534,8 +524,6 @@ Expected: FAIL — `AttributeError: ... has no attribute '_responses_input_from_
 Insert this immediately after the block added in Task 2 (after `_chat_response_from_responses_api`'s closing line, still before `async def _call_llm_with_failover`):
 
 ```python
-
-
 def _responses_input_from_messages(messages: list[dict]) -> list[dict]:
     """Bootstrap translation for the first Responses API call of a turn.
     Expects `messages` WITHOUT the leading system message -- the caller passes
@@ -621,8 +609,6 @@ Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>"
 Add below `TestResponsesToolOutputsFromMessages` in `tests/test_unified_agent.py`:
 
 ```python
-
-
 class TestCallOpenaiResponsesApi:
     async def test_first_call_bootstraps_from_history_without_system_message(self, monkeypatch):
         import litellm
@@ -736,8 +722,6 @@ Expected: FAIL — `AttributeError: ... has no attribute '_call_openai_responses
 Insert this immediately after the block added in Task 3 (after `_responses_tool_outputs_from_messages`'s closing line, still before `async def _call_llm_with_failover`):
 
 ```python
-
-
 class ResponsesApiError(RuntimeError):
     """Raised when OpenAI's /v1/responses returns a non-"completed" response
     (status "failed"/"incomplete", or a populated `error` field) instead of
@@ -797,8 +781,7 @@ async def _call_openai_responses_api(
 
     if response.status != "completed" or response.error is not None:
         raise ResponsesApiError(
-            f"OpenAI Responses API returned status={response.status!r}, "
-            f"error={response.error!r}"
+            f"OpenAI Responses API returned status={response.status!r}, error={response.error!r}"
         )
 
     responses_session["previous_response_id"] = response.id
@@ -858,76 +841,77 @@ Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>"
 Add these two tests inside the existing `class TestCallLlmWithFailover:` in `tests/test_unified_agent.py` (find that class — it already has `teardown_method` and several `async def test_...` methods; add these as new methods in the same class, anywhere after `teardown_method`):
 
 ```python
-    async def test_responses_api_model_routes_to_the_adapter_not_acompletion(
-        self, tmp_path, monkeypatch
-    ):
-        import litellm
+async def test_responses_api_model_routes_to_the_adapter_not_acompletion(
+    self, tmp_path, monkeypatch
+):
+    import litellm
 
-        # No runtime_config write is expected on this path (first-try success,
-        # i == 0 -- see _call_llm_with_failover's promotion logic), but chdir
-        # anyway to match this class's other tests and guard against any
-        # incidental write touching the real repo's data/ directory.
-        monkeypatch.chdir(tmp_path)
-        fake_response = _fake_responses_api_response(output=[_fake_responses_message("ok")])
-        mock_aresponses = AsyncMock(return_value=fake_response)
-        mock_acompletion = AsyncMock(side_effect=AssertionError("acompletion must not be called"))
-        monkeypatch.setattr(litellm, "aresponses", mock_aresponses)
-        monkeypatch.setattr(litellm, "acompletion", mock_acompletion)
-        # _call_llm_with_failover's except-and-retry swallows an AssertionError
-        # from the mock above like any other provider failure -- if routing
-        # ever regresses, every candidate gets tried and the real
-        # alert.send_alert would fire (a real Telegram alert from a test run,
-        # if this machine's .env has it configured). Stub it so a regression
-        # fails on the assertions below instead of sending anything real.
-        monkeypatch.setattr(unified_agent.alert, "send_alert", lambda *a, **k: None)
+    # No runtime_config write is expected on this path (first-try success,
+    # i == 0 -- see _call_llm_with_failover's promotion logic), but chdir
+    # anyway to match this class's other tests and guard against any
+    # incidental write touching the real repo's data/ directory.
+    monkeypatch.chdir(tmp_path)
+    fake_response = _fake_responses_api_response(output=[_fake_responses_message("ok")])
+    mock_aresponses = AsyncMock(return_value=fake_response)
+    mock_acompletion = AsyncMock(side_effect=AssertionError("acompletion must not be called"))
+    monkeypatch.setattr(litellm, "aresponses", mock_aresponses)
+    monkeypatch.setattr(litellm, "acompletion", mock_acompletion)
+    # _call_llm_with_failover's except-and-retry swallows an AssertionError
+    # from the mock above like any other provider failure -- if routing
+    # ever regresses, every candidate gets tried and the real
+    # alert.send_alert would fire (a real Telegram alert from a test run,
+    # if this machine's .env has it configured). Stub it so a regression
+    # fails on the assertions below instead of sending anything real.
+    monkeypatch.setattr(unified_agent.alert, "send_alert", lambda *a, **k: None)
 
-        result, provider, model = await unified_agent._call_llm_with_failover(
-            "openai", "openai/gpt-6-astra", messages=[{"role": "system", "content": "S"}], tools=[]
-        )
+    result, provider, model = await unified_agent._call_llm_with_failover(
+        "openai", "openai/gpt-6-astra", messages=[{"role": "system", "content": "S"}], tools=[]
+    )
 
-        assert provider == "openai"
-        assert model == "openai/gpt-6-astra"
-        assert result.choices[0].message.content == "ok"
-        mock_aresponses.assert_awaited_once()
-        mock_acompletion.assert_not_awaited()
+    assert provider == "openai"
+    assert model == "openai/gpt-6-astra"
+    assert result.choices[0].message.content == "ok"
+    mock_aresponses.assert_awaited_once()
+    mock_acompletion.assert_not_awaited()
 
-    async def test_responses_api_failure_falls_over_to_next_provider(self, tmp_path, monkeypatch):
-        import litellm
 
-        monkeypatch.chdir(tmp_path)
-        # Pin all three key fields explicitly so candidate ordering is
-        # deterministic regardless of this machine's real .env (litellm's
-        # own dotenv side effect can otherwise leak a real ANTHROPIC_API_KEY
-        # into settings -- see the test file's existing
-        # test_settings_has_openai_and_gemini_api_key_fields docstring).
-        monkeypatch.setattr(unified_agent.settings, "anthropic_api_key", "sk-anthropic-test")
-        monkeypatch.setattr(unified_agent.settings, "openai_api_key", "sk-test")
-        monkeypatch.setattr(unified_agent.settings, "gemini_api_key", "")
+async def test_responses_api_failure_falls_over_to_next_provider(self, tmp_path, monkeypatch):
+    import litellm
 
-        good_response = _fake_litellm_response(content="ok")
-        monkeypatch.setattr(
-            litellm,
-            "aresponses",
-            AsyncMock(side_effect=unified_agent.ResponsesApiError("incomplete")),
-        )
-        monkeypatch.setattr(litellm, "acompletion", AsyncMock(return_value=good_response))
-        monkeypatch.setattr(unified_agent.alert, "send_alert", lambda *a, **k: None)
+    monkeypatch.chdir(tmp_path)
+    # Pin all three key fields explicitly so candidate ordering is
+    # deterministic regardless of this machine's real .env (litellm's
+    # own dotenv side effect can otherwise leak a real ANTHROPIC_API_KEY
+    # into settings -- see the test file's existing
+    # test_settings_has_openai_and_gemini_api_key_fields docstring).
+    monkeypatch.setattr(unified_agent.settings, "anthropic_api_key", "sk-anthropic-test")
+    monkeypatch.setattr(unified_agent.settings, "openai_api_key", "sk-test")
+    monkeypatch.setattr(unified_agent.settings, "gemini_api_key", "")
 
-        result, provider, model = await unified_agent._call_llm_with_failover(
-            "openai",
-            "openai/gpt-6-astra",
-            messages=[{"role": "system", "content": "S"}],
-            tools=[],
-        )
+    good_response = _fake_litellm_response(content="ok")
+    monkeypatch.setattr(
+        litellm,
+        "aresponses",
+        AsyncMock(side_effect=unified_agent.ResponsesApiError("incomplete")),
+    )
+    monkeypatch.setattr(litellm, "acompletion", AsyncMock(return_value=good_response))
+    monkeypatch.setattr(unified_agent.alert, "send_alert", lambda *a, **k: None)
 
-        # candidates = [("openai", "openai/gpt-6-astra")] first, then
-        # _FAILOVER_ORDER = ["anthropic", "openai", "gemini"] filtered to
-        # configured keys minus the starting provider ("openai" skipped as
-        # itself, "gemini" skipped as unconfigured) -- so "anthropic" is the
-        # only, deterministic fallback candidate.
-        assert result is good_response
-        assert provider == "anthropic"
-        assert model == "anthropic/claude-sonnet-4-6"
+    result, provider, model = await unified_agent._call_llm_with_failover(
+        "openai",
+        "openai/gpt-6-astra",
+        messages=[{"role": "system", "content": "S"}],
+        tools=[],
+    )
+
+    # candidates = [("openai", "openai/gpt-6-astra")] first, then
+    # _FAILOVER_ORDER = ["anthropic", "openai", "gemini"] filtered to
+    # configured keys minus the starting provider ("openai" skipped as
+    # itself, "gemini" skipped as unconfigured) -- so "anthropic" is the
+    # only, deterministic fallback candidate.
+    assert result is good_response
+    assert provider == "anthropic"
+    assert model == "anthropic/claude-sonnet-4-6"
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
@@ -1168,11 +1152,17 @@ async def test_process_message_gpt_6_astra_two_round_tool_loop(tmp_path, monkeyp
         second_call_kwargs = mock_aresponses.call_args_list[1].kwargs
         assert second_call_kwargs["previous_response_id"] == "resp_first"
         assert second_call_kwargs["input"] == [
-            {"type": "function_call_output", "call_id": "call_xyz", "output": json.dumps({"result": "ok"})}
+            {
+                "type": "function_call_output",
+                "call_id": "call_xyz",
+                "output": json.dumps({"result": "ok"}),
+            }
         ]
 
         history = unified_agent._histories[cid]
-        assistant_turn = next(m for m in history if m["role"] == "assistant" and m.get("tool_calls"))
+        assistant_turn = next(
+            m for m in history if m["role"] == "assistant" and m.get("tool_calls")
+        )
         assert assistant_turn["content"] is None
         assert assistant_turn["tool_calls"][0]["id"] == "call_xyz"
         tool_turn = next(m for m in history if m["role"] == "tool")

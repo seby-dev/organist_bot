@@ -56,13 +56,24 @@ class TestUpdateReplyMessageId:
 
     def test_sets_reply_message_id_on_existing_record(self, tmp_path, monkeypatch):
         import organist_bot.application_store as store
+
         monkeypatch.setattr(store, "_PATH", tmp_path / "applications.json")
-        self._write(tmp_path, [{
-            "url": "http://a.com/1", "header": "T", "organisation": "St John",
-            "date": "2026-06-10", "fee": "£100", "email": "org@example.com",
-            "status": "applied", "applied_at": "2026-06-01T10:00:00Z",
-            "updated_at": "2026-06-01T10:00:00Z",
-        }])
+        self._write(
+            tmp_path,
+            [
+                {
+                    "url": "http://a.com/1",
+                    "header": "T",
+                    "organisation": "St John",
+                    "date": "2026-06-10",
+                    "fee": "£100",
+                    "email": "org@example.com",
+                    "status": "applied",
+                    "applied_at": "2026-06-01T10:00:00Z",
+                    "updated_at": "2026-06-01T10:00:00Z",
+                }
+            ],
+        )
         result = store.update_reply_message_id("http://a.com/1", "msg123")
         assert result is True
         records = json.loads((tmp_path / "applications.json").read_text())
@@ -70,6 +81,7 @@ class TestUpdateReplyMessageId:
 
     def test_returns_false_when_url_not_found(self, tmp_path, monkeypatch):
         import organist_bot.application_store as store
+
         monkeypatch.setattr(store, "_PATH", tmp_path / "applications.json")
         self._write(tmp_path, [])
         assert store.update_reply_message_id("http://notfound.com", "msg123") is False
@@ -164,16 +176,18 @@ class TestFetchReplyMessages:
         creds_file.write_text("{}")
         token_file = tmp_path / "token.json"
         from organist_bot.integrations.gmail_client import GmailClient
+
         return GmailClient(str(creds_file), str(token_file))
 
     def test_returns_inbox_messages_from_church_emails(self, tmp_path):
         client = self._make_client(tmp_path)
-        with patch.object(client, "_search_messages") as mock_search, \
-             patch.object(client, "_get_message_details") as mock_details:
+        with (
+            patch.object(client, "_search_messages") as mock_search,
+            patch.object(client, "_get_message_details") as mock_details,
+        ):
             mock_search.return_value = [{"id": "msg1"}]
             mock_details.return_value = _make_message(
-                "msg1", "church@example.com", "me@example.com",
-                "We'd love to have you", "incoming"
+                "msg1", "church@example.com", "me@example.com", "We'd love to have you", "incoming"
             )
             result = client.fetch_reply_messages(
                 applied_emails=["church@example.com"],
@@ -185,12 +199,17 @@ class TestFetchReplyMessages:
 
     def test_returns_sent_messages_to_accepted_record_emails(self, tmp_path):
         client = self._make_client(tmp_path)
-        with patch.object(client, "_search_messages") as mock_search, \
-             patch.object(client, "_get_message_details") as mock_details:
+        with (
+            patch.object(client, "_search_messages") as mock_search,
+            patch.object(client, "_get_message_details") as mock_details,
+        ):
             mock_search.return_value = [{"id": "msg2"}]
             mock_details.return_value = _make_message(
-                "msg2", "me@example.com", "accepted_church@example.com",
-                "I need to cancel", "outgoing"
+                "msg2",
+                "me@example.com",
+                "accepted_church@example.com",
+                "I need to cancel",
+                "outgoing",
             )
             result = client.fetch_reply_messages(
                 applied_emails=[],
@@ -268,7 +287,9 @@ class GmailClient:
                     logger.warning("Gmail: token refresh failed: %s", exc)
                     raise
             else:
-                raise RuntimeError("Gmail token missing or invalid. Run scripts/setup_gmail_auth.py.")
+                raise RuntimeError(
+                    "Gmail token missing or invalid. Run scripts/setup_gmail_auth.py."
+                )
 
         return build("gmail", "v1", credentials=creds)
 
@@ -284,10 +305,10 @@ class GmailClient:
     def _get_message_details(self, service, msg_id: str, direction: str) -> dict | None:
         """Fetch full message and extract relevant fields."""
         try:
-            msg = service.users().messages().get(
-                userId="me", id=msg_id, format="full"
-            ).execute()
-            headers = {h["name"].lower(): h["value"] for h in msg.get("payload", {}).get("headers", [])}
+            msg = service.users().messages().get(userId="me", id=msg_id, format="full").execute()
+            headers = {
+                h["name"].lower(): h["value"] for h in msg.get("payload", {}).get("headers", [])
+            }
             body = _extract_body(msg.get("payload", {}))
             return {
                 "message_id": msg_id,
@@ -342,10 +363,13 @@ class GmailClient:
 def _extract_body(payload: dict) -> str:
     """Recursively extract plain-text body from a Gmail message payload."""
     import base64
+
     mime_type = payload.get("mimeType", "")
     if mime_type == "text/plain":
         data = payload.get("body", {}).get("data", "")
-        return base64.urlsafe_b64decode(data + "==").decode("utf-8", errors="replace") if data else ""
+        return (
+            base64.urlsafe_b64decode(data + "==").decode("utf-8", errors="replace") if data else ""
+        )
     for part in payload.get("parts", []):
         body = _extract_body(part)
         if body:
@@ -393,8 +417,12 @@ from unittest.mock import MagicMock, patch, call
 
 def _make_record(url, email, status, reply_message_id=None):
     return {
-        "url": url, "header": "Evening Service", "organisation": "St John",
-        "date": "2026-06-15", "fee": "£100", "email": email,
+        "url": url,
+        "header": "Evening Service",
+        "organisation": "St John",
+        "date": "2026-06-15",
+        "fee": "£100",
+        "email": email,
         "status": status,
         "applied_at": "2026-06-01T10:00:00Z",
         "updated_at": "2026-06-01T10:00:00Z",
@@ -416,11 +444,14 @@ class TestCheckReplies:
     def _patch_all(self, records, messages, classification):
         """Helper to set up all the mocks needed for check_replies."""
         return [
-            patch("organist_bot.reply_monitor.application_store.list_applications", return_value=records),
+            patch(
+                "organist_bot.reply_monitor.application_store.list_applications",
+                return_value=records,
+            ),
             patch("organist_bot.reply_monitor.application_store.update_status"),
             patch("organist_bot.reply_monitor.application_store.upsert_accepted"),
             patch("organist_bot.reply_monitor.application_store.update_reply_message_id"),
-            patch("organist_bot.reply_monitor.GmailClient") ,
+            patch("organist_bot.reply_monitor.GmailClient"),
             patch("organist_bot.reply_monitor._classify_reply", return_value=classification),
             patch("organist_bot.reply_monitor._send_telegram_notification"),
             patch("organist_bot.reply_monitor.settings"),
@@ -429,18 +460,26 @@ class TestCheckReplies:
     def test_accepted_reply_updates_status_and_notifies(self):
         records = [_make_record("http://a.com/1", "church@example.com", "applied")]
         messages = [_make_message("msg1", "church@example.com")]
-        with patch("organist_bot.reply_monitor.application_store.list_applications", return_value=records), \
-             patch("organist_bot.reply_monitor.application_store.upsert_accepted") as mock_upsert, \
-             patch("organist_bot.reply_monitor.application_store.update_reply_message_id") as mock_rid, \
-             patch("organist_bot.reply_monitor._make_gmail_client") as mock_gmail, \
-             patch("organist_bot.reply_monitor._classify_reply", return_value="accepted"), \
-             patch("organist_bot.reply_monitor._send_telegram_notification") as mock_notify, \
-             patch("organist_bot.reply_monitor._create_calendar_event") as mock_cal, \
-             patch("organist_bot.reply_monitor.settings") as mock_settings:
+        with (
+            patch(
+                "organist_bot.reply_monitor.application_store.list_applications",
+                return_value=records,
+            ),
+            patch("organist_bot.reply_monitor.application_store.upsert_accepted") as mock_upsert,
+            patch(
+                "organist_bot.reply_monitor.application_store.update_reply_message_id"
+            ) as mock_rid,
+            patch("organist_bot.reply_monitor._make_gmail_client") as mock_gmail,
+            patch("organist_bot.reply_monitor._classify_reply", return_value="accepted"),
+            patch("organist_bot.reply_monitor._send_telegram_notification") as mock_notify,
+            patch("organist_bot.reply_monitor._create_calendar_event") as mock_cal,
+            patch("organist_bot.reply_monitor.settings") as mock_settings,
+        ):
             mock_settings.gmail_credentials_file = "creds.json"
             mock_settings.gmail_token_file = "token.json"
             mock_gmail.return_value.fetch_reply_messages.return_value = messages
             from organist_bot.reply_monitor import check_replies
+
             check_replies()
         mock_upsert.assert_called_once()
         mock_cal.assert_called_once()
@@ -450,17 +489,25 @@ class TestCheckReplies:
     def test_rejected_reply_updates_status_and_notifies(self):
         records = [_make_record("http://a.com/1", "church@example.com", "applied")]
         messages = [_make_message("msg1", "church@example.com")]
-        with patch("organist_bot.reply_monitor.application_store.list_applications", return_value=records), \
-             patch("organist_bot.reply_monitor.application_store.update_status") as mock_update, \
-             patch("organist_bot.reply_monitor.application_store.update_reply_message_id") as mock_rid, \
-             patch("organist_bot.reply_monitor._make_gmail_client") as mock_gmail, \
-             patch("organist_bot.reply_monitor._classify_reply", return_value="rejected"), \
-             patch("organist_bot.reply_monitor._send_telegram_notification") as mock_notify, \
-             patch("organist_bot.reply_monitor.settings") as mock_settings:
+        with (
+            patch(
+                "organist_bot.reply_monitor.application_store.list_applications",
+                return_value=records,
+            ),
+            patch("organist_bot.reply_monitor.application_store.update_status") as mock_update,
+            patch(
+                "organist_bot.reply_monitor.application_store.update_reply_message_id"
+            ) as mock_rid,
+            patch("organist_bot.reply_monitor._make_gmail_client") as mock_gmail,
+            patch("organist_bot.reply_monitor._classify_reply", return_value="rejected"),
+            patch("organist_bot.reply_monitor._send_telegram_notification") as mock_notify,
+            patch("organist_bot.reply_monitor.settings") as mock_settings,
+        ):
             mock_settings.gmail_credentials_file = "creds.json"
             mock_settings.gmail_token_file = "token.json"
             mock_gmail.return_value.fetch_reply_messages.return_value = messages
             from organist_bot.reply_monitor import check_replies
+
             check_replies()
         mock_update.assert_called_once_with("http://a.com/1", "rejected")
         mock_notify.assert_called_once()
@@ -469,17 +516,25 @@ class TestCheckReplies:
     def test_cancellation_sends_telegram_prompt_no_status_change(self):
         records = [_make_record("http://a.com/1", "church@example.com", "accepted")]
         messages = [_make_message("msg1", "church@example.com")]
-        with patch("organist_bot.reply_monitor.application_store.list_applications", return_value=records), \
-             patch("organist_bot.reply_monitor.application_store.update_status") as mock_update, \
-             patch("organist_bot.reply_monitor.application_store.update_reply_message_id") as mock_rid, \
-             patch("organist_bot.reply_monitor._make_gmail_client") as mock_gmail, \
-             patch("organist_bot.reply_monitor._classify_reply", return_value="cancellation"), \
-             patch("organist_bot.reply_monitor._send_telegram_notification") as mock_notify, \
-             patch("organist_bot.reply_monitor.settings") as mock_settings:
+        with (
+            patch(
+                "organist_bot.reply_monitor.application_store.list_applications",
+                return_value=records,
+            ),
+            patch("organist_bot.reply_monitor.application_store.update_status") as mock_update,
+            patch(
+                "organist_bot.reply_monitor.application_store.update_reply_message_id"
+            ) as mock_rid,
+            patch("organist_bot.reply_monitor._make_gmail_client") as mock_gmail,
+            patch("organist_bot.reply_monitor._classify_reply", return_value="cancellation"),
+            patch("organist_bot.reply_monitor._send_telegram_notification") as mock_notify,
+            patch("organist_bot.reply_monitor.settings") as mock_settings,
+        ):
             mock_settings.gmail_credentials_file = "creds.json"
             mock_settings.gmail_token_file = "token.json"
             mock_gmail.return_value.fetch_reply_messages.return_value = messages
             from organist_bot.reply_monitor import check_replies
+
             check_replies()
         mock_update.assert_not_called()
         mock_notify.assert_called_once()
@@ -490,33 +545,49 @@ class TestCheckReplies:
     def test_unclear_sends_telegram_excerpt_no_status_change(self):
         records = [_make_record("http://a.com/1", "church@example.com", "applied")]
         messages = [_make_message("msg1", "church@example.com")]
-        with patch("organist_bot.reply_monitor.application_store.list_applications", return_value=records), \
-             patch("organist_bot.reply_monitor.application_store.update_status") as mock_update, \
-             patch("organist_bot.reply_monitor.application_store.update_reply_message_id") as mock_rid, \
-             patch("organist_bot.reply_monitor._make_gmail_client") as mock_gmail, \
-             patch("organist_bot.reply_monitor._classify_reply", return_value="unclear"), \
-             patch("organist_bot.reply_monitor._send_telegram_notification") as mock_notify, \
-             patch("organist_bot.reply_monitor.settings") as mock_settings:
+        with (
+            patch(
+                "organist_bot.reply_monitor.application_store.list_applications",
+                return_value=records,
+            ),
+            patch("organist_bot.reply_monitor.application_store.update_status") as mock_update,
+            patch(
+                "organist_bot.reply_monitor.application_store.update_reply_message_id"
+            ) as mock_rid,
+            patch("organist_bot.reply_monitor._make_gmail_client") as mock_gmail,
+            patch("organist_bot.reply_monitor._classify_reply", return_value="unclear"),
+            patch("organist_bot.reply_monitor._send_telegram_notification") as mock_notify,
+            patch("organist_bot.reply_monitor.settings") as mock_settings,
+        ):
             mock_settings.gmail_credentials_file = "creds.json"
             mock_settings.gmail_token_file = "token.json"
             mock_gmail.return_value.fetch_reply_messages.return_value = messages
             from organist_bot.reply_monitor import check_replies
+
             check_replies()
         mock_update.assert_not_called()
         mock_notify.assert_called_once()
 
     def test_dedup_skips_message_when_reply_message_id_set(self):
-        records = [_make_record("http://a.com/1", "church@example.com", "applied", reply_message_id="msg1")]
+        records = [
+            _make_record("http://a.com/1", "church@example.com", "applied", reply_message_id="msg1")
+        ]
         messages = [_make_message("msg1", "church@example.com")]
-        with patch("organist_bot.reply_monitor.application_store.list_applications", return_value=records), \
-             patch("organist_bot.reply_monitor.application_store.update_status") as mock_update, \
-             patch("organist_bot.reply_monitor._make_gmail_client") as mock_gmail, \
-             patch("organist_bot.reply_monitor._classify_reply") as mock_classify, \
-             patch("organist_bot.reply_monitor.settings") as mock_settings:
+        with (
+            patch(
+                "organist_bot.reply_monitor.application_store.list_applications",
+                return_value=records,
+            ),
+            patch("organist_bot.reply_monitor.application_store.update_status") as mock_update,
+            patch("organist_bot.reply_monitor._make_gmail_client") as mock_gmail,
+            patch("organist_bot.reply_monitor._classify_reply") as mock_classify,
+            patch("organist_bot.reply_monitor.settings") as mock_settings,
+        ):
             mock_settings.gmail_credentials_file = "creds.json"
             mock_settings.gmail_token_file = "token.json"
             mock_gmail.return_value.fetch_reply_messages.return_value = messages
             from organist_bot.reply_monitor import check_replies
+
             check_replies()
         mock_classify.assert_not_called()
         mock_update.assert_not_called()
@@ -524,30 +595,45 @@ class TestCheckReplies:
     def test_message_from_unknown_email_skipped(self):
         records = [_make_record("http://a.com/1", "known@example.com", "applied")]
         messages = [_make_message("msg1", "unknown@other.com")]
-        with patch("organist_bot.reply_monitor.application_store.list_applications", return_value=records), \
-             patch("organist_bot.reply_monitor._make_gmail_client") as mock_gmail, \
-             patch("organist_bot.reply_monitor._classify_reply") as mock_classify, \
-             patch("organist_bot.reply_monitor.settings") as mock_settings:
+        with (
+            patch(
+                "organist_bot.reply_monitor.application_store.list_applications",
+                return_value=records,
+            ),
+            patch("organist_bot.reply_monitor._make_gmail_client") as mock_gmail,
+            patch("organist_bot.reply_monitor._classify_reply") as mock_classify,
+            patch("organist_bot.reply_monitor.settings") as mock_settings,
+        ):
             mock_settings.gmail_credentials_file = "creds.json"
             mock_settings.gmail_token_file = "token.json"
             mock_gmail.return_value.fetch_reply_messages.return_value = messages
             from organist_bot.reply_monitor import check_replies
+
             check_replies()
         mock_classify.assert_not_called()
 
     def test_disabled_when_credentials_file_empty(self):
-        with patch("organist_bot.reply_monitor.settings") as mock_settings, \
-             patch("organist_bot.reply_monitor._make_gmail_client") as mock_gmail:
+        with (
+            patch("organist_bot.reply_monitor.settings") as mock_settings,
+            patch("organist_bot.reply_monitor._make_gmail_client") as mock_gmail,
+        ):
             mock_settings.gmail_credentials_file = ""
             from organist_bot.reply_monitor import check_replies
+
             check_replies()
         mock_gmail.assert_not_called()
 
     def test_fails_open_on_api_error(self):
-        with patch("organist_bot.reply_monitor.settings") as mock_settings, \
-             patch("organist_bot.reply_monitor.application_store.list_applications", side_effect=Exception("db error")):
+        with (
+            patch("organist_bot.reply_monitor.settings") as mock_settings,
+            patch(
+                "organist_bot.reply_monitor.application_store.list_applications",
+                side_effect=Exception("db error"),
+            ),
+        ):
             mock_settings.gmail_credentials_file = "creds.json"
             from organist_bot.reply_monitor import check_replies
+
             # Must not raise
             check_replies()
 ```
@@ -630,6 +716,7 @@ def _classify_reply(message: dict, record: dict) -> str:
 def _send_telegram_notification(text: str) -> None:
     """Fire-and-forget Telegram notification."""
     import requests
+
     token = settings.telegram_bot_token
     chat_id = settings.telegram_chat_id
     if not token or not chat_id:
@@ -650,6 +737,7 @@ def _create_calendar_event(record: dict) -> None:
         return
     try:
         from organist_bot.integrations.calendar_client import GoogleCalendarClient
+
         cal = GoogleCalendarClient(
             credentials_file=settings.google_calendar_credentials_file,
             calendar_id=settings.google_calendar_id,
@@ -690,7 +778,9 @@ def check_replies() -> None:
             return
 
         applied_emails = [r["email"] for r in active if r["status"] == "applied" and r.get("email")]
-        accepted_emails = [r["email"] for r in active if r["status"] == "accepted" and r.get("email")]
+        accepted_emails = [
+            r["email"] for r in active if r["status"] == "accepted" and r.get("email")
+        ]
 
         client = _make_gmail_client()
         messages = client.fetch_reply_messages(
@@ -741,16 +831,15 @@ def check_replies() -> None:
 
                 elif classification == "unclear":
                     _send_telegram_notification(
-                        f"📧 Unclassified reply from {org} ({date}):\n"
-                        f'"{msg.get("body", "")[:300]}"'
+                        f'📧 Unclassified reply from {org} ({date}):\n"{msg.get("body", "")[:300]}"'
                     )
 
-                application_store.update_reply_message_id(
-                    record.get("url", ""), msg["message_id"]
-                )
+                application_store.update_reply_message_id(record.get("url", ""), msg["message_id"])
 
             except Exception as exc:
-                logger.warning("reply_monitor: error processing message %s: %s", msg.get("message_id"), exc)
+                logger.warning(
+                    "reply_monitor: error processing message %s: %s", msg.get("message_id"), exc
+                )
 
     except Exception:
         logger.warning("reply_monitor: check_replies failed", exc_info=True)
@@ -816,6 +905,7 @@ Prerequisites:
 - Download OAuth2 credentials.json from Google Cloud Console
 - Set GMAIL_CREDENTIALS_FILE in .env to point to credentials.json
 """
+
 import sys
 from pathlib import Path
 
@@ -881,17 +971,28 @@ class TestManageApplicationsUpdateDeclined:
         """When update transitions accepted→declined, result should mention calendar event deletion."""
         records = [
             {
-                "url": "http://a.com/1", "header": "Evening Service",
-                "organisation": "St John", "date": "2026-06-15",
-                "fee": "£100", "email": "", "status": "accepted",
-                "applied_at": "2026-06-01T10:00:00Z", "updated_at": "2026-06-01T10:00:00Z",
+                "url": "http://a.com/1",
+                "header": "Evening Service",
+                "organisation": "St John",
+                "date": "2026-06-15",
+                "fee": "£100",
+                "email": "",
+                "status": "accepted",
+                "applied_at": "2026-06-01T10:00:00Z",
+                "updated_at": "2026-06-01T10:00:00Z",
             }
         ]
         # First list to populate cache
-        with patch("organist_bot.integrations.unified_agent.application_store.list_applications", return_value=records):
+        with patch(
+            "organist_bot.integrations.unified_agent.application_store.list_applications",
+            return_value=records,
+        ):
             await _execute_tool("manage_applications", {"action": "list"}, CHAT_ID)
 
-        with patch("organist_bot.integrations.unified_agent.application_store.update_status", return_value=True):
+        with patch(
+            "organist_bot.integrations.unified_agent.application_store.update_status",
+            return_value=True,
+        ):
             result = await _execute_tool(
                 "manage_applications",
                 {"action": "update", "number": 1, "status": "declined"},

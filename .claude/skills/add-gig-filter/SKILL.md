@@ -93,9 +93,17 @@ Follow the existing pattern: construct a minimal `Gig`, assert `is_valid` return
 ```python
 def test_my_filter_rejects_X():
     f = MyFilter(...)
-    gig = Gig(header="Test", organisation="St Mary's", locality="London",
-               date="15 June 2026", time="10:30am", fee="£150", link="http://example.com")
+    gig = Gig(
+        header="Test",
+        organisation="St Mary's",
+        locality="London",
+        date="15 June 2026",
+        time="10:30am",
+        fee="£150",
+        link="http://example.com",
+    )
     assert not f.is_valid(gig)
+
 
 def test_my_filter_passes_Y():
     f = MyFilter(...)

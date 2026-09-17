@@ -351,9 +351,7 @@ class TestHandleMessage:
         ):
             await handle_message(update, context)
         update.message.reply_text.assert_any_call("🤔 Thinking…")
-        update.message.reply_text.assert_any_call(
-            "You have 3 clients.", parse_mode="Markdown"
-        )
+        update.message.reply_text.assert_any_call("You have 3 clients.", parse_mode="Markdown")
         context.bot.delete_message.assert_called_once_with(
             chat_id=update.effective_chat.id, message_id=111
         )
@@ -388,9 +386,7 @@ class TestHandleMessage:
         update.message.reply_text = AsyncMock(
             side_effect=[
                 MagicMock(message_id=111),  # placeholder
-                BadRequest(
-                    "Can't parse entities: can't find end of the entity at byte offset 658"
-                ),
+                BadRequest("Can't parse entities: can't find end of the entity at byte offset 658"),
                 None,
             ]
         )
@@ -509,7 +505,9 @@ Expected: FAIL on most `TestHandleMessage` tests — `handle_message` doesn't ye
 In `organist_bot/integrations/telegram_bot.py`, replace the `handle_message` function (currently lines 87-112) with:
 
 ```python
-async def _delete_quietly(context: ContextTypes.DEFAULT_TYPE, chat_id: int, message_id: int) -> None:
+async def _delete_quietly(
+    context: ContextTypes.DEFAULT_TYPE, chat_id: int, message_id: int
+) -> None:
     try:
         await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
     except BadRequest as exc:

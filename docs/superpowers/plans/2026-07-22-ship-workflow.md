@@ -37,36 +37,38 @@
 Replace lines 1400–1439 (the three failing tests) with:
 
 ```python
-    def test_real_event_rejects_without_alert(self):
-        f = self._make_filter([{"id": "e1", "summary": "Evensong — St Mary's"}])
-        gig = make_gig(
-            date="Sunday, 15 March 2026",
-            fee="£80",
-            header="Sunday Service",
-            organisation="All Saints Church",
-            link="https://organistsonline.org/gig/99",
-        )
-        with patch("organist_bot.filters.alert") as mock_alert:
-            assert f(gig) is False
-        mock_alert.send_alert.assert_not_called()
+def test_real_event_rejects_without_alert(self):
+    f = self._make_filter([{"id": "e1", "summary": "Evensong — St Mary's"}])
+    gig = make_gig(
+        date="Sunday, 15 March 2026",
+        fee="£80",
+        header="Sunday Service",
+        organisation="All Saints Church",
+        link="https://organistsonline.org/gig/99",
+    )
+    with patch("organist_bot.filters.alert") as mock_alert:
+        assert f(gig) is False
+    mock_alert.send_alert.assert_not_called()
 
-    def test_mixed_events_rejects_without_alert(self):
-        events = [
-            {"id": "b1", "summary": "Unavailable"},
-            {"id": "e1", "summary": "Matins — St John's"},
-        ]
-        f = self._make_filter(events)
-        gig = make_gig(date="Sunday, 15 March 2026")
-        with patch("organist_bot.filters.alert") as mock_alert:
-            assert f(gig) is False
-        mock_alert.send_alert.assert_not_called()
 
-    def test_event_without_summary_treated_as_competing(self):
-        f = self._make_filter([{"id": "e1"}])  # no "summary" key
-        gig = make_gig(date="Sunday, 15 March 2026")
-        with patch("organist_bot.filters.alert") as mock_alert:
-            assert f(gig) is False
-        mock_alert.send_alert.assert_not_called()
+def test_mixed_events_rejects_without_alert(self):
+    events = [
+        {"id": "b1", "summary": "Unavailable"},
+        {"id": "e1", "summary": "Matins — St John's"},
+    ]
+    f = self._make_filter(events)
+    gig = make_gig(date="Sunday, 15 March 2026")
+    with patch("organist_bot.filters.alert") as mock_alert:
+        assert f(gig) is False
+    mock_alert.send_alert.assert_not_called()
+
+
+def test_event_without_summary_treated_as_competing(self):
+    f = self._make_filter([{"id": "e1"}])  # no "summary" key
+    gig = make_gig(date="Sunday, 15 March 2026")
+    with patch("organist_bot.filters.alert") as mock_alert:
+        assert f(gig) is False
+    mock_alert.send_alert.assert_not_called()
 ```
 
 (Renamed the first two — `_and_sends_alert`/`_alerts_only_real_events` described behavior that no longer exists since PR #59. `test_event_without_summary_treated_as_competing`'s name was already accurate; only its final assertion changes.)
@@ -564,7 +566,11 @@ class TestRunChecks:
         with patch.object(
             ad,
             "run",
-            side_effect=[_completed(0), _completed(0), _completed(1, stderr="error: bad annotation")],
+            side_effect=[
+                _completed(0),
+                _completed(0),
+                _completed(1, stderr="error: bad annotation"),
+            ],
         ):
             result = ad._run_checks(tmp_path)
         assert result is not None
@@ -774,7 +780,9 @@ def main() -> None:
 
     result = run(GIT + ["merge", "--ff-only", "origin/main"], capture_output=True, text=True)
     if result.returncode != 0:
-        print(f"[{ts()}] Fast-forward not possible (local changes or divergence) -- skipping deploy")
+        print(
+            f"[{ts()}] Fast-forward not possible (local changes or divergence) -- skipping deploy"
+        )
         print(result.stdout)
         print(result.stderr)
         return
