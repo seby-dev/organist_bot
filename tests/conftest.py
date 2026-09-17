@@ -23,6 +23,18 @@ def _isolate_scheduler_lock_file(monkeypatch, tmp_path):
 
 
 @pytest.fixture(autouse=True)
+def _isolate_autodeploy_lock_file(monkeypatch, tmp_path):
+    """Point scripts.auto_deploy.main()'s lock at a tmp_path, not the real
+    shared file — same rationale as _isolate_scheduler_lock_file above.
+
+    scripts.auto_deploy._LOCK_FILE defaults to
+    /tmp/organistbot_autodeploy.lock — the exact path the live launchd job
+    com.organistbot.autodeploy locks every 60 seconds.
+    """
+    monkeypatch.setattr("scripts.auto_deploy._LOCK_FILE", str(tmp_path / "autodeploy.lock"))
+
+
+@pytest.fixture(autouse=True)
 def _silence_telegram_alerts(monkeypatch):
     """Stop the test suite from sending REAL Telegram alerts.
 

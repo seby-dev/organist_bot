@@ -34,16 +34,47 @@ etc. — see `.pre-commit-config.yaml`), so nothing from the pre-existing
 before any PR can merge — auto-merge genuinely waits for green CI rather
 than merging immediately.
 
-Separately, `scripts/auto_deploy.py` re-runs the same checks locally
-(ruff/mypy/pytest) immediately before restarting the live bots, as a
-backstop that doesn't depend on GitHub Actions or `gh` auth being
-reachable from a background launchd process. It also refuses to deploy at
-all unless its own checkout (`~/Developer/organist_bot`) has `HEAD` on
-`main` — a checkout left on another branch (e.g. mid-feature-work in the
-same directory instead of a worktree) silently blocks every subsequent
-deploy until it's switched back, and sends one Telegram alert per stuck
-commit for exactly this reason. See its module docstring for the exact
-failure-handling behavior (alert-once-per-SHA, conditional safe rollback).
+Separately, `scripts/auto_deploy.py` polls its own checkout
+(`~/Developer/organist_bot`) every 60 seconds and deploys whenever local
+`main`'s own `HEAD` differs from the last deployed SHA. It never fetches
+or merges from origin itself, so a deploy only ever follows something else
+already advancing local main (a manual `git pull`/`git merge`, `gh pr
+merge` run directly in that checkout, and so on). A squash-merge landing
+on `origin/main` alone does **not** reach production until something
+advances this checkout's local main too — `_check_stale_origin` sends one
+read-only Telegram alert per such gap (comparing against the cached
+`refs/remotes/origin/main`, never fetching) so that stall isn't silent,
+without fetching, merging, or deploying anything itself.
+
+It re-runs the same checks locally (ruff/mypy/pytest) immediately before
+restarting the live bots, as a backstop that doesn't depend on GitHub
+Actions or `gh` auth being reachable from a background launchd process —
+this alone is minutes-long. The installed launchd job already serializes
+its own ticks (a `StartInterval` firing is skipped outright if the
+previous one is still running), so a `fcntl` exclusive lock on
+`/tmp/organistbot_autodeploy.lock` (the same pattern as `main.py`'s own
+scheduler lock, which does guard a real launchd race there) instead
+guards the other ways two ticks could overlap — a manual run, `launchctl
+kickstart -k`, a bootout/bootstrap reinstall landing mid-tick; an overlap
+from any of those is expected and harmless, so it's skipped with a log
+line, not an alert. It also refuses to deploy at all unless its own
+checkout has `HEAD` on `main` and no
+uncommitted changes — a checkout left on another branch, or mid-edit (e.g.
+mid-feature-work in the same directory instead of a worktree), silently
+blocks every subsequent deploy until fixed, and sends one Telegram alert
+per stuck commit for exactly this reason.
+
+See its module docstring for the exact failure-handling behavior —
+alert-once-per-SHA throughout. A commit that fails the ruff/mypy/pytest
+check gate is first saved to a rescue branch (`autodeploy-failed-<sha>`),
+then rolled back via `git reset --hard` to the last good deploy, since
+both bot launchd jobs set `KeepAlive` and an unrelated restart would
+otherwise load the failed commit anyway with no gate at all; that same
+rollback re-applies if the exact commit is ever checked out again (for
+example, re-pulled after a previous rollback moved local main away from
+it). A `uv sync` failure is handled separately and never rolled back,
+since it's usually environmental rather than a property of the commit's
+code, so it's retried on the next tick instead.
 
 ## Commands
 
@@ -94,7 +125,7 @@ After adding new dependencies, run `playwright install chromium` if Playwright i
 
 ## Architecture
 
-The project has two long-running processes that share the `organist_bot` package. Both run under launchd (see `scripts/install-launchagent.sh`) and are auto-redeployed by `scripts/auto_deploy.py` on every push to `main` — but only after `auto_deploy.py` re-verifies lint/type/tests locally; see "Ship workflow" above for the full picture.
+The project has two long-running processes that share the `organist_bot` package. Both run under launchd (see `scripts/install-launchagent.sh`) and are auto-redeployed by `scripts/auto_deploy.py` whenever local `main` advances — not on every push to `origin/main` by itself, since the script never fetches or merges from origin; see "Ship workflow" above for the full picture.
 
 ### `main.py` — Gig scraper/scheduler
 
@@ -188,6 +219,9 @@ Optional sections in `.env`:
 | `data/last_deployed_sha.txt` | SHA of the last successfully deployed commit; written by `scripts/auto_deploy.py` after each restart (gitignored) |
 | `data/last_failed_deploy_sha.txt` | SHA of the last commit that failed `auto_deploy.py`'s local re-run gate (ruff/mypy/pytest); prevents re-alerting every 60s for the same stuck failure (gitignored) |
 | `data/last_wrong_branch_alert_sha.txt` | SHA of the last commit `auto_deploy.py` couldn't deploy because its checkout wasn't on `main`; prevents re-alerting every 60s while the checkout stays on another branch (gitignored) |
+| `data/last_dirty_tree_alert_sha.txt` | SHA of the last commit `auto_deploy.py` couldn't deploy because its checkout had uncommitted changes; prevents re-alerting every 60s while the tree stays dirty (gitignored) |
+| `data/last_stale_origin_alert_sha.txt` | `origin/main` SHA last flagged by `auto_deploy.py`'s `_check_stale_origin` as ahead of local main; prevents re-alerting every 60s for the same unpulled gap (gitignored) |
+| `data/last_uv_sync_failed_alert_sha.txt` | SHA of the last commit whose `uv sync` failed during `auto_deploy.py`'s deploy attempt; dedups that alert only — unlike the check-gate failure marker, this never blocks a retry, since a `uv sync` failure is usually environmental (gitignored) |
 | `data/gmail_token.json` | OAuth2 token for Gmail reply monitoring (gitignored) |
 | `data/reply_monitor_since_floor.txt` | Earliest date `reply_monitor.check_replies` will ever search Gmail for; set to "today" on first use and never moves backward, so replies to applications made before it was introduced aren't retroactively surfaced |
 | `clients.json` | Invoice client database (project root) |
