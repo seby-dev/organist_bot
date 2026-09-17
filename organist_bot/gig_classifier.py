@@ -13,14 +13,13 @@ import logging
 from dataclasses import dataclass
 from typing import Literal
 
-import requests
+from sebby.judgement import make_client
+from typesafe_sdk import Choice
 
 from organist_bot.config import settings
 from organist_bot.models import Gig
 
 logger = logging.getLogger(__name__)
-
-_TYPESAFE_URL = "https://api.typesafe.ai/v1/systemone"
 
 # Below this confidence, even an "auto_eligible" read falls back to
 # hold_for_review — a low-confidence classification must never auto-send.
@@ -71,40 +70,26 @@ def classify_gig(gig: Gig) -> Classification:
     must never silently auto-send.
     """
     try:
-        response = requests.post(
-            _TYPESAFE_URL,
-            headers={"Authorization": f"Bearer {settings.typesafe_api_key}"},
-            json={
-                "state": {
-                    "header": gig.header or "",
-                    "musical_requirements": gig.musical_requirements or "",
-                    "date": gig.date or "",
-                    "time": gig.time or "",
-                    "fee": gig.fee or "",
-                },
-                "model": "jev-latest",
-                "questions": {
-                    "eligibility": {
-                        "type": "choice",
-                        "instructions": _INSTRUCTIONS,
-                        "criteria": _CRITERIA,
-                    }
-                },
+        client = make_client(api_key=settings.typesafe_api_key)
+        response = client.system_one(
+            {
+                "header": gig.header or "",
+                "musical_requirements": gig.musical_requirements or "",
+                "date": gig.date or "",
+                "time": gig.time or "",
+                "fee": gig.fee or "",
             },
-            timeout=10,
+            {"eligibility": Choice(instructions=_INSTRUCTIONS, criteria=_CRITERIA)},
         )
-        response.raise_for_status()
-        answer = response.json()["answers"]["eligibility"]
-        choice = answer["choice"]
-        confidence = answer["confidence"]
+        answer = response.choices["eligibility"]
 
-        if choice not in _CRITERIA:
-            logger.warning("gig_classifier: unexpected choice %r — holding for review", choice)
-            return Classification(decision="hold_for_review", reason="other_service_type")
-
-        if choice == "auto_eligible" and confidence >= _AUTO_SEND_CONFIDENCE:
-            return Classification(decision="auto_send", reason=choice, confidence=confidence)
-        return Classification(decision="hold_for_review", reason=choice, confidence=confidence)
+        if answer.choice == "auto_eligible" and answer.confidence >= _AUTO_SEND_CONFIDENCE:
+            return Classification(
+                decision="auto_send", reason=answer.choice, confidence=answer.confidence
+            )
+        return Classification(
+            decision="hold_for_review", reason=answer.choice, confidence=answer.confidence
+        )
     except Exception as exc:
         logger.warning("gig_classifier: classification failed: %s — holding for review", exc)
         return Classification(decision="hold_for_review", reason="other_service_type")

@@ -6,7 +6,8 @@ import datetime as _dt
 import logging
 from pathlib import Path
 
-import requests
+from sebby.judgement import make_client
+from typesafe_sdk import Choice
 
 import organist_bot.application_store as application_store
 from organist_bot import travel
@@ -26,8 +27,6 @@ logger = logging.getLogger(__name__)
 # on, replies to applications made before this floor are never retroactively
 # surfaced, no matter how far back an application's applied_at goes.
 _SINCE_FLOOR_PATH = Path("data/reply_monitor_since_floor.txt")
-
-_TYPESAFE_URL = "https://api.typesafe.ai/v1/systemone"
 
 # Below this confidence, treat the reply as unclear rather than act on a
 # shaky read. Set lower than gig_classifier's floor: terse, informal email
@@ -74,44 +73,31 @@ def _classify_reply(message: dict, record: dict) -> str:
     not an error, and re-evaluate the message on the next tick.
     """
     try:
-        response = requests.post(
-            _TYPESAFE_URL,
-            headers={"Authorization": f"Bearer {settings.typesafe_api_key}"},
-            json={
-                "state": {
-                    "organisation": record.get("organisation", ""),
-                    "date": record.get("date", ""),
-                    "sender": message.get("sender", ""),
-                    "direction": message.get("direction", ""),
-                    "body": message.get("body", "")[:2000],
-                },
-                "model": "jev-latest",
-                "questions": {
-                    "reply_type": {
-                        "type": "choice",
-                        "instructions": _CLASSIFY_INSTRUCTIONS,
-                        "criteria": _CLASSIFY_CRITERIA,
-                    }
-                },
+        client = make_client(api_key=settings.typesafe_api_key)
+        response = client.system_one(
+            {
+                "organisation": record.get("organisation", ""),
+                "date": record.get("date", ""),
+                "sender": message.get("sender", ""),
+                "direction": message.get("direction", ""),
+                "body": message.get("body", "")[:2000],
             },
-            timeout=10,
+            {
+                "reply_type": Choice(
+                    instructions=_CLASSIFY_INSTRUCTIONS, criteria=_CLASSIFY_CRITERIA
+                )
+            },
         )
-        response.raise_for_status()
-        answer = response.json()["answers"]["reply_type"]
-        choice = answer["choice"]
-        confidence = answer["confidence"]
+        answer = response.choices["reply_type"]
 
-        if choice not in _CLASSIFY_CRITERIA:
-            logger.warning("reply_monitor: unexpected choice %r — treating as unclear", choice)
-            return "unclear"
-        if confidence < _CONFIDENCE_FLOOR:
+        if answer.confidence < _CONFIDENCE_FLOOR:
             logger.debug(
                 "reply_monitor: %r read at confidence %.2f — below floor, treating as unclear",
-                choice,
-                confidence,
+                answer.choice,
+                answer.confidence,
             )
             return "unclear"
-        return choice
+        return answer.choice
     except Exception as exc:
         logger.warning("reply_monitor: classification failed: %s", exc)
         return "unclear"

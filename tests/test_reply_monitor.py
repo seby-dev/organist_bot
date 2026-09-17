@@ -1,4 +1,5 @@
 import datetime
+from dataclasses import dataclass
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -502,81 +503,81 @@ class TestCancellationDeletesBuffers:
 # ── _classify_reply unit tests ────────────────────────────────────────────────
 
 
-def _mock_typesafe_response(choice: str, confidence: float = 0.95, status_ok: bool = True):
-    resp = MagicMock()
-    resp.raise_for_status = (
-        MagicMock() if status_ok else MagicMock(side_effect=RuntimeError("HTTP error"))
-    )
-    resp.json.return_value = {
-        "answers": {
-            "reply_type": {
-                "type": "choice",
-                "choice": choice,
-                "confidence": confidence,
-            }
-        }
-    }
-    return resp
+@dataclass
+class _FakeChoiceAnswer:
+    choice: str
+    confidence: float
+
+
+@dataclass
+class _FakeResponse:
+    choices: dict
+
+
+def _fake_client(choice: str, confidence: float = 0.95, *, raises: Exception | None = None):
+    """Return a fake sebby.judgement client whose system_one() returns a
+    fixed reply_type answer, or raises *raises* if given."""
+    client = MagicMock()
+    if raises is not None:
+        client.system_one.side_effect = raises
+    else:
+        client.system_one.return_value = _FakeResponse(
+            choices={"reply_type": _FakeChoiceAnswer(choice=choice, confidence=confidence)}
+        )
+    return client
 
 
 class TestClassifyReply:
-    """Unit tests for _classify_reply — patches requests.post at the module level."""
+    """Unit tests for _classify_reply — patches make_client at the module level."""
 
     _MSG = {"sender": "church@example.com", "body": "We'd love to book you."}
     _REC = {"organisation": "St John", "date": "2026-06-15"}
 
     # (a) high-confidence "accepted" is returned as-is
     def test_accepted_label_returned(self):
-        with patch("organist_bot.reply_monitor.requests.post") as mock_post:
-            mock_post.return_value = _mock_typesafe_response("accepted", confidence=0.95)
+        with patch("organist_bot.reply_monitor.make_client") as mock_make_client:
+            mock_make_client.return_value = _fake_client("accepted", confidence=0.95)
             result = _classify_reply(self._MSG, self._REC)
         assert result == "accepted"
-        mock_post.assert_called_once()
+        mock_make_client.return_value.system_one.assert_called_once()
 
     # (a) second valid label: "rejected"
     def test_rejected_label_returned(self):
-        with patch("organist_bot.reply_monitor.requests.post") as mock_post:
-            mock_post.return_value = _mock_typesafe_response("rejected", confidence=0.9)
+        with patch("organist_bot.reply_monitor.make_client") as mock_make_client:
+            mock_make_client.return_value = _fake_client("rejected", confidence=0.9)
             result = _classify_reply(self._MSG, self._REC)
         assert result == "rejected"
 
-    # (b) an unexpected choice from the model normalises to "unclear"
-    def test_unexpected_choice_normalises_to_unclear(self):
-        with patch("organist_bot.reply_monitor.requests.post") as mock_post:
-            mock_post.return_value = _mock_typesafe_response(
-                "DEFINITELY_NOT_A_CHOICE", confidence=0.9
-            )
-            result = _classify_reply(self._MSG, self._REC)
-        # Must be exactly "unclear", NOT the raw unexpected choice
-        assert result == "unclear"
-
-    # (c) a low-confidence read of an actionable choice falls back to "unclear"
+    # (b) a low-confidence read of an actionable choice falls back to "unclear"
     # instead of being trusted at face value — this is the whole point of the
     # confidence floor: a shaky "accepted" must not trigger a calendar mutation.
     def test_low_confidence_actionable_choice_normalises_to_unclear(self):
-        with patch("organist_bot.reply_monitor.requests.post") as mock_post:
-            mock_post.return_value = _mock_typesafe_response("accepted", confidence=0.5)
+        with patch("organist_bot.reply_monitor.make_client") as mock_make_client:
+            mock_make_client.return_value = _fake_client("accepted", confidence=0.5)
             result = _classify_reply(self._MSG, self._REC)
         assert result == "unclear"
 
-    # (d) API exception does not propagate and returns "unclear"
+    # (c) API exception does not propagate and returns "unclear"
     def test_api_exception_returns_unclear_without_raising(self):
-        with patch("organist_bot.reply_monitor.requests.post") as mock_post:
-            mock_post.side_effect = Exception("network timeout")
+        with patch("organist_bot.reply_monitor.make_client") as mock_make_client:
+            mock_make_client.return_value = _fake_client(
+                "accepted", raises=Exception("network timeout")
+            )
             result = _classify_reply(self._MSG, self._REC)
         # Must not raise; must fall back to "unclear"
         assert result == "unclear"
 
-    # (d) HTTP error response also falls back to "unclear" without raising
-    def test_http_error_returns_unclear_without_raising(self):
-        with patch("organist_bot.reply_monitor.requests.post") as mock_post:
-            mock_post.return_value = _mock_typesafe_response("accepted", status_ok=False)
-            result = _classify_reply(self._MSG, self._REC)
+    def test_malformed_response_returns_unclear_without_raising(self):
+        with patch("organist_bot.reply_monitor.make_client") as mock_make_client:
+            client = MagicMock()
+            client.system_one.return_value = _FakeResponse(choices={})  # missing "reply_type"
+            mock_make_client.return_value = client
+            result = _classify_reply(self._MSG, self._REC)  # must not raise
         assert result == "unclear"
 
     def test_state_includes_organisation_date_sender_direction_and_truncated_body(self):
-        with patch("organist_bot.reply_monitor.requests.post") as mock_post:
-            mock_post.return_value = _mock_typesafe_response("accepted")
+        with patch("organist_bot.reply_monitor.make_client") as mock_make_client:
+            mock_make_client.return_value = _fake_client("accepted")
             _classify_reply(
                 {
                     "sender": "vicar@church.example",
@@ -585,12 +586,22 @@ class TestClassifyReply:
                 },
                 {"organisation": "St Mary's", "date": "2026-07-12"},
             )
-        state = mock_post.call_args.kwargs["json"]["state"]
+        state = mock_make_client.return_value.system_one.call_args.args[0]
         assert state["organisation"] == "St Mary's"
         assert state["date"] == "2026-07-12"
         assert state["sender"] == "vicar@church.example"
         assert state["direction"] == "incoming"
         assert len(state["body"]) == 2000
+
+    def test_uses_configured_api_key(self):
+        with (
+            patch("organist_bot.reply_monitor.make_client") as mock_make_client,
+            patch("organist_bot.reply_monitor.settings") as mock_settings,
+        ):
+            mock_settings.typesafe_api_key = "test-key"
+            mock_make_client.return_value = _fake_client("accepted")
+            _classify_reply(self._MSG, self._REC)
+        mock_make_client.assert_called_once_with(api_key="test-key")
 
 
 @pytest.mark.live

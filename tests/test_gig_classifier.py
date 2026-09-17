@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -19,87 +20,82 @@ def _make_gig(header="Sunday Service", musical_requirements=None, time="10:00 AM
     )
 
 
-def _mock_response(choice: str, confidence: float = 0.95, status_ok: bool = True):
-    resp = MagicMock()
-    resp.raise_for_status = (
-        MagicMock() if status_ok else MagicMock(side_effect=RuntimeError("HTTP error"))
-    )
-    resp.json.return_value = {
-        "answers": {
-            "eligibility": {
-                "type": "choice",
-                "choice": choice,
-                "confidence": confidence,
-            }
-        }
-    }
-    return resp
+@dataclass
+class _FakeChoiceAnswer:
+    choice: str
+    confidence: float
+
+
+@dataclass
+class _FakeResponse:
+    choices: dict
+
+
+def _fake_client(choice: str, confidence: float = 0.95, *, raises: Exception | None = None):
+    """Return a fake sebby.judgement client whose system_one() returns a
+    fixed eligibility answer, or raises *raises* if given."""
+    client = MagicMock()
+    if raises is not None:
+        client.system_one.side_effect = raises
+    else:
+        client.system_one.return_value = _FakeResponse(
+            choices={"eligibility": _FakeChoiceAnswer(choice=choice, confidence=confidence)}
+        )
+    return client
 
 
 class TestClassifyGig:
     def test_auto_eligible_high_confidence_maps_to_auto_send(self):
-        with patch("organist_bot.gig_classifier.requests.post") as mock_post:
-            mock_post.return_value = _mock_response("auto_eligible", confidence=0.95)
+        with patch("organist_bot.gig_classifier.make_client") as mock_make_client:
+            mock_make_client.return_value = _fake_client("auto_eligible", confidence=0.95)
             result = classify_gig(_make_gig())
         assert result == Classification(
             decision="auto_send", reason="auto_eligible", confidence=0.95
         )
 
     def test_auto_eligible_low_confidence_maps_to_hold_for_review(self):
-        with patch("organist_bot.gig_classifier.requests.post") as mock_post:
-            mock_post.return_value = _mock_response("auto_eligible", confidence=0.6)
+        with patch("organist_bot.gig_classifier.make_client") as mock_make_client:
+            mock_make_client.return_value = _fake_client("auto_eligible", confidence=0.6)
             result = classify_gig(_make_gig())
         assert result == Classification(
             decision="hold_for_review", reason="auto_eligible", confidence=0.6
         )
 
     def test_multi_service_maps_to_hold_for_review(self):
-        with patch("organist_bot.gig_classifier.requests.post") as mock_post:
-            mock_post.return_value = _mock_response("multi_service", confidence=0.9)
+        with patch("organist_bot.gig_classifier.make_client") as mock_make_client:
+            mock_make_client.return_value = _fake_client("multi_service", confidence=0.9)
             result = classify_gig(_make_gig(time="9:00 AM & 6:00 PM"))
         assert result == Classification(
             decision="hold_for_review", reason="multi_service", confidence=0.9
         )
 
     def test_other_service_type_maps_to_hold_for_review(self):
-        with patch("organist_bot.gig_classifier.requests.post") as mock_post:
-            mock_post.return_value = _mock_response("other_service_type", confidence=0.9)
+        with patch("organist_bot.gig_classifier.make_client") as mock_make_client:
+            mock_make_client.return_value = _fake_client("other_service_type", confidence=0.9)
             result = classify_gig(_make_gig(header="Evensong"))
         assert result == Classification(
             decision="hold_for_review", reason="other_service_type", confidence=0.9
         )
 
-    def test_unexpected_choice_normalises_to_hold_for_review(self):
-        with patch("organist_bot.gig_classifier.requests.post") as mock_post:
-            mock_post.return_value = _mock_response("banana", confidence=0.9)
-            result = classify_gig(_make_gig())
-        assert result.decision == "hold_for_review"
-        assert result.reason == "other_service_type"
-
     def test_api_exception_returns_hold_for_review_without_raising(self):
-        with patch("organist_bot.gig_classifier.requests.post") as mock_post:
-            mock_post.side_effect = RuntimeError("network down")
-            result = classify_gig(_make_gig())  # must not raise
-        assert result.decision == "hold_for_review"
-
-    def test_http_error_returns_hold_for_review_without_raising(self):
-        with patch("organist_bot.gig_classifier.requests.post") as mock_post:
-            mock_post.return_value = _mock_response("auto_eligible", status_ok=False)
+        with patch("organist_bot.gig_classifier.make_client") as mock_make_client:
+            mock_make_client.return_value = _fake_client(
+                "auto_eligible", raises=RuntimeError("network down")
+            )
             result = classify_gig(_make_gig())  # must not raise
         assert result.decision == "hold_for_review"
 
     def test_malformed_response_returns_hold_for_review_without_raising(self):
-        with patch("organist_bot.gig_classifier.requests.post") as mock_post:
-            resp = MagicMock()
-            resp.raise_for_status = MagicMock()
-            resp.json.return_value = {"answers": {}}  # missing "eligibility" key
-            mock_post.return_value = resp
+        with patch("organist_bot.gig_classifier.make_client") as mock_make_client:
+            client = MagicMock()
+            client.system_one.return_value = _FakeResponse(choices={})  # missing "eligibility"
+            mock_make_client.return_value = client
             result = classify_gig(_make_gig())  # must not raise
         assert result.decision == "hold_for_review"
 
     def test_state_includes_header_musical_requirements_date_time_and_fee(self):
-        with patch("organist_bot.gig_classifier.requests.post") as mock_post:
-            mock_post.return_value = _mock_response("auto_eligible")
+        with patch("organist_bot.gig_classifier.make_client") as mock_make_client:
+            mock_make_client.return_value = _fake_client("auto_eligible")
             classify_gig(
                 _make_gig(
                     header="Wedding at St Mary's",
@@ -108,20 +104,22 @@ class TestClassifyGig:
                     fee="£80 per service",
                 )
             )
-        state = mock_post.call_args.kwargs["json"]["state"]
+        state = mock_make_client.return_value.system_one.call_args.args[0]
         assert state["header"] == "Wedding at St Mary's"
         assert state["musical_requirements"] == "Traditional hymns"
         assert state["date"] == "Sunday, July 12, 2026"
         assert state["time"] == "8:15 AM & 6:45 PM"
         assert state["fee"] == "£80 per service"
 
-    def test_uses_jev_latest_model_and_bearer_auth(self):
-        with patch("organist_bot.gig_classifier.requests.post") as mock_post:
-            mock_post.return_value = _mock_response("auto_eligible")
+    def test_uses_configured_api_key(self):
+        with (
+            patch("organist_bot.gig_classifier.make_client") as mock_make_client,
+            patch("organist_bot.gig_classifier.settings") as mock_settings,
+        ):
+            mock_settings.typesafe_api_key = "test-key"
+            mock_make_client.return_value = _fake_client("auto_eligible")
             classify_gig(_make_gig())
-        call = mock_post.call_args
-        assert call.kwargs["json"]["model"] == "jev-latest"
-        assert call.kwargs["headers"]["Authorization"].startswith("Bearer ")
+        mock_make_client.assert_called_once_with(api_key="test-key")
 
 
 @pytest.mark.live

@@ -18,7 +18,7 @@ dependencies = [
     "protobuf",
     "anthropic>=0.40",
     "litellm>=1.80",
-    "sebby @ git+https://github.com/seby-dev/sebby@v0.1.0",
+    "sebby[judgement] @ git+https://github.com/seby-dev/sebby@v0.2.0",
     "playwright>=1.40",
     "google-auth-oauthlib>=1.0",
 ]
